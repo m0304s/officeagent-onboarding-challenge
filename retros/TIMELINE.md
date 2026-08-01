@@ -12,3 +12,4 @@ Retrobot이 커밋 시점의 작업 로그를 분석해 생성한 KPT 회고 목
 | 2026-08-01 | [15:55](./2026-08-01_1555_retro.md) | 재발급 PAT로 push 성공, `bootstrap-runtime-skeleton` 아카이브 — 메인 스펙 동기화(126줄)·rename 검증·`openspec doctor` 통과, 에러 0건 |
 | 2026-08-01 | [17:40](./2026-08-01_1740_retro.md) | `document-ingestion` 브랜치 분기, `add-document-ingestion` 스펙 4개 아티팩트 980줄 — Codex 적대적 리뷰 → Fable5 계획·Opus5 반영, `index_signature`로 stale 벡터·캐시 차단 |
 | 2026-08-01 | [18:25](./2026-08-01_1825_retro.md) | 문서 도메인·재귀 청킹 구현(+1465/-24, 테스트 628줄) — 한국어 종결어미 분리자 계층, 난수 불변식 검증, 구현 단계 Codex 리뷰 |
+| 2026-08-01 | [21:25](./2026-08-01_2125_retro.md) | 파서 3종·ingestion 서비스·업로드 라우터 구현(+1637/-37) — 113→**187 passed**, 라이브러리 예외를 파서 경계에서 차단, UploadFile 전환은 중단으로 들어온 뒤늦은 인터페이스 결정 |
