@@ -31,11 +31,46 @@ _PATH_SEPARATORS = ("/", "\\")
 
 
 class DocumentFormat(StrEnum):
-    """수집을 지원하는 문서 포맷."""
+    """수집 대상이 될 수 있는 문서 포맷.
+
+    "확장자 → 포맷"은 도메인 지식이라 여기 둔다. 반면 **"포맷 → 파서"는 배선**이라
+    어댑터의 레지스트리가 갖는다. 그래서 이 열거형에 값이 있다는 사실만으로 그 포맷이
+    수집된다는 뜻은 아니다 — 실제로 등록된 파서가 있어야 한다. 오류 응답에 싣는 지원
+    포맷 목록도 이 열거형이 아니라 레지스트리에서 나온다.
+    """
 
     TXT = "txt"
     MD = "md"
     PDF = "pdf"
+
+    @property
+    def extension(self) -> str:
+        return f".{self.value}"
+
+    @classmethod
+    def from_extension(cls, extension: str) -> "DocumentFormat | None":
+        """확장자에 대응하는 포맷. 대응이 없으면 `None`.
+
+        예외를 던지지 않는 이유는 호출자가 레지스트리이기 때문이다. "지원하지 않는다"는
+        판정에는 **실제로 등록된 파서 목록**이 필요한데, 그건 core 가 모르는 사실이다.
+        """
+        return _FORMATS_BY_EXTENSION.get(extension.lower())
+
+
+_FORMATS_BY_EXTENSION: dict[str, DocumentFormat] = {
+    document_format.extension: document_format for document_format in DocumentFormat
+}
+
+
+def file_extension(filename: str) -> str:
+    """파일명에서 소문자 확장자를 뽑는다. 확장자가 없으면 빈 문자열.
+
+    `.gitignore` 처럼 점으로 시작하는 이름은 확장자가 아니라 이름 전체다. 확장자로
+    보면 `.gitignore` 를 올렸을 때 "gitignore 포맷"을 찾게 되는데, 그건 파일명이지
+    포맷이 아니다.
+    """
+    _, dot, suffix = normalize_filename(filename).rpartition(".")
+    return f".{suffix}" if dot and _ else ""
 
 
 class IndexStatus(StrEnum):
@@ -110,6 +145,34 @@ class TextSegment:
     def __post_init__(self) -> None:
         if self.page is not None and self.page < 1:
             raise ValueError("page 는 1-base 다")
+
+
+@dataclass(frozen=True)
+class ExtractedDocument:
+    """파서 한 번의 결과 전체.
+
+    **`segments` 에는 텍스트가 있는 단위만 담는다.** 공백뿐인 쪽을 빈 세그먼트로 남겨도
+    청커가 어차피 버리므로 정보가 늘지 않고, 대신 "세그먼트가 있다 = 추출된 텍스트가
+    있다"는 단순한 판정이 불가능해진다.
+
+    `page_count` 가 따로 있는 이유가 바로 그 판정의 나머지 절반이다. 쪽은 있는데
+    세그먼트가 0개면 **텍스트 레이어가 없는 PDF**(스캔본)이고, 쪽 자체가 없으면
+    **빈 문서**다. 두 경우는 클라이언트가 해야 할 일이 다르다 — 전자는 OCR 이 필요하고
+    후자는 파일이 잘못됐다. `page_count` 를 버리면 이 구분이 사라진다.
+
+    쪽 개념이 없는 포맷(txt·md)은 `None` 이다.
+    """
+
+    segments: tuple[TextSegment, ...] = ()
+    page_count: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.page_count is not None and self.page_count < 0:
+            raise ValueError("page_count 는 0 이상이어야 한다")
+
+    @property
+    def has_text(self) -> bool:
+        return bool(self.segments)
 
 
 @dataclass(frozen=True)

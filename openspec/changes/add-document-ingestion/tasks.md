@@ -22,13 +22,13 @@
 
 ## 3. 파서 어댑터
 
-- [ ] 3.1 `adapters/protocols.py`에 `DocumentParser` 프로토콜 정의 — **동기** `parse(bytes)`, 세그먼트 목록 반환, `page_count` 포함 (design 결정 3). `TextSegment`는 2.1에서 이미 `core/documents.py`에 있다(청킹이 소비하므로 core 에 있어야 계층이 역전되지 않는다). `ExtractedDocument`도 같은 이유로 `core/documents.py`에 둔다
-- [ ] 3.2 텍스트 파서 구현 (`.txt`·`.md`) — 인코딩 판별과 디코딩 실패 처리. 문서 전체를 세그먼트 1개로 반환
-- [ ] 3.3 PDF 파서 구현 (PyMuPDF) — 쪽 단위 세그먼트, `page_count` 설정. 라이브러리 예외를 `DocumentParseError`로 바꿔 던진다 (라우터로 새지 않게)
-- [ ] 3.4 파서 레지스트리 — 확장자 → 파서 매핑. 미등록 확장자와 확장자 없음은 `UnsupportedDocumentFormat`
-- [ ] 3.5 PDF 테스트 픽스처 생성 헬퍼 — 텍스트 레이어가 있는 PDF와 이미지만 있는 PDF를 테스트 시점에 만든다. 바이너리 픽스처를 리포에 넣지 않는다 (design 결정 13)
-- [ ] 3.6 파서 테스트 — txt/md 추출 / PDF 쪽별 추출과 페이지 번호 / **텍스트 레이어 없는 PDF는 `page_count` ≥ 1 이면서 텍스트가 빔** / `.pdf` 확장자에 PDF가 아닌 바이트 → `DocumentParseError` / 미지원 확장자 → `UnsupportedDocumentFormat`
-- [ ] 3.7 `ARCHITECTURE.md`에 파서 구성 기록 — `DocumentParser` 프로토콜, **PyMuPDF만 구현했다는 사실과 교체 지점**(모델 기반 파서는 "지원"으로 적지 않는다), AGPL 라이선스 주의. **구현 직후에 적는다**
+- [x] 3.1 `adapters/protocols.py`에 `DocumentParser` 프로토콜 정의 — **동기** `parse(bytes)`, 세그먼트 목록 반환, `page_count` 포함 (design 결정 3). `TextSegment`는 2.1에서 이미 `core/documents.py`에 있다(청킹이 소비하므로 core 에 있어야 계층이 역전되지 않는다). `ExtractedDocument`도 같은 이유로 `core/documents.py`에 둔다
+- [x] 3.2 텍스트 파서 구현 (`.txt`·`.md`) — 인코딩 판별과 디코딩 실패 처리. 문서 전체를 세그먼트 1개로 반환
+- [x] 3.3 PDF 파서 구현 (PyMuPDF) — 쪽 단위 세그먼트, `page_count` 설정. 라이브러리 예외를 `DocumentParseError`로 바꿔 던진다 (라우터로 새지 않게)
+- [x] 3.4 파서 레지스트리 — 확장자 → 파서 매핑. 미등록 확장자와 확장자 없음은 `UnsupportedDocumentFormat`
+- [x] 3.5 PDF 테스트 픽스처 생성 헬퍼 — 텍스트 레이어가 있는 PDF와 이미지만 있는 PDF를 테스트 시점에 만든다. 바이너리 픽스처를 리포에 넣지 않는다 (design 결정 13)
+- [x] 3.6 파서 테스트 — txt/md 추출 / PDF 쪽별 추출과 페이지 번호 / **텍스트 레이어 없는 PDF는 `page_count` ≥ 1 이면서 텍스트가 빔** / `.pdf` 확장자에 PDF가 아닌 바이트 → `DocumentParseError` / 미지원 확장자 → `UnsupportedDocumentFormat`
+- [x] 3.7 `ARCHITECTURE.md`에 파서 구성 기록 — `DocumentParser` 프로토콜, **PyMuPDF만 구현했다는 사실과 교체 지점**(모델 기반 파서는 "지원"으로 적지 않는다), AGPL 라이선스 주의. **구현 직후에 적는다**
 
 ## 4. 임베딩 어댑터
 
@@ -54,8 +54,8 @@
 ## 6. 수집 서비스
 
 - [ ] 6.1 `services/ingestion.py` 골격 — 파서 선택 → 파싱 → 청킹 → (배치) 임베딩·저장 → 커밋 → 정리 순서 (design 결정 8)
-- [ ] 6.2 파싱을 서비스에서 **명시적으로** 스레드풀 오프로드. 파서 프로토콜이 동기인 이유가 여기 있다
-- [ ] 6.3 빈 문서 / 텍스트 레이어 없는 PDF 판정 — `page_count` ≥ 1 인데 추출 텍스트가 비면 `NoExtractableText`, 그 외 비면 `EmptyDocument`. 두 코드를 뭉개지 않는다
+- [x] 6.2 파싱을 서비스에서 **명시적으로** 스레드풀 오프로드. 파서 프로토콜이 동기인 이유가 여기 있다
+- [x] 6.3 빈 문서 / 텍스트 레이어 없는 PDF 판정 — `page_count` ≥ 1 인데 추출 텍스트가 비면 `NoExtractableText`, 그 외 비면 `EmptyDocument`. 두 코드를 뭉개지 않는다
 - [ ] 6.4 토큰 가드 — 임베딩 직전 `count_tokens`로 확인하고 초과 청크를 2.5로 재분할. 조용한 절단을 막는다 (design 결정 5)
 - [ ] 6.5 `unchanged` 경로 — 레지스트리의 `revision`과 `index_signature`가 **둘 다** 같을 때만 파싱·임베딩·저장을 전부 건너뛴다. `revision`만 같고 서명이 다르면 재색인하고 `status: "reindexed"`로 응답한다. **`revision`만 보고 단축하면 모델 교체 후 재업로드가 조용히 무시된다** (design 결정 6·8)
 - [ ] 6.6 **배치 단위 임베딩·저장** — 청크를 `embedding_batch_size`씩 끊어 인코딩하고 배치마다 벡터 스토어에 쓴 뒤 이벤트 루프에 양보한다. 메모리가 문서 크기가 아니라 배치 크기에 비례해야 한다 (design 결정 9)
@@ -73,11 +73,11 @@
 ## 7. API 계층
 
 - [ ] 7.1 `POST /documents` — multipart 업로드. 성공 시 `document_id`·`filename`·`format`·`revision`·**`index_signature`**·**`index_status`**·`chunk_count`·`ingested_at`·`status` 반환. 최초 수집 201, 교체·재색인·무변경 200. `status`는 `created`|`replaced`|`reindexed`|`unchanged`
-- [ ] 7.2 업로드 크기 상한 강제 — `Content-Length`로 빠른 거절 후, 본문을 청크 단위로 읽으며 누적 바이트가 상한을 넘는 즉시 중단. 전체를 메모리에 올린 뒤 재지 않는다 (design 결정 10)
+- [x] 7.2 업로드 크기 상한 — `UploadFile` 주입 후 `file.size`가 설정 상한을 넘으면 `DocumentTooLarge`. **상한이 막는 것은 수신이 아니라 파싱·임베딩이다**(design 결정 10의 구현 중 조정). 재는 대상은 요청 본문이 아니라 파일이며, 프레임워크의 파트 기본 상한(1 MiB)이 파일 파트에 걸리지 않는다는 경계를 테스트로 고정한다
 - [ ] 7.3 `GET /documents` · `GET /documents/{document_id}` — 목록과 상세. `index_signature`·`index_status` 포함. 없는 문서는 404
 - [ ] 7.4 `DELETE /documents/{document_id}` — 204, 없는 문서는 404
-- [ ] 7.5 `api/errors.py`에 **`ErrorCode` → HTTP 상태 표**(415/413/422/404/503)를 두고, 모든 `AppError`를 무조건 500으로 변환하는 현재 `handle_app_error`를 표 조회로 바꾼다. 표에 없는 코드는 500 유지 — 기존 `tests/test_errors.py`가 깨지지 않아야 한다. 변환은 여전히 이 계층에서만 (design 결정 11)
-- [ ] 7.6 오류 봉투에 구조화 필드 추가 — 지원 포맷 목록·적용된 크기 상한을 `error` 객체 안에 **평평하게** 싣는다(기존 `fields` 관습, `error_response`의 `**extra` 경유). **중첩 `details` 객체를 만들지 않는다.** 값은 1.8의 `AppError.extra`가 나른다
+- [x] 7.5 `api/errors.py`에 **`ErrorCode` → HTTP 상태 표**(415/413/422/404/503)를 두고, 모든 `AppError`를 무조건 500으로 변환하는 현재 `handle_app_error`를 표 조회로 바꾼다. 표에 없는 코드는 500 유지 — 기존 `tests/test_errors.py`가 깨지지 않아야 한다. 변환은 여전히 이 계층에서만 (design 결정 11)
+- [x] 7.6 오류 봉투에 구조화 필드 추가 — 지원 포맷 목록·적용된 크기 상한을 `error` 객체 안에 **평평하게** 싣는다(기존 `fields` 관습, `error_response`의 `**extra` 경유). **중첩 `details` 객체를 만들지 않는다.** 값은 1.8의 `AppError.extra`가 나른다
 - [ ] 7.7 앱 팩토리에 배선 — 파서 레지스트리·임베더·벡터 스토어·문서 레지스트리를 주입 가능하게. 모듈 전역 싱글턴을 두지 않는다
 - [ ] 7.8 API 테스트 (성공 경로) — txt / md / 텍스트 레이어 있는 PDF 각각 201과 `chunk_count` ≥ 1 / 목록·상세 반영 / 저장된 청크 수가 `chunk_count`와 일치 (spec "지원 포맷의 문서는 검색 가능한 청크로 저장된다" — **PRD §5 Ingestion 경로**)
 - [ ] 7.9 API 테스트 (위치 정보) — PDF 청크의 페이지 번호가 1 이상이고 총 쪽 수 이하 / 텍스트 청크의 오프셋이 시작 < 끝이고 원문 길이 이하 / 청크 본문이 원문의 부분 문자열 (spec "모든 청크는 원문 위치를 특정하는 정보를 갖는다")

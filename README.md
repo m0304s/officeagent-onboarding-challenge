@@ -15,7 +15,8 @@ change 단위로 점진적으로 구현합니다. **아래 표에서 "구현됨"
 | 테스트 하네스 | 구현됨 |
 | 공통 오류 응답 형식, 구조화 로깅 | 구현됨 |
 | Docker Compose 한 줄 실행, 호스트 자격증명 주입 | 구현됨 |
-| 문서 수집 (ingestion) | 미구현 |
+| 문서 업로드 → 텍스트 추출 → 청킹 (`POST /documents`) | 구현됨 |
+| 청크 임베딩·벡터 저장·문서 목록/삭제 | 미구현 |
 | 벡터 검색 (retrieval) | 미구현 |
 | LLM 답변 생성, 스트리밍 | 미구현 |
 | 응답 캐싱, 캐시 무효화 | 미구현 |
@@ -66,6 +67,32 @@ curl -s http://127.0.0.1:8000/health
 }
 ```
 
+### 문서 업로드
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/documents -F "file=@sample-docs/company-policy.txt"
+```
+
+`.txt` · `.md` · `.pdf`를 받아 텍스트를 추출하고 청크로 나눕니다. 응답에는 문서 식별자와 청크 목록(본문·페이지·원문 오프셋)이 들어 있습니다.
+
+> **아직 저장되지 않습니다.** 임베딩과 벡터 저장이 미구현이라 청크는 응답으로만 돌아오고 어디에도 남지 않습니다. 그래서 응답이 `201`이 아니라 `200`이고, `index_signature`·`status` 같은 저장 관련 필드가 없습니다. 문서 목록·삭제 엔드포인트도 없습니다.
+
+거절되는 경우:
+
+| 상황 | 상태 | 코드 |
+|---|---:|---|
+| 지원하지 않는 확장자 / 확장자 없음 | 415 | `unsupported_document_format` (지원 목록 동봉) |
+| 업로드 크기 상한 초과 (기본 20 MiB, `APP_MAX_UPLOAD_BYTES`) | 413 | `document_too_large` (적용된 상한 동봉) |
+| 내용이 없거나 공백뿐 | 422 | `empty_document` |
+| 쪽은 있으나 텍스트 레이어 없음 (스캔본) | 422 | `no_extractable_text` (쪽 수 동봉) |
+| 확장자는 맞으나 내용이 그 포맷이 아님 | 422 | `document_parse_error` |
+
+```json
+{"error":{"code":"unsupported_document_format",
+          "message":"지원하지 않는 문서 포맷입니다: .docx",
+          "supported_formats":["md","pdf","txt"]}}
+```
+
 ### 오류 응답
 
 모든 오류가 같은 봉투를 씁니다. 프레임워크 기본 응답(경로 없음·메서드 불허·검증 실패)도 덮어씁니다.
@@ -85,6 +112,12 @@ JSON 한 줄로 출력되며, 요청마다 `x-request-id`가 응답 헤더로 �
 
 ```json
 {"level":"INFO","logger":"app.access","message":"요청 처리 완료","request_id":"c751a0a0...","method":"GET","path":"/health","status_code":503,"duration_ms":354.95}
+```
+
+업로드는 무엇이 어떻게 잘렸는지도 한 줄로 남깁니다. **문서 본문이나 청크 내용은 싣지 않습니다** — 로그로 새어 나가면 그 자체가 유출입니다.
+
+```json
+{"level":"INFO","logger":"app.api.routes.documents","message":"문서 추출 완료","request_id":"df09ee03...","document_id":"b166d4ad-...","document_filename":"handbook.pdf","format":"pdf","revision":"662b78b2c395","byte_size":15013,"page_count":3,"chunk_count":5}
 ```
 
 ## LLM 자격증명 동기화

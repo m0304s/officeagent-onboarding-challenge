@@ -6,10 +6,15 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
+    # multipart 업로드 파싱. FastAPI 가 선택 의존성으로 두므로 명시한다.
+    "python-multipart>=0.0.20",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "chromadb>=0.5",
     "redis>=5.2",
+    # PDF 텍스트 추출. AGPL-3.0 — 상용 배포로 가려면 pypdf(BSD) 교체가 선행되어야 한다.
+    # 교체 범위는 adapters/parsers/pdf.py 한 파일이다 (ARCHITECTURE.md "문서 파서").
+    "pymupdf>=1.24",
 ]
 
 [project.optional-dependencies]

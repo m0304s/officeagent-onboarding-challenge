@@ -40,11 +40,9 @@ class AppError(Exception):
     적용된 크기 상한처럼 소비자가 메시지 문자열을 파싱하지 않고 읽어야 하는 값.
     담기는 값은 도메인 사실뿐이라 `core/`가 HTTP 를 알게 되는 것은 아니다.
 
-    **아직 응답까지 이어지지 않았다.** 현재 `api/errors.py`의 `handle_app_error`는
-    `extra`를 읽지 않고 모든 `AppError`를 500으로 변환한다. 이 값을 봉투에 평평하게
-    싣는 배선과 `ErrorCode → HTTP 상태` 표는 API 계층 태스크(7.5·7.6)에서 함께
-    들어간다 — 둘 중 하나만 하면 415·413 이어야 할 응답이 500 인 채로 부가 정보만
-    붙는 어중간한 상태가 된다.
+    `api/errors.py`의 `handle_app_error`가 이 값을 오류 봉투에 평평하게 옮긴다. 어느
+    코드가 몇 번 상태가 되는지는 그쪽의 `ErrorCode → HTTP 상태` 표가 정한다 — 여기서
+    상태 코드를 들고 있으면 도메인이 HTTP 를 알게 된다.
     """
 
     code: ErrorCode = ErrorCode.INTERNAL_ERROR
