@@ -10,6 +10,9 @@ venv/
 # Environment
 .env
 
+# 런타임 데이터 (벡터 스토어 퍼시스턴스)
+data/
+
 # IDE
 .vscode/
 .idea/
