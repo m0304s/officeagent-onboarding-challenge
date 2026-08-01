@@ -14,7 +14,7 @@ change 단위로 점진적으로 구현합니다. **아래 표에서 "구현됨"
 | 레이어 구조, 어댑터 프로토콜, 설정 로딩 | 구현됨 |
 | 테스트 하네스 | 구현됨 |
 | 공통 오류 응답 형식, 구조화 로깅 | 구현됨 |
-| Docker / Docker Compose | 미구현 |
+| Docker Compose 한 줄 실행, 호스트 자격증명 주입 | 구현됨 |
 | 문서 수집 (ingestion) | 미구현 |
 | 벡터 검색 (retrieval) | 미구현 |
 | LLM 답변 생성, 스트리밍 | 미구현 |
@@ -24,13 +24,26 @@ change 단위로 점진적으로 구현합니다. **아래 표에서 "구현됨"
 
 ## 실행
 
-Python 3.11 이상이 필요합니다.
+```bash
+make up
+```
+
+Docker와 Docker Compose만 있으면 됩니다. API와 캐시 저장소가 함께 뜨고, 벡터 스토어는 프로세스에 내장되어 볼륨 하나로 영속화됩니다.
+
+> **`docker compose up`을 직접 쓰지 마세요.** `make up`은 컨테이너를 띄우기 전에 [자격증명 동기화](#llm-자격증명-동기화)를 먼저 수행합니다. compose를 직접 호출하면 그 단계가 통째로 생략됩니다.
+
+정지는 `make down`, 로그는 `make logs`입니다.
+
+<details>
+<summary>도커 없이 로컬에서 실행하기</summary>
+
+Python 3.11 이상이 필요합니다. 캐시 저장소가 없으면 헬스가 503을 반환하지만 서비스 자체는 뜹니다.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]" && .venv/bin/uvicorn --app-dir src --factory app.main:create_app
 ```
 
-> Docker Compose는 아직 없습니다. 이후 change에서 한 줄 실행 명령으로 대체됩니다.
+</details>
 
 기동 후 상태 확인:
 
@@ -70,6 +83,28 @@ JSON 한 줄로 출력되며, 요청마다 `x-request-id`가 응답 헤더로 �
 ```json
 {"level":"INFO","logger":"app.access","message":"요청 처리 완료","request_id":"c751a0a0...","method":"GET","path":"/health","status_code":503,"duration_ms":354.95}
 ```
+
+## LLM 자격증명 동기화
+
+`claude-code-sdk`는 HTTP 클라이언트가 아니라 **로컬 CLI를 실행**합니다. 그래서 컨테이너 안에 CLI 런타임과 인증 상태가 함께 있어야 합니다. 인증은 이미지에 굽지 않고, 호스트에 **이미 있는** 자격증명을 실행 시점에 꺼내 마운트합니다.
+
+`make up`이 `scripts/sync-credentials.sh`를 먼저 돌립니다. 이 스크립트가 하는 일은 이게 전부입니다.
+
+| 호스트 | 자격증명 위치 | 동기화 방법 |
+|--------|---------------|-------------|
+| macOS | Keychain 항목 `Claude Code-credentials` | 파일이 아니라 볼륨으로 붙일 수 없으므로 꺼내서 `.secrets/claude/.credentials.json`에 씁니다 |
+| Linux | `~/.claude/.credentials.json` | 이미 파일이므로 그대로 복사합니다 |
+
+두 포맷은 동일합니다. 결과 파일은 `0600`, 디렉터리는 `0700`이며 `.secrets/`는 형상관리에서 제외됩니다.
+
+**새 토큰을 발급하지 않습니다.** `claude setup-token`이나 `claude login`은 쓰지 않습니다 — 호스트에 이미 있는 인증 상태를 재사용하는 것이 전부입니다. 자격증명을 찾지 못해도 스크립트는 실패로 끝내지 않고, 서비스는 그대로 기동됩니다.
+
+### 주의사항
+
+- **컨테이너가 가진 것은 사본입니다.** macOS에서는 Keychain을 컨테이너와 공유할 수 없습니다. 컨테이너가 토큰을 갱신해도 그 결과는 호스트 Keychain으로 돌아가지 않습니다.
+- **호스트 CLI가 로그아웃될 수 있습니다.** 갱신 시 refresh token이 회전하는 방식이라면 호스트가 들고 있는 값이 무효가 됩니다. 그렇게 되면 호스트에서 `claude` 로그인을 다시 해야 합니다. **회전 여부는 아직 검증되지 않았습니다.** 완화책은 두 가지입니다 — access token 수명이 약 8시간이라 한 번의 실행 세션 안에서는 갱신이 잘 일어나지 않고, 기동할 때마다 재추출하므로 사본이 묵는 창이 짧습니다.
+- 자격증명은 **쓰기 가능하게(rw)** 마운트됩니다. `:ro`로 붙이면 갱신에 실패해 약 8시간 뒤 인증이 끊깁니다.
+- 호스트 UID가 1000이 아닌 리눅스에서 컨테이너가 마운트한 파일을 읽지 못하면, `docker-compose.yml`의 `user:` 줄 주석을 푸세요.
 
 ## 테스트
 
@@ -112,6 +147,8 @@ JSON 한 줄로 출력되며, 요청마다 `x-request-id`가 응답 헤더로 �
 | 린터 | ruff | 포매팅과 린팅을 한 도구로 통일. 레이어 경계도 린트 규칙으로 강제 |
 
 > `claude-code-sdk`와 sentence-transformers는 **아직 호출하는 코드가 없습니다.** 해당 change에서 도입됩니다. Chroma와 Redis는 현재 헬스 점검에만 쓰입니다.
+>
+> 이미지에는 CLI가 설치되어 있고 자격증명도 주입되지만, **컨테이너 안에서 CLI가 실제로 답변을 생성하는지는 아직 호출해 보지 않았습니다.** 검증은 QA change의 첫 태스크입니다.
 
 설계 근거는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)에 있습니다.
 

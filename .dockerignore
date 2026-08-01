@@ -1,0 +1,16 @@
+# 빌드 컨텍스트에서 제외. 특히 .secrets 는 이미지에 자격증명이 들어가는 경로다.
+.secrets/
+.venv/
+data/
+.git/
+.githooks/
+retros/
+openspec/
+docs/
+sample-docs/
+tests/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.DS_Store
