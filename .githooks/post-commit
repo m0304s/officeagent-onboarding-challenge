@@ -1,35 +1,97 @@
+#!/bin/sh
 # Retrobot post-commit hook
 # 커밋 후 AI 에이전트를 호출하여 자동 회고를 생성합니다.
+#
+# 회고 생성은 수 분이 걸리므로 반드시 백그라운드로 분리합니다.
+# 포그라운드로 실행하면 git commit이 그만큼 블로킹되어,
+# 호출자(Claude Code Bash 툴 = 120초)의 타임아웃에 잘려나갑니다.
 
 # Retrobot이 만든 커밋에서 다시 트리거되지 않도록 방지 (무한 루프 차단)
 LAST_MSG=$(git log -1 --pretty=%s 2>/dev/null)
-if echo "$LAST_MSG" | grep -q "Retrobot"; then
-    exit 0
-fi
+case "$LAST_MSG" in
+    *Retrobot*) exit 0 ;;
+esac
 
-SKILL_PATH="retrobot/SKILL.md"
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+SKILL_PATH="$REPO_ROOT/retrobot/SKILL.md"
 
 if [ ! -f "$SKILL_PATH" ]; then
     exit 0
 fi
 
-echo "🤖 Retrobot: 회고 생성 중..."
+WORK_DIR="$REPO_ROOT/.git/retrobot"
+mkdir -p "$WORK_DIR"
+RUN_LOG="$WORK_DIR/last-run.log"
 
-# Claude Code SDK 또는 Codex CLI로 스킬 실행
-if command -v claude >/dev/null 2>&1; then
-    claude -p "$(cat $SKILL_PATH)" --allowedTools 'Bash(command)' 'Read(file_path)' 'Write(file_path,content)' 'Glob(pattern)' 'Grep(pattern)' 2>/dev/null
-elif command -v codex >/dev/null 2>&1; then
-    codex --quiet "$(cat $SKILL_PATH)" 2>/dev/null
-else
-    echo "ℹ Retrobot: claude 또는 codex CLI가 설치되어 있지 않습니다. 건너뜁니다."
+# 분석 대상을 최근 24시간 로그로 제한한다.
+# 세션 로그는 단조 증가하므로(현재 수 MB), 전체를 탐색시키면 런타임도 함께 늘어난다.
+#
+# Claude Code는 프로젝트 경로의 영숫자가 아닌 모든 문자를 '-'로 치환해 디렉토리명을 만든다.
+# '/'만 치환하면 경로에 '_'나 '.'이 있을 때 어긋난다.
+ENC=$(printf '%s' "$REPO_ROOT" | sed 's/[^A-Za-z0-9]/-/g')
+LOG_SRC="$HOME/.claude/projects/$ENC"
+
+if [ ! -d "$LOG_SRC" ]; then
+    echo "ℹ Retrobot: 세션 로그 디렉토리를 찾을 수 없습니다 ($LOG_SRC). 건너뜁니다."
     exit 0
 fi
 
-# 회고 파일이 생성/변경되었으면 자동 커밋
-if [ -n "$(git status --porcelain retros/)" ]; then
-    git add retros/
-    git commit -m "docs(retro): 자동 회고 생성 by Retrobot" --no-verify
-    echo "✅ Retrobot: 회고가 커밋되었습니다."
-else
-    echo "ℹ Retrobot: 새로운 회고 없음"
+RECENT=$(find "$LOG_SRC" -name '*.jsonl' -mtime -1 2>/dev/null)
+
+if [ -z "$RECENT" ]; then
+    echo "ℹ Retrobot: 최근 24시간 내 세션 로그 없음. 건너뜁니다."
+    exit 0
 fi
+
+echo "🤖 Retrobot: 백그라운드로 회고 생성 시작 → $RUN_LOG"
+
+RETRO_ROOT="$REPO_ROOT"   ; export RETRO_ROOT
+RETRO_SKILL="$SKILL_PATH" ; export RETRO_SKILL
+RETRO_WORK="$WORK_DIR"    ; export RETRO_WORK
+RETRO_FILES="$RECENT"     ; export RETRO_FILES
+
+# stdout/stderr는 파일로, stdin은 /dev/null로 돌린다.
+# 스트림을 전부 끊어야 호출자가 이 자식 프로세스를 기다리지 않는다.
+nohup sh -c '
+    # 연속 커밋 시 중복 실행 방지 (mkdir은 원자적)
+    mkdir "$RETRO_WORK/lock" 2>/dev/null || {
+        echo "ℹ 이전 회고 생성이 아직 실행 중입니다. 건너뜁니다."
+        exit 0
+    }
+    trap "rmdir \"$RETRO_WORK/lock\" 2>/dev/null" EXIT
+
+    cd "$RETRO_ROOT" || exit 1
+
+    PROMPT="$(cat "$RETRO_SKILL")
+
+## 이번 실행 대상 (반드시 준수)
+
+아래 나열된 파일만 분석한다. 다른 로그 파일은 탐색하지 마라.
+각 파일에서 최근 24시간 엔트리만 사용한다.
+
+$RETRO_FILES"
+
+    if command -v claude >/dev/null 2>&1; then
+        # Edit 규칙이 Write를 포함한 모든 파일 편집 도구를 커버한다.
+        # Write(...) 형태의 규칙은 파일 권한 체크에 매칭되지 않아 쓰기가 차단된다.
+        claude -p "$PROMPT" \
+            --allowedTools "Bash(git:*)" "Read" "Glob" "Grep" "Edit(retros/**)" \
+            --permission-mode acceptEdits
+    elif command -v codex >/dev/null 2>&1; then
+        codex --quiet "$PROMPT"
+    else
+        echo "ℹ claude 또는 codex CLI가 설치되어 있지 않습니다. 건너뜁니다."
+        exit 0
+    fi
+
+    # 회고 파일이 생성/변경되었으면 자동 커밋
+    if [ -n "$(git status --porcelain retros/)" ]; then
+        git add retros/
+        git commit -m "docs(retro): 자동 회고 생성 by Retrobot" --no-verify
+        echo "✅ Retrobot: 회고가 커밋되었습니다."
+    else
+        echo "ℹ Retrobot: 새로운 회고 없음"
+    fi
+' >"$RUN_LOG" 2>&1 </dev/null &
+
+exit 0

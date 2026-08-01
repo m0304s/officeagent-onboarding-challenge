@@ -13,7 +13,7 @@
 
 현재 프로젝트의 AI 에이전트 작업 로그를 찾는다.
 
-- **Claude Code:** `~/.claude/projects/` 아래에서 현재 프로젝트 경로(`git rev-parse --show-toplevel`)에 매핑되는 디렉토리를 찾는다. 경로 구분자 `/`가 `-`로 인코딩되어 있다. (예: `/Users/foo/my-project` → `-Users-foo-my-project`)
+- **Claude Code:** `~/.claude/projects/` 아래에서 현재 프로젝트 경로(`git rev-parse --show-toplevel`)에 매핑되는 디렉토리를 찾는다. 경로의 **영숫자가 아닌 모든 문자**가 `-`로 인코딩되어 있다 — `/`뿐 아니라 `_`, `.`도 포함된다. (예: `/Users/foo/my_project` → `-Users-foo-my-project`)
 - **Codex:** `~/.codex/` 아래 유사한 구조를 탐색한다.
 - 로그 파일은 `*.jsonl` 형식이다.
 
