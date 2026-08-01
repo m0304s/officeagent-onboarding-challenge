@@ -67,8 +67,8 @@
 
 ## 7. 마무리 검증
 
-- [ ] 7.1 깨끗한 체크아웃에서 문서에 적힌 실행 명령을 그대로 1회 수행해 재현 확인
-- [ ] 7.2 외부 서비스·자격증명 없이 테스트 한 줄 명령이 통과하는지 확인
-- [ ] 7.3 `README.md`·`ARCHITECTURE.md`에 적힌 내용 중 이 change에서 구현되지 않은 것이 없는지 대조 — 미구현을 구현했다고 적으면 불합격
-- [ ] 7.4 이 change가 다음 change로 넘긴 미검증 항목을 한곳에 적어둔다 — 컨테이너 안에서 LLM CLI가 실제로 동작하는지, 마운트한 자격증명을 CLI가 읽는지, refresh token이 회전하는지. QA change의 첫 태스크가 될 스파이크 목록이며, 적어두지 않으면 조용히 사라진다
-- [ ] 7.5 `openspec validate bootstrap-runtime-skeleton --strict` 통과 확인
+- [x] 7.1 깨끗한 체크아웃에서 문서에 적힌 실행 명령을 그대로 1회 수행해 재현 확인
+- [x] 7.2 외부 서비스·자격증명 없이 테스트 한 줄 명령이 통과하는지 확인
+- [x] 7.3 `README.md`·`ARCHITECTURE.md`에 적힌 내용 중 이 change에서 구현되지 않은 것이 없는지 대조 — 미구현을 구현했다고 적으면 불합격
+- [x] 7.4 이 change가 다음 change로 넘긴 미검증 항목을 한곳에 적어둔다 — 컨테이너 안에서 LLM CLI가 실제로 동작하는지, 마운트한 자격증명을 CLI가 읽는지, refresh token이 회전하는지. QA change의 첫 태스크가 될 스파이크 목록이며, 적어두지 않으면 조용히 사라진다
+- [x] 7.5 `openspec validate bootstrap-runtime-skeleton --strict` 통과 확인

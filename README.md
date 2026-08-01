@@ -40,8 +40,11 @@ Docker와 Docker Compose만 있으면 됩니다. API와 캐시 저장소가 함�
 Python 3.11 이상이 필요합니다. 캐시 저장소가 없으면 헬스가 503을 반환하지만 서비스 자체는 뜹니다.
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]" && .venv/bin/uvicorn --app-dir src --factory app.main:create_app
+make test          # 가상환경 생성 + 의존성 설치 (테스트까지 1회 실행)
+.venv/bin/uvicorn --app-dir src --factory app.main:create_app
 ```
+
+> macOS의 시스템 `python3`는 3.9라 그대로 쓰면 설치가 실패합니다. `make`가 3.11 이상인 인터프리터를 골라 가상환경을 만듭니다.
 
 </details>
 
@@ -109,15 +112,17 @@ JSON 한 줄로 출력되며, 요청마다 `x-request-id`가 응답 헤더로 �
 ## 테스트
 
 ```bash
-.venv/bin/pytest
+make test
 ```
 
-외부 서비스나 자격증명 없이 통과합니다. 의존성 상태는 프로브 대역을 주입해 결정론적으로 구성합니다 — 실제 컨테이너를 죽여가며 상태를 만들면 느리고 불안정하기 때문입니다.
+깨끗한 체크아웃에서 이 한 줄이면 됩니다 — 가상환경이 없으면 만들고 의존성을 설치한 뒤 실행합니다. Docker도, 실행 중인 서비스도, 자격증명도 필요 없습니다.
+
+의존성 상태는 프로브 대역을 주입해 결정론적으로 구성합니다. 실제 컨테이너를 죽여가며 상태를 만들면 느리고 불안정하기 때문입니다.
 
 린트·포맷:
 
 ```bash
-.venv/bin/ruff check . && .venv/bin/ruff format --check .
+make lint
 ```
 
 ## 설정
@@ -148,7 +153,7 @@ JSON 한 줄로 출력되며, 요청마다 `x-request-id`가 응답 헤더로 �
 
 > `claude-code-sdk`와 sentence-transformers는 **아직 호출하는 코드가 없습니다.** 해당 change에서 도입됩니다. Chroma와 Redis는 현재 헬스 점검에만 쓰입니다.
 >
-> 이미지에는 CLI가 설치되어 있고 자격증명도 주입되지만, **컨테이너 안에서 CLI가 실제로 답변을 생성하는지는 아직 호출해 보지 않았습니다.** 검증은 QA change의 첫 태스크입니다.
+> 이미지에는 CLI가 설치되어 있고 자격증명도 주입되지만, **컨테이너 안에서 CLI가 실제로 답변을 생성하는지는 아직 호출해 보지 않았습니다.** 이런 미검증 가정은 [`docs/SPIKES.md`](./docs/SPIKES.md)에 모아 두었고, 각각 다음 change의 첫 태스크가 됩니다.
 
 설계 근거는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)에 있습니다.
 
