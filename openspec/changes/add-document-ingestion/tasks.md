@@ -1,28 +1,28 @@
 ## 1. 설정과 도메인 값 객체
 
-- [ ] 1.1 설정 항목 추가 — 임베딩 모델 이름, **분할 전략**(`chunk_strategy`, 기본 `recursive`), 청크 크기·겹침, **임베딩 배치 크기**(기본 64), 업로드 크기 상한, 레지스트리 경로, 수집 동시성 상한. 전부 기본값을 두어 "설정 없이 기동된다"는 기존 요구사항을 깨지 않는다. **`index_signature`는 설정 항목이 아니다** — 유도값이다 (design 결정 6)
-- [ ] 1.2 설정 테스트 — 새 항목 없이도 기동되고 전략이 `recursive`인지 / 무효값(음수 청크 크기, 겹침 ≥ 청크 크기, 배치 크기 0)이면 기동에 실패하는지 / **구현되지 않은 전략 값이면 기동에 실패하고 오류 메시지에 받아들여지는 값 목록이 나오는지** (spec "구현되지 않은 전략 값은 기동을 막는다")
-- [ ] 1.3 `core/documents.py` — `Document`·`Chunk`·`ChunkLocation` 값 객체. **dataclass + 표준 라이브러리만** 사용한다. `core/`는 pydantic도 금지돼 있다
-- [ ] 1.4 `document_id`·`revision` 유도 규칙 구현 — 파일명 정규화(경로 제거 → NFC → 소문자) 후 uuid5, 원본 바이트 sha256 (design 결정 6)
-- [ ] 1.5 유도 규칙 테스트 — 같은 파일명은 같은 id / 대소문자·NFD·NFC 차이가 같은 id / 파일명이 다르면 다른 id / 내용 1바이트 차이가 다른 revision (spec "문서 식별자는 파일명에서, 리비전은 내용에서 결정된다")
-- [ ] 1.6 `index_signature` 유도 규칙 구현 — `core/documents.py`의 순수 함수. 재료는 임베더 `signature` + 전략 이름 + `CHUNK_STRATEGY_VERSION` + 청크 크기 + 겹침. 정규 문자열로 이어 붙여 sha256 후 앞 16자 (design 결정 6)
-- [ ] 1.7 `index_signature` 테스트 — 재료가 같으면 같은 값 / 재료 하나씩 바꿀 때마다 값이 달라짐(모델 식별자·차원·정규화·접두사 규약·전략 이름·전략 버전·크기·겹침 각각) / **문서 내용과 파일명이 달라도 값이 같음** / **배치 크기·업로드 상한·동시성 상한은 재료가 아님** (spec "색인 서명은 저장 시점의 색인 구성에서 결정된다")
-- [ ] 1.8 `core/exceptions.py`에 도메인 예외 추가 — `UnsupportedDocumentFormat`·`DocumentTooLarge`·`EmptyDocument`·`NoExtractableText`·`DocumentParseError`·`DocumentNotFound`·`StorageUnavailable`. 아울러 `AppError`에 **선택적 `extra` 매핑**을 추가한다(지원 포맷 목록·크기 상한을 오류 응답까지 나르는 통로, design 결정 11). `ErrorCode`에는 항목을 **추가만** 하고 기존 값을 바꾸지 않는다
-- [ ] 1.9 `src/app/core/.ruff.toml`의 금지 목록에 PDF 파서·임베딩 라이브러리 추가 — `core/`가 새 어댑터 의존성을 import 하지 못하게 한다. **자식 `banned-api` 테이블은 부모를 대체하므로** 기존 항목(`os.environ`·`os.getenv`·`fastapi`·`pydantic`·…)을 그대로 다시 나열해야 한다. 규칙을 컨벤션이 아니라 도구로 강제한다는 기존 방침의 연장
+- [x] 1.1 설정 항목 추가 — 임베딩 모델 이름, **분할 전략**(`chunk_strategy`, 기본 `recursive`), 청크 크기·겹침, **임베딩 배치 크기**(기본 64), 업로드 크기 상한, 레지스트리 경로, 수집 동시성 상한. 전부 기본값을 두어 "설정 없이 기동된다"는 기존 요구사항을 깨지 않는다. **`index_signature`는 설정 항목이 아니다** — 유도값이다 (design 결정 6)
+- [x] 1.2 설정 테스트 — 새 항목 없이도 기동되고 전략이 `recursive`인지 / 무효값(음수 청크 크기, 겹침 ≥ 청크 크기, 배치 크기 0)이면 기동에 실패하는지 / **구현되지 않은 전략 값이면 기동에 실패하고 오류 메시지에 받아들여지는 값 목록이 나오는지** (spec "구현되지 않은 전략 값은 기동을 막는다")
+- [x] 1.3 `core/documents.py` — `Document`·`Chunk`·`ChunkLocation` 값 객체. **dataclass + 표준 라이브러리만** 사용한다. `core/`는 pydantic도 금지돼 있다
+- [x] 1.4 `document_id`·`revision` 유도 규칙 구현 — 파일명 정규화(경로 제거 → NFC → 소문자) 후 uuid5, 원본 바이트 sha256 (design 결정 6)
+- [x] 1.5 유도 규칙 테스트 — 같은 파일명은 같은 id / 대소문자·NFD·NFC 차이가 같은 id / 파일명이 다르면 다른 id / 내용 1바이트 차이가 다른 revision (spec "문서 식별자는 파일명에서, 리비전은 내용에서 결정된다")
+- [x] 1.6 `index_signature` 유도 규칙 구현 — `core/documents.py`의 순수 함수. 재료는 임베더 `signature` + 전략 이름 + `CHUNK_STRATEGY_VERSION` + 청크 크기 + 겹침. 정규 문자열로 이어 붙여 sha256 후 앞 16자 (design 결정 6)
+- [x] 1.7 `index_signature` 테스트 — 재료가 같으면 같은 값 / 재료 하나씩 바꿀 때마다 값이 달라짐(모델 식별자·차원·정규화·접두사 규약·전략 이름·전략 버전·크기·겹침 각각) / **문서 내용과 파일명이 달라도 값이 같음** / **배치 크기·업로드 상한·동시성 상한은 재료가 아님** (spec "색인 서명은 저장 시점의 색인 구성에서 결정된다")
+- [x] 1.8 `core/exceptions.py`에 도메인 예외 추가 — `UnsupportedDocumentFormat`·`DocumentTooLarge`·`EmptyDocument`·`NoExtractableText`·`DocumentParseError`·`DocumentNotFound`·`StorageUnavailable`. 아울러 `AppError`에 **선택적 `extra` 매핑**을 추가한다(지원 포맷 목록·크기 상한을 오류 응답까지 나르는 통로, design 결정 11). `ErrorCode`에는 항목을 **추가만** 하고 기존 값을 바꾸지 않는다
+- [x] 1.9 `src/app/core/.ruff.toml`의 금지 목록에 PDF 파서·임베딩 라이브러리 추가 — `core/`가 새 어댑터 의존성을 import 하지 못하게 한다. **자식 `banned-api` 테이블은 부모를 대체하므로** 기존 항목(`os.environ`·`os.getenv`·`fastapi`·`pydantic`·…)을 그대로 다시 나열해야 한다. 규칙을 컨벤션이 아니라 도구로 강제한다는 기존 방침의 연장
 
 ## 2. 청킹 (core, 순수 함수)
 
-- [ ] 2.1 전략 레지스트리 — `(전략 이름) → 분할 함수` 매핑과 `CHUNK_STRATEGY_VERSION` 상수를 `core/chunking.py`에 둔다. 함수 시그니처는 `(segments, size, overlap) -> tuple[Chunk, ...]`로 통일한다. **등록된 전략은 `recursive` 하나이며**, 미등록 이름은 기동 시 실패한다. 상수 옆에 "경계가 바뀌는 수정을 하면 이 값을 올린다"를 주석으로 남긴다 (design 결정 2·6)
-- [ ] 2.2 `recursive` 전략 구현 — 구분자 우선순위 재귀 분할: 문단 → 줄 → 한국어 문장 종결 → 영어 문장 종결 → 공백 → 문자 (design 결정 2)
-- [ ] 2.3 겹침 처리 — 인접 청크가 원문 구간에서 겹치도록. 겹침이 청크 크기 이상이면 무한 루프가 되므로 방어
-- [ ] 2.4 세그먼트 단위 분할 — 청크가 세그먼트(= PDF 쪽) 경계를 넘지 않게 한다. 넘으면 페이지 출처가 모호해진다
-- [ ] 2.5 재분할 함수 — 이미 만들어진 청크를 더 작게 쪼갠다 (6.4 토큰 가드가 호출)
-- [ ] 2.6 청킹 테스트 — 상한보다 짧은 문서는 청크 1개이고 본문이 원문(앞뒤 공백 제거)과 같음 / 긴 문서는 2개 이상이고 모든 청크가 상한 이하 / 인접 청크의 원문 구간이 겹침 / **원문의 모든 비공백 문자가 어느 청크엔가 포함됨** / 공백 없는 긴 토큰도 상한을 지킴 (spec "청크는 설정된 크기 상한을 넘지 않고 인접 청크는 겹친다")
-- [ ] 2.7 `ARCHITECTURE.md`에 청킹 전략 기록 — 전략을 설정 선택지로 둔 이유와 **이번에 구현한 것은 `recursive` 하나뿐이라는 사실**(부모-자식은 retrieval 이후로 미룬 이유와 붙일 자리까지. "지원"으로 적지 않는다), 구분자 우선순위, 기본값(600자/100자)의 근거, 페이지 경계를 넘지 않는 이유, 기각한 대안(고정 길이·문장 단위·시맨틱 청킹), `CHUNK_STRATEGY_VERSION`을 손으로 올려야 한다는 규율. **구현 직후에 적는다**
+- [x] 2.1 전략 레지스트리 — `(전략 이름) → 분할 함수` 매핑과 `CHUNK_STRATEGY_VERSION` 상수를 `core/chunking.py`에 둔다. 함수 시그니처는 `(segments, size, overlap) -> tuple[TextChunk, ...]`로 통일한다(정체성은 `identify_chunks`가 나중에 붙인다). **등록된 전략은 `recursive` 하나이며**, 미등록 이름은 기동 시 실패한다. 상수 옆에 "경계가 바뀌는 수정을 하면 이 값을 올린다"를 주석으로 남긴다 (design 결정 2·6)
+- [x] 2.2 `recursive` 전략 구현 — 구분자 우선순위 재귀 분할: 문단 → 줄 → 한국어 문장 종결 → 영어 문장 종결 → 공백 → 문자 (design 결정 2)
+- [x] 2.3 겹침 처리 — 인접 청크가 원문 구간에서 겹치도록. 겹침이 청크 크기 이상이면 무한 루프가 되므로 방어
+- [x] 2.4 세그먼트 단위 분할 — 청크가 세그먼트(= PDF 쪽) 경계를 넘지 않게 한다. 넘으면 페이지 출처가 모호해진다
+- [x] 2.5 재분할 함수 — 이미 만들어진 청크를 더 작게 쪼갠다 (6.4 토큰 가드가 호출)
+- [x] 2.6 청킹 테스트 — 상한보다 짧은 문서는 청크 1개이고 본문이 원문(앞뒤 공백 제거)과 같음 / 긴 문서는 2개 이상이고 모든 청크가 상한 이하 / 인접 청크의 원문 구간이 겹침 / **원문의 모든 비공백 문자가 어느 청크엔가 포함됨** / 공백 없는 긴 토큰도 상한을 지킴 (spec "청크는 설정된 크기 상한을 넘지 않고 인접 청크는 겹친다")
+- [x] 2.7 `ARCHITECTURE.md`에 청킹 전략 기록 — 전략을 설정 선택지로 둔 이유와 **이번에 구현한 것은 `recursive` 하나뿐이라는 사실**(부모-자식은 retrieval 이후로 미룬 이유와 붙일 자리까지. "지원"으로 적지 않는다), 구분자 우선순위, 기본값(600자/100자)의 근거, 페이지 경계를 넘지 않는 이유, 기각한 대안(고정 길이·문장 단위·시맨틱 청킹), `CHUNK_STRATEGY_VERSION`을 손으로 올려야 한다는 규율. **구현 직후에 적는다**
 
 ## 3. 파서 어댑터
 
-- [ ] 3.1 `adapters/protocols.py`에 `DocumentParser` 프로토콜과 `TextSegment`·`ExtractedDocument` 정의 — **동기** `parse(bytes)`, 세그먼트 목록 반환, `page_count` 포함 (design 결정 3)
+- [ ] 3.1 `adapters/protocols.py`에 `DocumentParser` 프로토콜 정의 — **동기** `parse(bytes)`, 세그먼트 목록 반환, `page_count` 포함 (design 결정 3). `TextSegment`는 2.1에서 이미 `core/documents.py`에 있다(청킹이 소비하므로 core 에 있어야 계층이 역전되지 않는다). `ExtractedDocument`도 같은 이유로 `core/documents.py`에 둔다
 - [ ] 3.2 텍스트 파서 구현 (`.txt`·`.md`) — 인코딩 판별과 디코딩 실패 처리. 문서 전체를 세그먼트 1개로 반환
 - [ ] 3.3 PDF 파서 구현 (PyMuPDF) — 쪽 단위 세그먼트, `page_count` 설정. 라이브러리 예외를 `DocumentParseError`로 바꿔 던진다 (라우터로 새지 않게)
 - [ ] 3.4 파서 레지스트리 — 확장자 → 파서 매핑. 미등록 확장자와 확장자 없음은 `UnsupportedDocumentFormat`

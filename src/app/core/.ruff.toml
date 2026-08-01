@@ -15,3 +15,11 @@ extend = "../../../pyproject.toml"
 "chromadb".msg = "core/ 는 어댑터 구현을 모른다"
 "redis".msg = "core/ 는 어댑터 구현을 모른다"
 "httpx".msg = "core/ 는 I/O 를 하지 않는다"
+# 문서 수집이 들여오는 어댑터 의존성. 청킹과 식별자 유도가 core/ 에 있는 것은
+# 순수 연산이라 이 규칙을 지킬 수 있기 때문이고, 토큰 계산이 어댑터에 있는 것은
+# 지킬 수 없기 때문이다.
+"fitz".msg = "PDF 파싱은 adapters/parsers 의 관심사다"
+"pymupdf".msg = "PDF 파싱은 adapters/parsers 의 관심사다"
+"sentence_transformers".msg = "임베딩은 adapters/embedding 의 관심사다"
+"torch".msg = "임베딩 런타임은 adapters/embedding 의 관심사다"
+"numpy".msg = "core/ 는 표준 라이브러리만 쓴다"

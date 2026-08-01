@@ -9,6 +9,7 @@ import os
 import pytest
 
 from app.config import Settings, get_settings
+from app.core.chunking import ChunkStrategy
 from app.core.exceptions import ConfigurationError
 
 
@@ -26,6 +27,14 @@ def test_boots_with_no_configuration_at_all(monkeypatch, tmp_path):
     assert settings.cache_url
     assert settings.probe_timeout_seconds > 0
     assert settings.health_total_timeout_seconds > 0
+
+    # 수집 설정도 기본값만으로 성립해야 한다.
+    assert settings.chunk_strategy is ChunkStrategy.RECURSIVE
+    assert settings.chunk_size > settings.chunk_overlap >= 0
+    assert settings.embedding_batch_size > 0
+    assert settings.max_upload_bytes > 0
+    assert settings.ingestion_concurrency > 0
+    assert settings.embedding_model
     get_settings.cache_clear()
 
 
@@ -58,3 +67,63 @@ def test_settings_can_be_constructed_directly_for_tests():
     """테스트가 환경과 무관하게 설정을 구성할 수 있어야 한다."""
     settings = Settings(probe_timeout_seconds=1.5)
     assert settings.probe_timeout_seconds == 1.5
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "expected_field"),
+    [
+        ("APP_CHUNK_SIZE", "-1", "chunk_size"),
+        ("APP_CHUNK_OVERLAP", "0", "chunk_overlap"),
+        ("APP_EMBEDDING_BATCH_SIZE", "0", "embedding_batch_size"),
+        ("APP_MAX_UPLOAD_BYTES", "0", "max_upload_bytes"),
+        ("APP_INGESTION_CONCURRENCY", "0", "ingestion_concurrency"),
+    ],
+)
+def test_invalid_ingestion_values_fail_startup(
+    monkeypatch, tmp_path, variable, value, expected_field
+):
+    """수집 설정도 무효값이면 조용히 기본값으로 흘러가지 않고 기동을 멈춘다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(variable, value)
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    assert expected_field in str(exc_info.value)
+
+
+def test_overlap_not_smaller_than_chunk_size_fails_startup(monkeypatch, tmp_path):
+    """겹침이 청크 크기 이상이면 분할이 전진하지 않는다 — 기동 단계에서 막는다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_CHUNK_SIZE", "200")
+    monkeypatch.setenv("APP_CHUNK_OVERLAP", "200")
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "chunk_overlap" in message and "chunk_size" in message
+
+
+def test_unimplemented_chunk_strategy_fails_startup(monkeypatch, tmp_path):
+    """구현되지 않은 전략을 설정으로 고를 수 없어야 한다.
+
+    고를 수 있게 두면 "설정에 있으니 지원한다"는 허위 기재가 된다. 오류 메시지에는
+    실제로 받아들여지는 값 목록이 나와야 무엇을 넣어야 하는지 알 수 있다.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_CHUNK_STRATEGY", "parent-child")  # 아직 구현되지 않았다
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "chunk_strategy" in message
+    for implemented in ChunkStrategy:
+        assert implemented.value in message, "받아들여지는 값 목록이 드러나야 한다"

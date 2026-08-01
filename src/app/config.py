@@ -7,9 +7,10 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.chunking import ChunkStrategy
 from app.core.exceptions import ConfigurationError
 
 
@@ -34,6 +35,45 @@ class Settings(BaseSettings):
     # 나머지 결과는 나와야 어느 의존성이 문제인지 식별할 수 있다.
     probe_timeout_seconds: float = Field(default=2.0, gt=0)
     health_total_timeout_seconds: float = Field(default=5.0, gt=0)
+
+    # ── 문서 수집 ──────────────────────────────────────────────────────
+    # 문서 레지스트리 ("지금 유효한 리비전이 무엇인가"의 단일 답). 표준 라이브러리
+    # SQLite 파일이라 컨테이너가 늘지 않는다. 벡터 스토어와 같은 볼륨에 둔다.
+    registry_path: Path = Path("./data/registry.sqlite3")
+
+    # 다국어 모델을 쓴다. 샘플 문서가 한국어라 영어 전용 모델은 검색이 동작하지 않고,
+    # 입력 창이 좁은 모델(128 토큰)은 청크 뒷부분이 조용히 잘린다.
+    embedding_model: str = "intfloat/multilingual-e5-small"
+
+    # 청킹. 크기는 문자 기준이다 — 토큰 기준으로 하면 core/ 가 토크나이저를,
+    # 즉 임베딩 라이브러리를 알아야 해서 계층 규칙을 어기게 된다.
+    chunk_strategy: ChunkStrategy = ChunkStrategy.RECURSIVE
+    chunk_size: int = Field(default=600, gt=0)
+    # 겹침은 0 을 허용하지 않는다. 인접 청크가 겹치지 않으면 문단 경계에 걸친 문장이
+    # 양쪽 청크 어디에서도 온전히 읽히지 않는다 — 스펙이 요구하는 성질이 설정 하나로
+    # 깨지는 자리라, 설정 단계에서 막는다.
+    chunk_overlap: int = Field(default=100, gt=0)
+
+    # 임베딩·저장을 이 크기로 끊어 배치 사이에 이벤트 루프에 양보한다. 메모리가
+    # 문서 크기가 아니라 배치 크기에 비례하게 만드는 값이다.
+    embedding_batch_size: int = Field(default=64, gt=0)
+
+    # 업로드 크기 상한. 본문을 읽으면서 누적 바이트로 강제한다.
+    max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
+
+    # 동시 수집 상한. 상한에 걸린 요청은 실패하지 않고 대기한다.
+    # 같은 문서의 직렬화는 이것이 아니라 document_id 단위 잠금이 담당한다.
+    ingestion_concurrency: int = Field(default=2, gt=0)
+
+    @model_validator(mode="after")
+    def _overlap_must_be_smaller_than_chunk(self) -> "Settings":
+        """겹침이 청크 크기 이상이면 분할이 진행되지 않는다 — 무한 루프가 된다."""
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError(
+                f"chunk_overlap({self.chunk_overlap}) 은 "
+                f"chunk_size({self.chunk_size}) 보다 작아야 합니다"
+            )
+        return self
 
 
 @lru_cache
