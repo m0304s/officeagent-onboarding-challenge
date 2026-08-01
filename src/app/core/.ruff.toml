@@ -1,0 +1,17 @@
+# core/ 는 도메인 계층이다. 프레임워크와 외부 라이브러리를 import 하지 않는다.
+#
+# 이 규칙 하나가 레이어 역전을 실제로 막는다. 컨벤션 문서가 아니라 import 그래프로
+# 강제되므로 어겼을 때 눈에 띈다. ruff 는 린트 대상 파일에서 가장 가까운 설정을 쓰므로,
+# 이 파일은 core/ 아래에만 적용된다.
+extend = "../../../pyproject.toml"
+
+[lint.flake8-tidy-imports.banned-api]
+# 자식 설정의 banned-api 테이블은 부모 것을 대체하므로, 전역 금지 항목도 다시 적는다.
+"os.environ".msg = "환경변수는 app.config.Settings 를 통해서만 읽는다"
+"os.getenv".msg = "환경변수는 app.config.Settings 를 통해서만 읽는다"
+"fastapi".msg = "core/ 는 웹 프레임워크에 의존하지 않는다"
+"pydantic".msg = "core/ 는 표준 라이브러리만 쓴다 (dataclasses/enum)"
+"pydantic_settings".msg = "설정은 app.config 의 관심사다"
+"chromadb".msg = "core/ 는 어댑터 구현을 모른다"
+"redis".msg = "core/ 는 어댑터 구현을 모른다"
+"httpx".msg = "core/ 는 I/O 를 하지 않는다"

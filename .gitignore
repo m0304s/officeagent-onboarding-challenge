@@ -10,6 +10,12 @@ venv/
 # Environment
 .env
 
+# 호스트에서 꺼내온 자격증명 사본. 절대 커밋하지 않는다.
+.secrets/
+
+# 런타임 데이터 (벡터 스토어 퍼시스턴스)
+data/
+
 # IDE
 .vscode/
 .idea/

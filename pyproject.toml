@@ -1,0 +1,55 @@
+[project]
+name = "document-qa-api"
+version = "0.1.0"
+description = "문서 근거 기반 답변을 생성하는 RAG Document Q&A API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "chromadb>=0.5",
+    "redis>=5.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]
+
+# ── ruff ────────────────────────────────────────────────────────────────
+[tool.ruff]
+src = ["src"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "TID"]
+
+# 설정은 app.config 를 단일 창구로 삼는다 (design 결정 8).
+# 여기를 우회한 직접 조회를 린트로 막는다 — 컨벤션이 아니라 도구로 강제.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"os.environ".msg = "환경변수는 app.config.Settings 를 통해서만 읽는다"
+"os.getenv".msg = "환경변수는 app.config.Settings 를 통해서만 읽는다"
+
+[tool.ruff.lint.per-file-ignores]
+# config.py 가 유일하게 환경을 직접 읽는 곳이다.
+"src/app/config.py" = ["TID251"]
+# 테스트는 환경을 조작해 설정 로딩 자체를 검증해야 한다.
+"tests/*" = ["TID251"]
+
+# ── pytest ──────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
