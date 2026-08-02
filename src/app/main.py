@@ -33,7 +33,7 @@ from app.adapters.registry import SqliteDocumentRegistry
 from app.adapters.vector_store import ChromaVectorStore, VectorStoreProbe, collection_for
 from app.api.errors import register_error_handlers
 from app.api.logging import RequestLoggingMiddleware, configure_logging
-from app.api.routes import documents, health
+from app.api.routes import documents, health, search
 from app.config import Settings, get_settings
 from app.core.chunking import CHUNK_STRATEGY_VERSION
 from app.core.documents import derive_index_signature
@@ -185,4 +185,5 @@ def create_app(
     )
     app.include_router(health.router)
     app.include_router(documents.router)
+    app.include_router(search.router)
     return app
