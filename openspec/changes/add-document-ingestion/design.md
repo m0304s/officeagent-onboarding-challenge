@@ -314,6 +314,8 @@ metadata = document_id, revision, index_signature, filename, format, chunk_index
 
 `anyio.to_thread.run_sync`를 쓴다. FastAPI가 이미 anyio 위에서 돌고 있어 새 의존성이 아니다.
 
+> **구현 중 조정**: 오프로드는 `asyncio.to_thread`, 동시성 상한은 `anyio.CapacityLimiter` 로 갈렸다. `asyncio.to_thread` 는 리미터를 인자로 받지 않으므로 둘을 한 라이브러리로 맞추려면 `anyio.to_thread.run_sync(..., limiter=...)` 로 통일해야 하는데, 그러면 **상한이 스레드 수에 걸린다.** 우리가 제한하려는 것은 스레드가 아니라 **수집 유스케이스의 동시 실행 수**다 — 수집 한 건은 파싱 한 번과 배치 수만큼의 인코딩·쓰기로 스레드를 여러 번 빌린다. 그래서 리미터는 `IngestionService.ingest` 전체를 감싸는 자리에 두고, 개별 오프로드는 표준 라이브러리를 그대로 쓴다. 리미터를 앱 팩토리(동기 함수)에서 만들어야 하는 제약도 확인했다 — `anyio.CapacityLimiter` 는 이벤트 루프 밖에서도 생성된다.
+
 **동시 실행에 상한을 건다.** 무제한이면 업로드 여러 건이 동시에 들어올 때 스레드가 무한정 늘고, 각 스레드가 임베딩 모델을 돌려 CPU가 포화된다. `CapacityLimiter`로 수집 동시성을 제한한다(기본 2, 설정 항목). 상한에 걸린 요청은 실패하지 않고 대기한다.
 
 **임베딩과 저장은 배치 단위로 진행한다.** 청크 전체를 한 번에 임베딩에 넘기지 않고 `embedding_batch_size`(기본 64, 설정 항목)씩 끊어 인코딩하고, 배치가 끝날 때마다 벡터 스토어에 쓴 뒤 이벤트 루프에 양보한다.

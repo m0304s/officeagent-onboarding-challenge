@@ -12,6 +12,8 @@ dependencies = [
     "pydantic-settings>=2.6",
     "chromadb>=0.5",
     "redis>=5.2",
+    # 로컬 임베딩. torch 를 끌고 오므로 이미지에서는 CPU 전용 휠로 설치한다.
+    "sentence-transformers>=3.0",
     # PDF 텍스트 추출. AGPL-3.0 — 상용 배포로 가려면 pypdf(BSD) 교체가 선행되어야 한다.
     # 교체 범위는 adapters/parsers/pdf.py 한 파일이다 (ARCHITECTURE.md "문서 파서").
     "pymupdf>=1.24",
@@ -37,6 +39,9 @@ packages = ["src/app"]
 src = ["src"]
 line-length = 100
 target-version = "py311"
+# 계획 산출물은 소스가 아니다. ruff 가 마크다운 안의 예시 코드 블록까지 포매팅하면
+# 설계 문서가 린터의 취향대로 바뀐다.
+extend-exclude = ["openspec"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "TID"]

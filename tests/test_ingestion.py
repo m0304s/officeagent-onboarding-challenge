@@ -1,40 +1,24 @@
 """수집 서비스 — 추출·분할 구간.
 
-임베딩·저장은 아직 붙어 있지 않다. 여기서 고정하는 것은 세 가지다. 포맷 판정이
-레지스트리를 통해 이뤄지는지, 파싱이 이벤트 루프를 막지 않는지, 그리고 "내용이 없다"의
-세 갈래(미지원 · 빈 문서 · 텍스트 레이어 없음)가 서로 다른 예외로 갈라지는지.
+저장까지 이어지는 경로는 `test_ingestion_pipeline.py` 가 덮는다. 여기서 고정하는 것은
+저장소를 건드리기 **전** 구간의 세 가지다. 포맷 판정이 레지스트리를 통해 이뤄지는지,
+파싱이 이벤트 루프를 막지 않는지, 그리고 "내용이 없다"의 세 갈래(미지원 · 빈 문서 ·
+텍스트 레이어 없음)가 서로 다른 예외로 갈라지는지.
 """
 
 import asyncio
-import time
 
 import pytest
 
-from app.adapters.parsers import ParserRegistry, default_parsers
-from app.core.chunking import ChunkStrategy
-from app.core.documents import DocumentFormat, ExtractedDocument, TextSegment
+from app.core.documents import DocumentFormat
 from app.core.exceptions import (
     EmptyDocument,
     NoExtractableText,
     UnsupportedDocumentFormat,
 )
-from app.services.ingestion import IngestionService
+from tests.ingestion_harness import LONG_KOREAN, make_service
 from tests.pdf_fixtures import BLANK_PAGE, make_pdf
-
-LONG_KOREAN = (
-    "사내 복리후생 안내\n\n"
-    + "교육비는 연 200만원까지 지원합니다. 신청은 인사팀에 합니다. " * 30
-)
-
-
-def make_service(parsers=None, *, size: int = 200, overlap: int = 40) -> IngestionService:
-    return IngestionService(
-        ParserRegistry(parsers if parsers is not None else default_parsers()),
-        chunk_strategy=ChunkStrategy.RECURSIVE,
-        chunk_size=size,
-        chunk_overlap=overlap,
-    )
-
+from tests.stubs import StubParser
 
 # ── 성공 경로 ────────────────────────────────────────────────────────────
 
@@ -141,15 +125,7 @@ async def test_parsing_does_not_block_the_event_loop():
     느린 파서를 주입하고, 그동안 다른 코루틴이 실제로 진행하는지를 본다.
     """
     delay = 0.2
-
-    class SlowParser:
-        formats = frozenset({DocumentFormat.TXT})
-
-        def parse(self, data: bytes) -> ExtractedDocument:
-            time.sleep(delay)  # 블로킹. 스레드풀이 아니면 루프가 멈춘다
-            return ExtractedDocument(segments=(TextSegment(text="본문"),))
-
-    service = make_service([SlowParser()])
+    service = make_service(parsers=[StubParser(delay=delay)])
     ticks = 0
 
     async def tick() -> None:

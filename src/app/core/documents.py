@@ -223,6 +223,20 @@ class Chunk:
 
 
 @dataclass(frozen=True)
+class StoredIndexVersion:
+    """벡터 스토어에 실제로 청크가 들어 있는 `(문서, 리비전, 서명)` 조합 하나.
+
+    레지스트리가 "지금 유효한 것"을 말한다면 이것은 "지금 남아 있는 것"을 말한다.
+    둘이 어긋나는 경우가 기동 정리의 대상이다 — 되돌리기가 닿지 못한 잔여 청크와,
+    색인 구성이 바뀌어 의미 공간이 달라진 청크.
+    """
+
+    document_id: str
+    revision: str
+    index_signature: str
+
+
+@dataclass(frozen=True)
 class Document:
     """레지스트리가 보관하는 문서 한 건의 현재 상태.
 

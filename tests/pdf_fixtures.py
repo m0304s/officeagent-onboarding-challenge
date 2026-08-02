@@ -37,9 +37,7 @@ def make_pdf(pages: Sequence[str | None]) -> bytes:
             if content is BLANK_PAGE:
                 page.draw_rect(pymupdf.Rect(72, 72, 300, 300), color=(0, 0, 0))
             else:
-                page.insert_text(
-                    pymupdf.Point(72, 100), content, fontsize=11, fontname=_FONT
-                )
+                page.insert_text(pymupdf.Point(72, 100), content, fontsize=11, fontname=_FONT)
         return document.tobytes()
     finally:
         document.close()
