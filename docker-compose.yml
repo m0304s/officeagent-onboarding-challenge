@@ -41,7 +41,11 @@ services:
     restart: unless-stopped
 
   api:
-    build: .
+    build:
+      context: .
+      # 스테이지가 여럿이라 명시한다 — `--target` 이 없으면 마지막(`test`) 스테이지가
+      # 뽑혀, 서비스 이미지에 테스트와 개발 의존성이 딸려 들어간다.
+      target: runtime
     command:
       - uvicorn
       - --factory

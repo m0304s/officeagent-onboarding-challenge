@@ -1,10 +1,11 @@
-"""수집 중에도 서비스가 살아 있는가 — 오프로드와 동시성.
+"""수집·검색 중에도 서비스가 살아 있는가 — 오프로드와 동시성.
 
-여기서 고정하는 것은 **HTTP 경계에서 관측되는 성질** 셋이다.
+여기서 고정하는 것은 **HTTP 경계에서 관측되는 성질** 넷이다.
 
 1. 수집의 블로킹 작업(텍스트 추출, 임베딩)이 진행 중이어도 다른 요청이 즉시 응답한다.
 2. 서로 다른 문서는 서로를 기다리지 않는다.
 3. 같은 문서에 대한 동시 요청은 직렬화되어, 두 요청의 효과가 뒤섞인 상태가 관측되지 않는다.
+4. **검색의 오래 걸리는 작업(질의 임베딩, 저장소 질의, 토큰 계산)도 마찬가지다.**
 
 서비스 계층의 같은 성질은 `test_ingestion_pipeline.py` 가 덮는다. 그쪽이 잠금과 상한의
 동작을 직접 보는 데 반해, 여기서는 **라우터·의존성 배선까지 포함한 실제 경로**로 본다 —
@@ -20,7 +21,7 @@ import asyncio
 import pytest
 
 from tests.api_harness import LONG_KOREAN, upload
-from tests.stubs import FakeEmbedder, StubParser
+from tests.stubs import FakeEmbedder, StubParser, StubVectorStore
 
 DATA = LONG_KOREAN.encode("utf-8")
 OTHER_DATA = (LONG_KOREAN + "\n\n연차는 입사 첫해부터 15일입니다.").encode("utf-8")
@@ -199,6 +200,97 @@ async def test_a_reupload_racing_a_delete_ends_in_one_of_the_two_serial_states(
     else:
         # 재업로드가 먼저 반영된 순서 — 삭제가 그 결과까지 지웠다.
         assert stored == 0
+
+
+# ── 검색 중에도 헬스가 즉시 응답한다 ────────────────────────────────────
+#
+# 검색의 오래 걸리는 작업은 셋이다 — 토큰 계산(블로킹, 라우터가 오프로드), 질의 임베딩,
+# 저장소 질의. 셋 다 같은 방식으로 확인한다: 그 작업이 **실제로 시작된 뒤** 헬스를 부르고,
+# 헬스가 그 작업보다 먼저 끝나는지 본다.
+
+QUERY = "교육비는 얼마까지 지원되나요?"
+
+
+async def test_health_answers_while_a_query_is_being_embedded(make_client):
+    """질의 임베딩이 진행 중이어도 다른 요청이 기다리지 않는다.
+
+    **문서를 올리지 않는다.** 질의 임베딩은 대상 집합 확정보다 앞이라 문서 유무와
+    무관하게 계산되고, 지연이 걸린 임베더로 수집까지 하면 준비 자체가 느려진다.
+    """
+    delay = 0.3
+    embedder = FakeEmbedder(delay=delay)
+
+    async with make_client(embedder=embedder) as client:
+        searching = asyncio.create_task(client.post("/search", json={"query": QUERY}))
+        await until(lambda: len(embedder.queries) > 0)  # 임베딩이 시작된 뒤에 잰다
+
+        health, elapsed = await measure(client.get("/health"))
+
+        assert not searching.done(), "검색이 이미 끝나 이 테스트는 아무것도 확인하지 못했다"
+        assert (await searching).status_code == 200
+
+    assert health.status_code == 200
+    assert elapsed < delay, f"헬스가 질의 임베딩({delay}s)에 끌려갔다 — {elapsed:.3f}s"
+
+
+async def test_health_answers_while_the_store_is_being_queried(make_client, settings):
+    """저장소 질의가 진행 중이어도 다른 요청이 기다리지 않는다.
+
+    `StubVectorStore` 의 질의 지연은 실물 어댑터와 같은 자리에서 스레드풀로 나간다.
+    어댑터가 오프로드를 걷어내면 실물 경로가 여기서 깨지는 것과 같은 방식으로 깨진다.
+
+    **문서를 먼저 올린다.** 대상 집합이 비면 서비스가 저장소를 아예 건드리지 않아
+    지연이 발동하지 않는다 — 그 상태로는 테스트가 통과해도 아무것도 확인되지 않는다.
+    """
+    delay = 0.3
+    store = StubVectorStore(query_delay=delay)
+    searchable = settings.model_copy(update={"retrieval_min_score": 0.0})
+
+    async with make_client(settings=searchable, vector_store=store) as client:
+        created = await client.post("/documents", **upload("policy.txt", DATA))
+        assert created.status_code == 201, created.text
+
+        searching = asyncio.create_task(client.post("/search", json={"query": QUERY}))
+        await until(lambda: len(store.queries) > 0)  # 저장소 질의가 시작된 뒤에 잰다
+
+        health, elapsed = await measure(client.get("/health"))
+
+        assert not searching.done(), "검색이 이미 끝나 이 테스트는 아무것도 확인하지 못했다"
+        response = await searching
+
+    assert response.status_code == 200
+    assert response.json()["results"], "저장소 질의가 근거를 하나도 내지 않았다"
+    assert health.status_code == 200
+    assert elapsed < delay, f"헬스가 저장소 질의({delay}s)에 끌려갔다 — {elapsed:.3f}s"
+
+
+async def test_health_answers_while_a_query_is_being_counted(make_client):
+    """토큰 계산도 이벤트 루프를 붙잡지 않는다.
+
+    토큰 계산은 프로토콜상 **동기**라 오프로드 책임이 라우터에 있다(수집의
+    `_guard_tokens` 와 같은 자리·같은 이유). 그 `asyncio.to_thread` 를 걷어내면 긴 질의
+    하나가 다른 요청을 통째로 막는데, 나머지 검색 테스트는 전부 통과한다 — 계산 결과가
+    같기 때문이다. 지연이 블로킹이라야 그 차이가 드러난다.
+
+    계산은 임베딩 **이전**이므로, 여기서 세는 동안 `queries` 는 아직 비어 있다.
+    """
+    delay = 0.3
+    embedder = FakeEmbedder(count_delay=delay)
+
+    async with make_client(embedder=embedder) as client:
+        searching = asyncio.create_task(client.post("/search", json={"query": QUERY}))
+        # 요청이 라우터에 닿아 토큰 계산에 들어갈 틈을 준다. 조건으로 걸 관측점이 없어
+        # (계산은 부수 효과가 없다) 한 틱만 양보하고, 아래 `not done()` 이 실제로 계산
+        # 중이었음을 확인한다.
+        await asyncio.sleep(_TICK)
+
+        health, elapsed = await measure(client.get("/health"))
+
+        assert not searching.done(), "검색이 이미 끝나 이 테스트는 아무것도 확인하지 못했다"
+        assert (await searching).status_code == 200
+
+    assert health.status_code == 200
+    assert elapsed < delay, f"헬스가 토큰 계산({delay}s)에 끌려갔다 — {elapsed:.3f}s"
 
 
 @pytest.mark.parametrize("concurrency", [1, 2])

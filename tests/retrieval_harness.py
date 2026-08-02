@@ -8,11 +8,16 @@
 기본 하한은 `0.0` 이다. 페이크 임베더의 벡터는 텍스트 해시라 점수에 의미가 없으므로,
 구조(순서·필터·K)를 재는 테스트가 하한에 걸리면 그건 검증이 아니라 잡음이다. 하한 자체를
 재는 테스트만 `searching_with(min_score=...)` 로 값을 명시한다.
+
+**임베더는 프로토콜로 받는다.** 기본값은 페이크지만 품질 테스트
+(`test_retrieval_quality.py`)가 같은 하네스에 **실물 모델**을 꽂는다 — 구조를 재는 층과
+품질을 재는 층이 같은 배선 위에 서야, 한쪽에서만 통과하는 상태가 생기지 않는다.
 """
 
 from dataclasses import dataclass
 
 from app.adapters.parsers import ParserRegistry, default_parsers
+from app.adapters.protocols import Embedder
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import Document, derive_index_signature
 from app.services.ingestion import IngestionService
@@ -53,7 +58,7 @@ class Harness:
 
     ingestion: IngestionService
     retrieval: RetrievalService
-    embedder: FakeEmbedder
+    embedder: Embedder
     store: StubVectorStore
     registry: StubDocumentRegistry
     index_signature: str
@@ -89,7 +94,7 @@ class Harness:
 
 def make_harness(
     *,
-    embedder: FakeEmbedder | None = None,
+    embedder: Embedder | None = None,
     vector_store: StubVectorStore | None = None,
     registry: StubDocumentRegistry | None = None,
     size: int = 200,

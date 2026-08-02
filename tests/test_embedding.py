@@ -22,9 +22,10 @@ from app.adapters.embedding import (
 )
 from app.adapters.protocols import Embedder
 from app.core.exceptions import ConfigurationError
+from tests.conftest import EMBEDDING_MODEL as DEFAULT_MODEL
+from tests.conftest import needs_weights
 from tests.stubs import FakeEmbedder
 
-DEFAULT_MODEL = "intfloat/multilingual-e5-small"
 KOREAN = "교육비는 연 200만원까지 지원합니다. 신청은 인사팀에 합니다."
 
 
@@ -324,23 +325,9 @@ async def test_warming_up_twice_loads_once():
 
 
 # ── 실물 모델 (가중치가 로컬에 있을 때만) ────────────────────────────────
-
-
-def _weights_are_cached(model_name: str) -> bool:
-    """네트워크를 건드리지 않고 캐시만 확인한다."""
-    try:
-        from huggingface_hub import snapshot_download
-
-        snapshot_download(model_name, local_files_only=True)
-    except Exception:
-        return False
-    return True
-
-
-needs_weights = pytest.mark.skipif(
-    not _weights_are_cached(DEFAULT_MODEL),
-    reason=f"{DEFAULT_MODEL} 가중치가 로컬에 없습니다 (컨테이너 이미지에는 구워져 있습니다)",
-)
+#
+# 스킵 조건(`needs_weights`)은 `conftest.py` 에 있다 — 품질 테스트도 같은 조건을 쓰므로,
+# 두 벌로 두면 한쪽만 고쳐진 채 다른 쪽이 조용히 안 돌 수 있다.
 
 
 @pytest.fixture(scope="module")

@@ -67,6 +67,10 @@ class FakeEmbedder:
 
     `delay`는 인코딩이 오래 걸리는 상황을 만든다 — 배치 사이에 이벤트 루프로 양보하지
     않으면 헬스 응답이 그만큼 늦어지는지 보는 데 쓴다.
+
+    `count_delay`는 **블로킹**이다(`time.sleep`). 토큰 계산은 프로토콜상 동기라 오프로드
+    책임이 호출부에 있고, 그 책임을 지키는지는 지연이 블로킹일 때만 드러난다 — `delay`
+    처럼 async 로 자면 누가 오프로드를 걷어내도 루프가 멈추지 않아 아무것도 확인되지 않는다.
     """
 
     def __init__(
@@ -76,6 +80,7 @@ class FakeEmbedder:
         signature: str | None = None,
         max_input_tokens: int = 512,
         delay: float = 0.0,
+        count_delay: float = 0.0,
         chars_per_token: int = 2,
         warm_up_error: Exception | None = None,
     ) -> None:
@@ -83,6 +88,7 @@ class FakeEmbedder:
         self.max_input_tokens = max_input_tokens
         self.signature = signature or f"fake-embedder/{dimension}/l2norm/none-v1"
         self._delay = delay
+        self._count_delay = count_delay
         self._chars_per_token = chars_per_token
         #: 인코딩 호출을 배치 단위로 기록한다. 배치 경계와 중복 인코딩 여부를 본다.
         self.batches: list[list[str]] = []
@@ -143,6 +149,8 @@ class FakeEmbedder:
         return self._count(text)
 
     def _count(self, text: str) -> int:
+        if self._count_delay:
+            time.sleep(self._count_delay)  # 블로킹. 스레드풀이 아니면 루프가 멈춘다
         return max(1, math.ceil(len(text) / self._chars_per_token))
 
     def _vector(self, text: str) -> list[float]:

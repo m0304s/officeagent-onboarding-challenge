@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS runtime
 
 # `claude-code-sdk` 는 HTTP 클라이언트가 아니라 로컬 CLI 를 실행한다. 컨테이너 안에서
 # 답변을 생성하려면 파이썬만으로는 부족하고 Node 런타임과 CLI 바이너리가 이미지에
@@ -59,3 +59,29 @@ EXPOSE 8000
 
 # compose 가 command 를 덮어쓴다. 여기 기본값은 compose 없이 이미지만 돌릴 때를 위한 것.
 CMD ["uvicorn", "--factory", "app.main:create_app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ── 테스트 스테이지 ─────────────────────────────────────────────────────
+#
+# **검색 품질 테스트를 실제로 돌리기 위한 스테이지다.** 그 층은 로컬 임베딩 실물을 쓰는데,
+# 호스트에 가중치가 없으면 통째로 건너뛴다(`pytest` 한 줄이 수백 MB 다운로드에 묶이면 안
+# 되므로 의도된 동작이다). 이 이미지에는 가중치가 이미 구워져 있어 그 층까지 돈다 —
+# 즉 여기서만 "임베딩이 의미를 잡는가"가 실행된다.
+#
+# 런타임 이미지를 **덧쌓는다.** 별도로 다시 빌드하면 굽는 가중치와 런타임의 가중치가
+# 어긋날 수 있는데, 그러면 여기서 잰 품질이 배포되는 구성의 것이 아니게 된다.
+#
+# 기본 빌드 대상이 되지 않게 `docker-compose.yml` 의 `api` 가 `target: runtime` 을
+# 명시한다 — 스테이지가 여럿일 때 `--target` 없는 빌드는 **마지막 스테이지**를 고른다.
+FROM runtime AS test
+
+USER root
+COPY tests ./tests
+COPY sample-docs ./sample-docs
+# 자격증명 동기화 스크립트는 서비스가 쓰는 것이 아니라 `make up` 이 쓰는 것이라 런타임
+# 이미지에 없다. 그래도 여기 넣는 이유는 그 **본문을 읽어 제약을 고정하는** 테스트가
+# 있어서다 — 없으면 컨테이너 실행만 그 회귀 방어를 잃는다.
+COPY scripts ./scripts
+RUN pip install --no-cache-dir ".[dev]"
+USER app
+
+CMD ["pytest", "-q"]
