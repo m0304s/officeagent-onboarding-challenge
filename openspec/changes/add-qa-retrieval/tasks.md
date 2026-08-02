@@ -1,3 +1,10 @@
+## 0. 이월 정리 — 이 change의 **첫 커밋**에 포함
+
+> 세 번째 이월 항목이다. 어려워서 밀린 게 아니라 "다음에"라고 적기만 해서 밀렸다. 그래서 마지막이 아니라 **맨 앞**에 둔다.
+
+- [x] 0.1 `docker-compose.yml` 파일 끝 개행 복구 — `restart: unless-stopped` 로 끝나고 개행이 없었다. POSIX 텍스트 파일 규약이고, 없으면 다음 줄을 추가하는 diff 가 기존 마지막 줄까지 변경으로 잡는다
+- [ ] 0.2 고아 네임드 볼륨 처분 — `officeagent-onboarding-challenge_registry`(16KB)·`_vector-store`(3.0MB). compose 가 바인드 마운트(`./data/chroma`·`./data/registry`)로 전환하면서 최상위 `volumes:` 선언이 사라져 **다시 마운트될 경로가 없다.** 현행 바인드 마운트 데이터가 9시간 더 최신이고 내용은 `sample-docs` 재업로드로 복원되는 시험 데이터라 **이관 가치가 없다** — 옛 데이터로 새 데이터를 덮게 된다. 처분은 `docker volume rm` 둘
+
 ## 1. 설정과 도메인 값 객체
 
 - [ ] 1.1 설정 항목 4개 추가 — `retrieval_top_k`(기본 5, `gt=0`), `retrieval_max_top_k`(기본 50, `gt=0`), `retrieval_min_score`(범위 `[0, 1]`, **초안 0.75 · 5.3에서 계측으로 확정**), `retrieval_max_query_chars`(기본 1000, `gt=0`). 전부 기본값을 두어 "설정 없이 기동된다"는 기존 요구사항을 깨지 않는다 (design 결정 4·5·6)
