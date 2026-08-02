@@ -1,7 +1,10 @@
-"""기동 경로가 LLM 제공자 자격증명을 건드리지 않는다는 성질을 고정한다.
+"""기동 경로 — 무엇이 기동 조건이고 무엇이 아닌가.
 
-specs "서비스는 외부 LLM 제공자 인증 없이 기동한다"의 회귀 테스트다. 인증 정보가 없거나
-손상되어 있어도 기동과 헬스 보고가 성립해야 한다.
+두 묶음이다. **LLM 제공자 자격증명**은 기동 경로가 아예 건드리지 않아야 하고(specs
+"서비스는 외부 LLM 제공자 인증 없이 기동한다"), **임베딩 모델 선로딩**은 기동 경로에
+있지만 실패해도 기동을 막지 않아야 한다.
+
+앞 묶음: 인증 정보가 없거나 손상되어 있어도 기동과 헬스 보고가 성립해야 한다.
 
 자격증명을 **읽을 수 없는 상태**로 만들어 두는 것이 이 테스트의 핵심이다. 누군가 나중에
 부팅 경로에 자격증명 파싱을 끼워 넣으면 여기서 터진다. "지금은 안 읽는다"를 눈으로
@@ -9,10 +12,12 @@ specs "서비스는 외부 LLM 제공자 인증 없이 기동한다"의 회귀 �
 """
 
 import json
+import logging
 import os
 import stat
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -20,6 +25,8 @@ from httpx import ASGITransport, AsyncClient
 
 from app.config import Settings
 from app.main import create_app
+from tests.conftest import booted
+from tests.stubs import FakeEmbedder
 
 
 @pytest.fixture
@@ -88,6 +95,73 @@ async def test_기본_배선은_외부_서비스가_없어도_헬스에_응답�
     assert status_code == 503
     assert set(body["dependencies"]) == {"cache", "vector_store"}
     assert body["dependencies"]["cache"]["status"] == "unavailable"
+
+
+# ── 임베딩 모델 선로딩 ───────────────────────────────────────────────────
+#
+# 미리 올리지 않으면 비용이 사라지는 게 아니라 **첫 업로드에게 청구된다.** 다만 선로딩은
+# 기동 *조건*이 아니다 — 실패해도 서비스는 뜨고, 지연 로딩이 백스톱으로 남는다.
+
+
+async def test_startup_warms_up_the_embedder(make_app):
+    """`isinstance` 로 구체 어댑터를 확인해 부르면 배선이 구현체를 알게 된다.
+
+    프로토콜 메서드로 두었으므로 대역도 같은 요청을 받는다. 그 사실을 여기서 고정한다.
+    """
+    embedder = FakeEmbedder()
+
+    async with booted(make_app(embedder=embedder)) as client:
+        assert (await client.get("/health")).status_code == 200
+
+    assert embedder.warm_ups == 1, "기동 훅이 선로딩을 부르지 않았다"
+
+
+@contextmanager
+def capture(logger_name: str):
+    """지정한 로거의 레코드를 모은다.
+
+    `caplog` 를 쓰지 않는 이유: `create_app` 이 `configure_logging` 으로 루트 핸들러를
+    **비우므로**, 테스트 본문에서 앱을 만드는 순간 캡처 핸들러가 함께 걷힌다. 앱을
+    픽스처에서 만드는 다른 테스트들은 그 영향을 받지 않지만, 여기서는 임베더를 바꿔
+    앱을 직접 만들어야 한다.
+    """
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger = logging.getLogger(logger_name)
+    logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+
+
+async def test_a_failing_warm_up_does_not_stop_startup(make_app):
+    """가중치가 없거나 디스크가 부족해도 서비스는 떠야 한다.
+
+    `openspec/specs/service-health/spec.md` 의 "설정을 전혀 제공하지 않아도 기동에
+    성공한다"가 선로딩이 생겼다고 약해지지 않는다. 그리고 **첫 업로드는 여전히
+    성공해야 한다** — 지연 로딩이 백스톱이기 때문이다.
+    """
+    embedder = FakeEmbedder(warm_up_error=RuntimeError("가중치를 찾지 못했습니다"))
+    # 앱을 먼저 만든다 — `create_app` 이 로깅을 다시 구성하므로, caplog 안에서 만들면
+    # 캡처 핸들러가 그 자리에서 걷힌다.
+    app = make_app(embedder=embedder)
+
+    with capture("app.main") as records:
+        async with booted(app) as client:
+            health = await client.get("/health")
+            upload = await client.post(
+                "/documents",
+                files={"file": ("policy.txt", "교육비를 지원합니다.".encode(), "text/plain")},
+            )
+
+    assert health.status_code == 200
+    assert upload.status_code == 201, "선로딩 실패가 수집까지 막았다 — 백스톱이 없다"
+    assert embedder.warm_ups == 1
+    assert any("선로딩에 실패" in record.getMessage() for record in records), (
+        "무엇이 준비되지 않았는지가 로그에 남지 않았다"
+    )
 
 
 SYNC_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "sync-credentials.sh"

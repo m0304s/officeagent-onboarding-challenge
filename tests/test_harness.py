@@ -18,5 +18,5 @@ def test_data_dir_is_isolated_and_empty(data_dir: Path):
 
 def test_settings_fixture_does_not_read_the_environment(settings, data_dir):
     # 환경변수에 무엇이 있든 픽스처가 준 값이어야 한다.
-    assert settings.vector_store_path == data_dir / "chroma"
+    assert settings.vector_store_url == "http://localhost:8001"
     assert settings.probe_timeout_seconds == 0.2

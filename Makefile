@@ -1,4 +1,4 @@
-.PHONY: up down logs sync-credentials test lint
+.PHONY: up down logs gui sync-credentials vector-store test test-all lint
 
 VENV := .venv
 
@@ -17,9 +17,24 @@ down:
 logs:
 	docker compose logs -f api
 
+# 벡터 스토어 내용을 눈으로 확인하는 개발용 GUI. 과제 실행 경로가 아니므로 `up` 에
+# 넣지 않는다(arm64 전용 이미지라 다른 환경에서 기동이 깨진다).
+# 뜬 뒤 http://localhost:3001 → 접속 문자열 http://vector-store:8000
+gui:
+	docker compose --profile gui up -d --wait vector-store-ui
+
 # ── 테스트 ──────────────────────────────────────────────────────────────
 # 깨끗한 체크아웃에서 이 한 줄로 끝나야 한다. 가상환경이 없으면 만들고 나서 돈다.
 test: $(VENV)/bin/pytest
+	$(VENV)/bin/pytest
+
+# 벡터 스토어만 띄운다. Chroma 를 서버 모드로 쓰므로 실물 어댑터 테스트에는 서버가
+# 필요하다 — 없으면 그 테스트들은 **건너뛴다**(`make test` 는 그대로 초록).
+# 건너뛴 것까지 돌리려면 이쪽을 쓴다.
+vector-store:
+	docker compose up -d --wait vector-store
+
+test-all: vector-store $(VENV)/bin/pytest
 	$(VENV)/bin/pytest
 
 lint: $(VENV)/bin/pytest

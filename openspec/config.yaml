@@ -32,7 +32,7 @@ context: |
   | 웹 프레임워크 | FastAPI | PRD 고정 조건. SSE(StreamingResponse)와 async 파이프라인이 네이티브 |
   | LLM SDK | `claude-code-sdk` (pip) | PRD가 제시한 두 SDK 중 택 1. API 키 없이 Claude Pro/Max 구독으로 동작하고, 파이썬 네이티브라 subprocess 래핑 없이 async 스트리밍·타임아웃 제어가 가능 |
   | 임베딩 | sentence-transformers (로컬) | 로컬 오픈소스 모델이라 테스트가 LLM 구독 없이 실행된다(PRD 가산점). 임베딩이 네트워크·과금에 묶이지 않아 ingestion/retrieval 테스트를 실물로 돌릴 수 있음 |
-  | 벡터 DB | Chroma (임베디드 퍼시스턴트) | 별도 컨테이너 없이 볼륨 하나로 영속화되어 `docker compose up` 한 줄 실행이 단순. 메타데이터 필터와 문서 단위 삭제를 지원해 캐시 무효화 연동이 가능 |
+  | 벡터 DB | Chroma (서버 모드, 별도 컨테이너) | 메타데이터 필터와 문서 단위 삭제를 지원해 리비전 교체·캐시 무효화 연동이 가능. 저장소를 앱 프로세스 밖으로 빼 API 재배포와 수명이 분리됨 (임베디드 퍼시스턴트에서 전환 — 근거는 `ARCHITECTURE.md`) |
   | 캐시 DB | Redis | 정확 매치는 키 조회, 유사 질문은 질문 임베딩 유사도로 판정. TTL·태그 기반 무효화가 자연스럽고 캐시 계층이 저장소 수준에서 분리됨 |
   | 실행 | Docker Compose | `docker compose up` 한 줄 실행 (PRD 조건) |
   | 테스트 | pytest | 한 줄 실행 (PRD 조건). LLM 호출은 목/스텁으로 대체 |
@@ -124,9 +124,9 @@ context: |
   |--------|------|------|
   | `claude-code-sdk` (pip) | LLM 답변 생성 | API 키 불필요, Claude Pro/Max 구독 기반. 로컬 CLI를 프로그래밍 방식으로 호출 |
   | `sentence-transformers` | 문서·질문 임베딩 | 로컬 실행. 최초 실행 시 모델 다운로드 — Docker 빌드 단계에서 미리 받아 첫 요청 지연을 없앤다 |
-  | Chroma | 벡터 저장·검색 | 임베디드 퍼시스턴트 모드, 볼륨 마운트로 영속화 |
+  | Chroma | 벡터 저장·검색 | 서버 모드(`chromadb/chroma`, compose 서비스), 볼륨 마운트로 영속화. 클라이언트와 서버 버전을 맞춘다 |
   | Redis | LLM 응답 캐시 | Docker Compose 서비스로 기동 |
-  | PDF 파서 (`pypdf` 등) | PDF 텍스트 추출 | 구현 시 확정 |
+  | PDF 파서 (PyMuPDF) | PDF 텍스트 추출 | AGPL-3.0. 교체 지점은 `adapters/parsers/pdf.py` 한 파일 |
   | pytest | 테스트 러너 | LLM 어댑터는 스텁으로 대체, 구독 없이 실행 가능해야 함 |
 
   런타임 전제:

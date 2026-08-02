@@ -6,10 +6,19 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
+    # multipart 업로드 파싱. FastAPI 가 선택 의존성으로 두므로 명시한다.
+    "python-multipart>=0.0.20",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
-    "chromadb>=0.5",
+    # 서버 모드로 쓰므로 클라이언트와 서버 이미지(docker-compose.yml)의 버전을 맞춘다.
+    # 어긋나면 HTTP API 경로(v1/v2)나 응답 형식이 달라져, 기동은 되는데 첫 쓰기에서 터진다.
+    "chromadb==1.5.9",
     "redis>=5.2",
+    # 로컬 임베딩. torch 를 끌고 오므로 이미지에서는 CPU 전용 휠로 설치한다.
+    "sentence-transformers>=3.0",
+    # PDF 텍스트 추출. AGPL-3.0 — 상용 배포로 가려면 pypdf(BSD) 교체가 선행되어야 한다.
+    # 교체 범위는 adapters/parsers/pdf.py 한 파일이다 (ARCHITECTURE.md "문서 파서").
+    "pymupdf>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +41,9 @@ packages = ["src/app"]
 src = ["src"]
 line-length = 100
 target-version = "py311"
+# 계획 산출물은 소스가 아니다. ruff 가 마크다운 안의 예시 코드 블록까지 포매팅하면
+# 설계 문서가 린터의 취향대로 바뀐다.
+extend-exclude = ["openspec"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "TID"]

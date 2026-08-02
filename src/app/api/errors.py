@@ -5,7 +5,10 @@
 
 모든 오류가 같은 봉투를 쓴다.
 
-    {"error": {"code": "...", "message": "..."}}
+    {"error": {"code": "...", "message": "...", ...부가 항목}}
+
+부가 항목은 **평평하게** 들어간다. 중첩 객체를 새로 만들지 않는 이유는 봉투 안에 형식이
+둘이면 소비자가 파서를 둘 들어야 하기 때문이다.
 
 프레임워크가 기본 제공하는 오류 응답(경로 없음·메서드 불허·요청 검증 실패)도 이 봉투로
 덮어쓴다. 기본값을 그대로 두면 형식이 두 가지가 되어, 소비자가 파서를 둘 들고 있어야 한다.
@@ -28,12 +31,36 @@ logger = logging.getLogger(__name__)
 
 HTTP_NOT_FOUND = 404
 HTTP_METHOD_NOT_ALLOWED = 405
+HTTP_PAYLOAD_TOO_LARGE = 413
+HTTP_UNSUPPORTED_MEDIA_TYPE = 415
 HTTP_UNPROCESSABLE_ENTITY = 422
 HTTP_INTERNAL_SERVER_ERROR = 500
+HTTP_SERVICE_UNAVAILABLE = 503
 
 _STATUS_TO_CODE = {
     HTTP_NOT_FOUND: ErrorCode.NOT_FOUND,
     HTTP_METHOD_NOT_ALLOWED: ErrorCode.METHOD_NOT_ALLOWED,
+    # 라우터가 `HTTPException(422, ...)` 로 요청 형식 문제를 알릴 때 쓰인다. 프레임워크의
+    # 검증 오류(`handle_validation_error`)와 같은 코드를 써야 소비자가 한 갈래로 다룬다.
+    HTTP_UNPROCESSABLE_ENTITY: ErrorCode.VALIDATION_ERROR,
+}
+
+# 도메인 오류 코드 → HTTP 상태.
+#
+# **표가 API 계층에 있는 이유**는 "도메인 예외의 HTTP 변환은 이 계층에서만"이라는 규약
+# 그대로다. `AppError` 에는 상태 코드 개념이 없고 `code` 만 있다 — 도메인이 HTTP 를 알면
+# 같은 예외를 CLI 나 배치에서 재사용할 때 의미 없는 숫자를 들고 다니게 된다.
+#
+# **표에 없는 코드는 500이다.** 새 도메인 예외가 상태를 정하지 않은 채 들어와도 봉투는
+# 그대로이고, 기존 예외의 동작도 바뀌지 않는다.
+_CODE_TO_STATUS: dict[ErrorCode, int] = {
+    ErrorCode.UNSUPPORTED_DOCUMENT_FORMAT: HTTP_UNSUPPORTED_MEDIA_TYPE,
+    ErrorCode.DOCUMENT_TOO_LARGE: HTTP_PAYLOAD_TOO_LARGE,
+    ErrorCode.EMPTY_DOCUMENT: HTTP_UNPROCESSABLE_ENTITY,
+    ErrorCode.NO_EXTRACTABLE_TEXT: HTTP_UNPROCESSABLE_ENTITY,
+    ErrorCode.DOCUMENT_PARSE_ERROR: HTTP_UNPROCESSABLE_ENTITY,
+    ErrorCode.NOT_FOUND: HTTP_NOT_FOUND,
+    ErrorCode.STORAGE_UNAVAILABLE: HTTP_SERVICE_UNAVAILABLE,
 }
 
 
@@ -50,10 +77,20 @@ def error_response(
 
 
 async def handle_app_error(_: Request, exc: Exception) -> JSONResponse:
-    """도메인 예외 → HTTP. 메시지는 도메인이 스스로 정한 것이라 그대로 내보낸다."""
+    """도메인 예외 → HTTP. 메시지는 도메인이 스스로 정한 것이라 그대로 내보낸다.
+
+    `exc.extra` 는 봉투에 **평평하게** 실린다. 지원 포맷 목록·적용된 크기 상한처럼
+    소비자가 메시지 문자열을 파싱하지 않고 읽어야 하는 값이 여기로 온다. 중첩
+    `details` 객체를 새로 만들지 않는 이유는 검증 오류의 `fields` 가 이미 평면이기
+    때문이다 — 같은 봉투에 형식이 둘이면 소비자가 파서를 둘 들어야 한다.
+    """
     assert isinstance(exc, AppError)
     message = exc.message or "요청을 처리할 수 없습니다"
-    return error_response(HTTP_INTERNAL_SERVER_ERROR, exc.code, message)
+    status = _CODE_TO_STATUS.get(exc.code, HTTP_INTERNAL_SERVER_ERROR)
+    if status >= HTTP_INTERNAL_SERVER_ERROR:
+        # 5xx 는 우리 잘못이다. 응답에는 남기지 않는 원인을 로그에는 남겨야 진단이 된다.
+        logger.warning("도메인 오류를 %d 로 변환했습니다: %s", status, exc.code, exc_info=exc)
+    return error_response(status, exc.code, message, **exc.extra)
 
 
 async def handle_http_exception(_: Request, exc: Exception) -> JSONResponse:

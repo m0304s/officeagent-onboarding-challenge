@@ -43,7 +43,7 @@ class TestSingleDependencyDown:
     async def test_vector_store_down_marks_only_the_vector_store(self, make_client):
         probes = (
             StubProbe("cache"),
-            StubProbe("vector_store", Status.UNAVAILABLE, detail="저장 경로에 쓸 수 없음"),
+            StubProbe("vector_store", Status.UNAVAILABLE, detail="연결 실패 (ConnectionError)"),
         )
         async with make_client(probes) as client:
             response = await client.get("/health")
@@ -53,24 +53,23 @@ class TestSingleDependencyDown:
         assert deps(body)["vector_store"]["status"] == "unavailable"
         assert deps(body)["cache"]["status"] == "ok"
 
-    async def test_unwritable_persistence_path_is_reported(self, make_client):
+    async def test_the_reason_reaches_the_response(self, make_client):
+        """어느 의존성이 왜 불능인지가 응답에 남아야 한다 — 상태 코드만으로는 진단이 안 된다."""
         probes = (
             StubProbe("cache"),
-            StubProbe(
-                "vector_store", Status.UNAVAILABLE, detail="저장 경로에 쓸 수 없음 (권한 없음)"
-            ),
+            StubProbe("vector_store", Status.UNAVAILABLE, detail="연결 실패 (ConnectionError)"),
         )
         async with make_client(probes) as client:
             body = (await client.get("/health")).json()
 
-        assert "쓸 수 없음" in deps(body)["vector_store"]["detail"]
+        assert "연결 실패" in deps(body)["vector_store"]["detail"]
 
 
 class TestBothDependenciesDown:
     async def test_endpoint_still_responds_and_marks_both(self, make_client):
         probes = (
             StubProbe("cache", Status.UNAVAILABLE, detail="연결 실패"),
-            StubProbe("vector_store", Status.UNAVAILABLE, detail="저장 경로에 쓸 수 없음"),
+            StubProbe("vector_store", Status.UNAVAILABLE, detail="연결 실패 (ConnectionError)"),
         )
         async with make_client(probes) as client:
             response = await client.get("/health")
