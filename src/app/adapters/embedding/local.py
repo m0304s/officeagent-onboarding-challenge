@@ -41,8 +41,9 @@ class ModelProfile:
 # 이 어댑터가 모양을 아는 모델들.
 #
 # 표를 두는 이유는 `dimension`·`max_input_tokens` 를 **모델 로딩 없이** 답해야 하기
-# 때문이다. 색인 서명은 수집이 시작되기 전에 필요한데, 차원을 알려고 모델을 올리면
-# 지연 초기화가 무의미해지고 기동이 수십 초 길어진다.
+# 때문이다. 색인 서명은 수집이 시작되기 전에 필요하고, 무엇보다 **선로딩이 실패한
+# 뒤에도** 서명은 답할 수 있어야 한다 — 모델을 못 올린 상태에서 차원을 물으면 또
+# 실패하는 구조라면 목록·삭제 같은 경로까지 함께 죽는다.
 #
 # 표에 없는 이름은 기동을 막는다. 차원을 추측해 서명에 넣으면 서명이 거짓이 되고,
 # 서명이 거짓이면 재색인 강제라는 목적 자체가 사라진다. `chunk_strategy` 에 미구현
@@ -53,8 +54,22 @@ KNOWN_MODEL_PROFILES: dict[str, ModelProfile] = {
 }
 
 
+#: 선로딩이 실제로 인코딩까지 해 보는 데 쓰는 텍스트.
+#:
+#: 짧고 무해한 한 줄이면 충분하다. 목적은 벡터의 내용이 아니라 **경로가 끝까지 도는지**
+#: 확인하는 것이다. 한국어를 쓰는 이유는 이 서비스가 실제로 다루는 입력이 그것이라,
+#: 토크나이저가 다국어 자산을 함께 초기화하게 하기 위해서다.
+_WARM_UP_TEXT = "워밍업"
+
+
 class SentenceTransformerEmbedder:
-    """sentence-transformers 모델을 지연 로딩해 인코딩한다."""
+    """sentence-transformers 모델로 인코딩한다.
+
+    로딩은 **기동 시 선로딩**(`warm_up`)과 **첫 사용 시 지연 로딩** 두 경로를 모두
+    갖는다. 후자를 남겨 두는 이유는 선로딩이 실패했을 때의 백스톱이기 때문이다 —
+    선로딩 실패가 곧 영구 실패가 되면, 디스크 경합 같은 일시적 원인으로 서비스가
+    재시작 전까지 수집을 못 하게 된다.
+    """
 
     def __init__(self, model_name: str, *, normalize: bool = True) -> None:
         profile = KNOWN_MODEL_PROFILES.get(model_name)
@@ -108,6 +123,25 @@ class SentenceTransformerEmbedder:
         # 알게 되면 어댑터 교체가 그 계층까지 번진다.
         return [[float(value) for value in row] for row in vectors]
 
+    # ── 선로딩 ──────────────────────────────────────────────────────────
+
+    async def warm_up(self) -> None:
+        """가중치를 올리고 **실제로 한 번 인코딩한다.**
+
+        로딩만으로는 부족하다. 첫 `encode` 에는 로딩과 별개의 초기화 비용(연산 그래프
+        준비, 커널 워밍)이 남아, "첫 요청 지연을 없앤다"는 목적이 절반만 달성된다.
+        한 번 돌려 보면 "이 모델로 벡터가 나오는가"까지 기동 시점에 확인된다.
+
+        **실패를 삼키지 않는다.** 기동을 계속할지는 호출자(앱 팩토리)가 정한다. 여기서
+        조용히 넘어가면 무엇이 준비되지 않았는지가 사라진다.
+        """
+        logger.info("임베딩 모델을 미리 준비합니다", extra={"embedding_model": self._model_name})
+        await self._encode([_PASSAGE_PREFIX + _WARM_UP_TEXT])
+        logger.info(
+            "임베딩 모델 준비 완료",
+            extra={"embedding_model": self._model_name, "embedding_dimension": self.dimension},
+        )
+
     # ── 토큰 계산 ───────────────────────────────────────────────────────
 
     def count_tokens(self, text: str) -> int:
@@ -126,10 +160,14 @@ class SentenceTransformerEmbedder:
         model = self._ensure_model()
         return len(model.tokenizer.encode(_PASSAGE_PREFIX + text))
 
-    # ── 지연 로딩 ───────────────────────────────────────────────────────
+    # ── 로딩 ────────────────────────────────────────────────────────────
 
     def _ensure_model(self) -> Any:
-        """블로킹. 스레드풀에서만 호출한다."""
+        """블로킹. 스레드풀에서만 호출한다.
+
+        선로딩이 이미 올려 두었으면 그대로 쓰고, 아니면 여기서 올린다 — 선로딩이
+        실패했을 때 수집을 살리는 백스톱이다.
+        """
         if self._model is not None:
             return self._model
         with self._load_lock:
@@ -138,10 +176,11 @@ class SentenceTransformerEmbedder:
         return self._model
 
     def _load(self) -> Any:
-        """기동 경로에서 부르지 않는다.
+        """가중치를 올린다. 블로킹이라 항상 스레드풀 안이다.
 
-        모델을 기동 시점에 올리면 부팅이 수십 초 길어지고, 헬스가 "모델 로딩 중"이라는
-        이유로 실패할 수 있다. "기동 조건을 늘리지 않는다"는 기존 규약을 따른다.
+        기동 경로에서도 불리지만(`warm_up`), 그 실패가 기동을 막지는 않는다 — 앱
+        팩토리가 경고만 남기고 계속 뜬다. "설정 없이 기동된다"는 기존 요구사항이
+        선로딩이 생겼다고 약해지지 않는다.
         """
         # import 자체가 무겁다(torch 로딩). 모듈 최상단이 아니라 여기서 가져온다.
         try:

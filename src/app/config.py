@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     # 캐시 저장소 (별도 컨테이너)
     cache_url: str = "redis://localhost:6379/0"
 
-    # 벡터 스토어 (임베디드 퍼시스턴트 — 별도 서비스가 아니라 마운트된 경로)
-    vector_store_path: Path = Path("./data/chroma")
+    # 벡터 스토어 (별도 서비스 — Chroma 서버). 기본 포트가 8001 인 이유는 Chroma 의
+    # 기본값(8000)이 이 API 의 포트와 겹치기 때문이다. compose 가 호스트 8001 을 컨테이너
+    # 8000 에 연결하므로, 도커 안에서 돌리든 밖에서 돌리든 같은 주소가 쓰인다.
+    vector_store_url: str = "http://localhost:8001"
 
     # 헬스 점검 상한. 의존성별 상한과 전체 상한을 따로 둔다 — 하나가 매달려도
     # 나머지 결과는 나와야 어느 의존성이 문제인지 식별할 수 있다.

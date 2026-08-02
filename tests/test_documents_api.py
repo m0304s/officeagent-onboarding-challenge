@@ -14,6 +14,7 @@ import pytest
 
 from app.config import Settings
 from tests.api_harness import LONG_KOREAN, document_ids, upload
+from tests.conftest import needs_vector_store
 from tests.pdf_fixtures import BLANK_PAGE, make_pdf
 
 # ── 성공 경로 ────────────────────────────────────────────────────────────
@@ -404,8 +405,9 @@ def test_the_upload_limit_has_a_default():
 # ── 실제 저장소 배선 ────────────────────────────────────────────────────
 
 
+@needs_vector_store
 async def test_the_default_wiring_works_with_the_real_stores(settings, healthy_probes, embedder):
-    """대역이 아니라 **실제 Chroma·SQLite** 로 배선한 앱에 한 번은 요청해 본다.
+    """대역이 아니라 **실제 Chroma 서버·SQLite** 로 배선한 앱에 한 번은 요청해 본다.
 
     나머지 API 테스트는 전부 저장소 대역을 쓴다 — 저장 결과를 들여다보고 실패를 주입해야
     하기 때문이다. 그래서 "설정의 경로로 실제 어댑터가 만들어지고 그 위에서 수집·조회·
@@ -417,9 +419,14 @@ async def test_the_default_wiring_works_with_the_real_stores(settings, healthy_p
     """
     from httpx import ASGITransport, AsyncClient
 
+    from app.adapters.vector_store import ChromaVectorStore, collection_for
     from app.main import create_app
 
     app = create_app(settings=settings, probes=healthy_probes, embedder=embedder)
+    # 배선이 고르는 것과 **같은 컬렉션**을 봐야 한다. 이름 규칙이 어긋나면 여기서 0이 나온다.
+    store = ChromaVectorStore(
+        settings.vector_store_url, collection_name=collection_for(embedder.dimension)
+    )
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         created = (
@@ -427,6 +434,7 @@ async def test_the_default_wiring_works_with_the_real_stores(settings, healthy_p
         ).json()
         detail = await client.get(f"/documents/{created['document_id']}")
         listing = (await client.get("/documents")).json()
+        stored = await store.count_chunks(created["document_id"])
         removed = await client.delete(f"/documents/{created['document_id']}")
         after = await document_ids(client)
 
@@ -436,6 +444,9 @@ async def test_the_default_wiring_works_with_the_real_stores(settings, healthy_p
     assert listing["count"] == 1
     assert removed.status_code == 204
     assert after == []
-    # 파일이 설정된 경로에 실제로 생겼는지 — 경로 배선이 어긋나면 컨테이너에서만 드러난다.
+    # 청크가 **실제 서버**에 들어갔다가 삭제와 함께 사라졌는지. 배선이 어긋나면
+    # 응답은 멀쩡한데 저장된 것이 없는 상태가 되고, 그건 검색 단계에서야 드러난다.
+    assert stored == created["chunk_count"]
+    assert await store.count_chunks(created["document_id"]) == 0
+    # 레지스트리 파일이 설정된 경로에 생겼는지 — 볼륨 배선이 어긋나면 컨테이너에서만 드러난다.
     assert settings.registry_path.exists()
-    assert settings.vector_store_path.exists()

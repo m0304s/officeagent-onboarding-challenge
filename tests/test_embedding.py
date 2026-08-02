@@ -10,6 +10,9 @@
 스킵한다. 나머지는 전부 페이크로 돈다 — `pytest` 한 줄이 네트워크에 묶이면 안 된다.
 """
 
+import asyncio
+import time
+
 import pytest
 
 from app.adapters.embedding import (
@@ -140,6 +143,125 @@ async def test_embedding_nothing_calls_nothing():
     assert await FakeEmbedder().embed_documents([]) == []
 
 
+# ── 오프로드 ─────────────────────────────────────────────────────────────
+
+
+async def test_encoding_does_not_block_the_event_loop():
+    """인코딩은 CPU 바운드다. 이벤트 루프에서 그냥 돌면 문서 하나가 서비스 전체를 멈춘다.
+
+    모델을 실제로 올리지 않고 **느린 인코더를 끼워** 확인한다. 가중치 유무와 무관하게
+    항상 돌아야 하는 성질이고(오프로드는 모델이 무엇이든 지켜져야 한다), 실물 모델은
+    빨라서 오히려 이 회귀를 드러내지 못한다.
+
+    수집 서비스는 배치마다 이 메서드를 부르므로, 호출당 오프로드가 성립하지 않으면
+    임베딩 단계 전체가 루프를 붙잡는다.
+    """
+    delay = 0.2
+    embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
+    embedder._model = _SlowModel(delay)  # 로딩을 건너뛴다 — 여기서 볼 것은 인코딩이다
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(delay / 20)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    try:
+        vectors = await embedder.embed_documents([KOREAN, "다른 내용입니다."])
+    finally:
+        ticker.cancel()
+
+    assert len(vectors) == 2
+    assert ticks > 1, "인코딩 동안 이벤트 루프가 멈췄다"
+
+
+class _SlowModel:
+    """`encode` 만 있는 느린 모델 대역. 지연은 **블로킹**이다."""
+
+    def __init__(self, delay: float = 0.0) -> None:
+        self._delay = delay
+        self.encoded: list[list[str]] = []
+
+    def encode(self, texts, **_kwargs):
+        self.encoded.append(list(texts))
+        if self._delay:
+            time.sleep(self._delay)
+        return [[0.1] * 384 for _ in texts]
+
+
+# ── 선로딩 ───────────────────────────────────────────────────────────────
+
+
+async def test_warming_up_loads_the_model_and_encodes_once():
+    """로딩만 하면 첫 `encode` 의 초기화 비용이 그대로 남는다.
+
+    "첫 요청 지연을 없앤다"가 목적이므로 실제로 한 번 돌려 봐야 한다. 그 김에
+    "이 모델로 벡터가 나오는가"까지 기동 시점에 확인된다.
+    """
+    embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
+    loaded = _SlowModel()
+    embedder._load = lambda: loaded  # 가중치 없이 로딩 경로만 대신한다
+
+    await embedder.warm_up()
+
+    assert embedder._model is loaded, "선로딩이 모델을 올리지 않았다"
+    assert len(loaded.encoded) == 1, "선로딩이 인코딩까지 하지 않았다"
+    assert loaded.encoded[0][0].startswith("passage: "), "역할 접두사 없이 워밍업했다"
+
+
+async def test_warming_up_does_not_swallow_its_failure():
+    """실패를 여기서 삼키면 무엇이 준비되지 않았는지가 사라진다.
+
+    계속 뜰지 말지는 호출자(앱 팩토리)가 정한다 — 어댑터는 사실만 올린다.
+    """
+    embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
+
+    def explode():
+        raise ConfigurationError("가중치를 찾지 못했습니다")
+
+    embedder._load = explode
+
+    with pytest.raises(ConfigurationError):
+        await embedder.warm_up()
+
+
+async def test_the_first_encode_still_loads_when_warm_up_never_ran():
+    """지연 로딩은 선로딩이 생겨도 남는다 — 선로딩 실패의 백스톱이다.
+
+    걷어내면 선로딩 실패가 곧 영구 실패가 되어, 일시적 원인(디스크 경합, 느린 볼륨)에도
+    재시작 전까지 수집이 죽는다.
+    """
+    embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
+    loaded = _SlowModel()
+    embedder._load = lambda: loaded
+
+    vectors = await embedder.embed_documents([KOREAN])  # warm_up 없이 바로 인코딩
+
+    assert embedder._model is loaded
+    assert len(vectors) == 1
+
+
+async def test_warming_up_twice_loads_once():
+    """기동 훅이 두 번 불리거나 첫 요청이 곧바로 이어져도 모델은 한 벌이어야 한다."""
+    embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
+    loads = 0
+
+    def load():
+        nonlocal loads
+        loads += 1
+        return _SlowModel()
+
+    embedder._load = load
+
+    await embedder.warm_up()
+    await embedder.warm_up()
+    await embedder.embed_documents([KOREAN])
+
+    assert loads == 1, "모델을 두 벌 올렸다 — 메모리가 두 배가 된다"
+
+
 # ── 실물 모델 (가중치가 로컬에 있을 때만) ────────────────────────────────
 
 
@@ -210,3 +332,17 @@ def test_the_real_token_count_includes_the_prefix(real_embedder):
     bare = len(real_embedder._model.tokenizer.encode(KOREAN))
 
     assert with_prefix > bare
+
+
+@needs_weights
+async def test_the_real_model_warms_up():
+    """대역이 아니라 **실물 가중치**로 선로딩 경로가 끝까지 도는지 확인한다.
+
+    기동 시점에 도는 경로라, 여기서 깨지면 컨테이너가 매번 경고를 남기며 뜬다.
+    """
+    embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
+
+    await embedder.warm_up()
+
+    assert embedder._model is not None
+    assert len(await embedder.embed_query("교육비")) == embedder.dimension

@@ -22,8 +22,9 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
-# 벡터 스토어 퍼시스턴스 경로. 볼륨이 붙지 않으면 헬스 프로브가 불능으로 보고한다.
-RUN mkdir -p /data/chroma && chown -R app:app /data /app
+# 문서 레지스트리(SQLite) 경로. 벡터 스토어는 별도 서비스라 여기 없다.
+# 볼륨이 붙지 않으면 컨테이너를 다시 만들 때 문서 목록이 사라진다.
+RUN mkdir -p /data && chown -R app:app /data /app
 
 USER app
 EXPOSE 8000

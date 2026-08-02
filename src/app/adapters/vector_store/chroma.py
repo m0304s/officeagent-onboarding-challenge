@@ -4,31 +4,57 @@
 top-k·필터·거리 지표를 근거 없이 추측하게 되고, 그 추측이 문서에 적히는 순간 고치는 데
 설명이 붙는다.
 
-임베디드 퍼시스턴트 모드라 별도 컨테이너가 없다. "도달 가능"의 의미가 네트워크가 아니라
-**저장 경로 접근**이며, 그 점검은 `vector_store/probe.py` 가 담당한다.
+**Chroma 서버 모드**로 접속한다(별도 컨테이너). 그래서 "도달 가능"의 의미가 네트워크
+도달이며, 그 점검은 `vector_store/probe.py` 가 담당한다.
+
+파이썬 클라이언트는 동기 HTTP 라 호출이 블로킹이다. 모든 연산을 스레드풀로 내보내는 이유가
+그것이다 — 네트워크 왕복이 이벤트 루프 위에서 일어나면 수집 한 건이 헬스 응답까지 세운다.
 """
 
 import asyncio
 import logging
 import threading
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
+from app.adapters.vector_store.client import ChromaEndpoint, create_client, parse_url
 from app.core.documents import Chunk, DocumentFormat, StoredIndexVersion
 from app.core.exceptions import StorageUnavailable
 
 logger = logging.getLogger(__name__)
 
-#: 컬렉션 이름. 문서 청크가 들어가는 유일한 컬렉션이다.
-DEFAULT_COLLECTION = "document_chunks"
+#: 컬렉션 이름의 앞부분. 뒤에 벡터 차원이 붙는다 (`collection_for`).
+COLLECTION_PREFIX = "document_chunks"
+
+#: 차원을 모르는 호출자(테스트·수동 점검)를 위한 기본값.
+DEFAULT_COLLECTION = COLLECTION_PREFIX
+
+
+def collection_for(dimension: int) -> str:
+    """벡터 차원마다 컬렉션을 나눈다.
+
+    **Chroma 는 컬렉션 하나에 차원 하나만 허용하고, 그 차원은 컬렉션을 비운 뒤에도
+    남는다.** 실측: 4차원으로 쓴 컬렉션에서 모든 청크를 지운 뒤 8차원을 넣으면
+    `Collection expecting embedding with dimension of 4, got 8` 로 거절된다.
+
+    이름을 나누지 않으면 **차원이 다른 모델로 바꾼 뒤 복구가 불가능해진다.** 기동 정리가
+    구 서명 청크를 지우고 `stale` 로 표시해도, 재업로드가 같은 컬렉션에 새 차원을 넣으려다
+    영구히 실패한다 — "재업로드하면 복구된다"는 약속이 그 순간 거짓이 된다.
+
+    차원이 같은 두 모델은 컬렉션을 공유한다. 그건 문제가 되지 않는다 — 모델이 달라지면
+    `index_signature` 가 달라지고, 검색과 삭제가 그 값으로 걸러내기 때문이다. 여기서
+    나누는 것은 **Chroma 가 강제하는 제약 하나**뿐이다.
+    """
+    return f"{COLLECTION_PREFIX}_d{dimension}"
 
 
 class ChromaVectorStore:
-    """청크와 벡터를 임베디드 Chroma 컬렉션 하나에 보관한다."""
+    """청크와 벡터를 Chroma 서버의 컬렉션 하나에 보관한다."""
 
-    def __init__(self, path: Path, *, collection_name: str = DEFAULT_COLLECTION) -> None:
-        self._path = Path(path)
+    def __init__(self, url: str, *, collection_name: str = DEFAULT_COLLECTION) -> None:
+        # 주소 해석만 지금 한다. 접속은 첫 사용까지 미룬다 — 서버가 떠 있는지는 기동
+        # 조건이 아니다. 반면 오타 난 주소는 여기서 기동을 막는다.
+        self._endpoint: ChromaEndpoint = parse_url(url)
         self._collection_name = collection_name
         self._collection: Any = None
         # 클라이언트 초기화가 여러 워커 스레드에서 동시에 일어날 수 있다.
@@ -150,11 +176,8 @@ class ChromaVectorStore:
         return self._collection
 
     def _open_collection(self) -> Any:
-        # import 비용이 커서 모듈 최상단이 아니라 여기서 가져온다. 앱 기동을 느리게 하지 않는다.
-        import chromadb
-
-        self._path.mkdir(parents=True, exist_ok=True)
-        client = chromadb.PersistentClient(path=str(self._path))
+        logger.info("벡터 스토어에 접속합니다", extra={"vector_store": str(self._endpoint)})
+        client = create_client(self._endpoint)
         return client.get_or_create_collection(
             name=self._collection_name,
             # 벡터를 항상 정규화해 넣으므로 코사인이 자연스러운 지표다. 값을 명시해
@@ -167,7 +190,7 @@ class ChromaVectorStore:
         )
 
     async def _offload(self, operation, *args):
-        """파일 I/O 를 이벤트 루프 밖으로 내보내고, 실패를 도메인 예외로 바꾼다.
+        """네트워크 I/O 를 이벤트 루프 밖으로 내보내고, 실패를 도메인 예외로 바꾼다.
 
         라이브러리 예외가 라우터까지 새면 계층 경계가 무의미해지고 내부 메시지가
         응답에 노출된다.
@@ -182,8 +205,8 @@ class ChromaVectorStore:
 def _metadata(chunk: Chunk, filename: str, document_format: DocumentFormat) -> dict[str, Any]:
     """청크 하나의 메타데이터.
 
-    `page` 는 값이 있을 때만 키를 넣는다. 임베디드 벡터 스토어가 널 메타데이터를
-    허용하지 않고, 센티널 값(-1 같은)을 쓰면 소비자가 그 규약을 알아야 한다.
+    `page` 는 값이 있을 때만 키를 넣는다. Chroma 가 널 메타데이터를 허용하지 않고,
+    센티널 값(-1 같은)을 쓰면 소비자가 그 규약을 알아야 한다.
     """
     metadata: dict[str, Any] = {
         "document_id": chunk.document_id,

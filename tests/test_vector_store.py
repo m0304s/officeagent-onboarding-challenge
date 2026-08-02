@@ -6,29 +6,60 @@
 쓰는 도중에 이미 이전 벡터가 사라지고, 실패해도 되돌릴 원본이 없다.
 
 질의는 검증하지 않는다 — `query` 는 이 어댑터에 없다(retrieval change 의 몫).
+
+**실물 서버가 필요하다.** Chroma 를 서버 모드로 쓰므로 이 파일은 대역으로 대체할 수 없다 —
+대역으로 바꾸는 순간 확인하려는 것(우리 메타데이터·필터·id 규약이 *실제 Chroma* 에서
+성립하는가)이 사라진다. 서버가 없으면 파일 전체를 건너뛰고, 나머지 스위트는 그대로 돈다.
+서버를 띄우는 명령은 `make vector-store` 다.
 """
 
-from pathlib import Path
+import asyncio
+from uuid import uuid4
 
 import pytest
 
 from app.adapters.protocols import VectorStore
-from app.adapters.vector_store import ChromaVectorStore
+from app.adapters.vector_store import ChromaVectorStore, collection_for
+from app.adapters.vector_store.client import create_client, parse_url
 from app.core.documents import (
     Chunk,
     ChunkLocation,
     DocumentFormat,
     StoredIndexVersion,
 )
+from app.core.exceptions import StorageUnavailable
+from tests.conftest import VECTOR_STORE_URL, needs_vector_store
+
+pytestmark = needs_vector_store
 
 DOCUMENT_ID = "doc-1"
 OTHER_ID = "doc-2"
 DIMENSION = 4
 
 
+def _drop(collection_name: str) -> None:
+    """정리. 컬렉션을 한 번도 안 만든 테스트도 있으므로 없는 것은 넘어간다."""
+    try:
+        create_client(parse_url(VECTOR_STORE_URL)).delete_collection(collection_name)
+    except Exception:  # noqa: BLE001 - 정리 실패가 테스트 결과를 뒤집으면 안 된다
+        pass
+
+
 @pytest.fixture
-def store(data_dir: Path) -> ChromaVectorStore:
-    return ChromaVectorStore(data_dir / "chroma")
+async def collection_name():
+    """테스트마다 **자기 컬렉션**을 쓴다.
+
+    서버는 하나뿐이라 임시 디렉터리 같은 격리가 없다. 컬렉션을 공유하면 테스트 순서가
+    결과를 바꾸고, 한 테스트의 잔여물이 다음 테스트의 개수 단언을 깨뜨린다.
+    """
+    name = f"test_{uuid4().hex}"
+    yield name
+    await asyncio.to_thread(_drop, name)
+
+
+@pytest.fixture
+def store(collection_name: str) -> ChromaVectorStore:
+    return ChromaVectorStore(VECTOR_STORE_URL, collection_name=collection_name)
 
 
 def make_chunks(
@@ -222,13 +253,48 @@ async def test_stored_versions_are_empty_on_a_fresh_store(store):
     assert await store.list_stored_versions() == []
 
 
-# ── 영속성 ──────────────────────────────────────────────────────────────
+# ── 컬렉션은 차원마다 나뉜다 ────────────────────────────────────────────
 
 
-async def test_chunks_survive_a_new_client(data_dir: Path):
-    path = data_dir / "chroma"
-    await store_chunks(ChromaVectorStore(path), make_chunks(2))
+def test_the_collection_name_carries_the_dimension():
+    assert collection_for(384) != collection_for(768)
 
-    reopened = ChromaVectorStore(path)
+
+async def test_a_collection_keeps_its_dimension_after_being_emptied(collection_name: str):
+    """`collection_for` 가 존재하는 이유를 실물로 고정한다.
+
+    컬렉션을 비워도 차원이 남는다. 이름을 나누지 않으면, 차원이 다른 모델로 바꾼 뒤
+    기동 정리가 청크를 전부 지워도 재업로드가 영구히 실패한다 — "재업로드하면 복구된다"는
+    약속이 그 순간 거짓이 된다. Chroma 의 동작이 바뀌면 여기서 알게 된다.
+    """
+    store = ChromaVectorStore(VECTOR_STORE_URL, collection_name=collection_name)
+    await store_chunks(store, make_chunks(1))
+    await store.delete_document(DOCUMENT_ID)
+    assert await store.count_chunks() == 0
+
+    with pytest.raises(StorageUnavailable):
+        await store.add_chunks(
+            make_chunks(1),
+            [[0.5] * (DIMENSION + 4)],  # 차원이 다른 모델로 바꾼 상황
+            filename="company-policy.txt",
+            document_format=DocumentFormat.TXT,
+        )
+
+
+# ── 서버가 진실의 원천이다 ──────────────────────────────────────────────
+
+
+async def test_a_new_client_sees_what_another_wrote(collection_name: str):
+    """서버 모드에서 영속성은 서버(와 그 볼륨)의 책임이다.
+
+    어댑터 쪽에서 확인할 수 있는 것은 **상태를 프로세스 안에 들고 있지 않다**는 것뿐이다.
+    새 인스턴스가 같은 값을 본다는 사실이 그것을 말한다 — 캐시를 들고 있었다면 여기서
+    0이 나온다.
+    """
+    await store_chunks(
+        ChromaVectorStore(VECTOR_STORE_URL, collection_name=collection_name), make_chunks(2)
+    )
+
+    reopened = ChromaVectorStore(VECTOR_STORE_URL, collection_name=collection_name)
 
     assert await reopened.count_chunks(DOCUMENT_ID) == 2

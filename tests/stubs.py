@@ -76,6 +76,7 @@ class FakeEmbedder:
         max_input_tokens: int = 512,
         delay: float = 0.0,
         chars_per_token: int = 2,
+        warm_up_error: Exception | None = None,
     ) -> None:
         self.dimension = dimension
         self.max_input_tokens = max_input_tokens
@@ -84,6 +85,20 @@ class FakeEmbedder:
         self._chars_per_token = chars_per_token
         #: 인코딩 호출을 배치 단위로 기록한다. 배치 경계와 중복 인코딩 여부를 본다.
         self.batches: list[list[str]] = []
+        #: 선로딩 호출 횟수. 배선이 정말로 `warm_up` 을 부르는지 확인할 수단이다.
+        self.warm_ups = 0
+        #: 선로딩 실패를 주입한다 — "실패해도 기동은 계속된다"를 만드는 유일한 방법.
+        self.warm_up_error = warm_up_error
+
+    async def warm_up(self) -> None:
+        """올릴 것이 없으므로 하는 일도 없다 — 호출 사실만 남긴다.
+
+        no-op 이어도 프로토콜에 있어야 한다. 배선이 `isinstance` 로 구체 어댑터를
+        확인해 부르면 계층 규약이 깨지므로, 모든 임베더가 이 요청을 받을 수 있어야 한다.
+        """
+        self.warm_ups += 1
+        if self.warm_up_error is not None:
+            raise self.warm_up_error
 
     async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         self.batches.append(list(texts))

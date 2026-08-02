@@ -16,6 +16,7 @@
 `test_vector_store.py`·`test_registry.py` 가 덮는다.
 """
 
+import socket
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +26,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.adapters.protocols import HealthProbe
+from app.adapters.vector_store.client import parse_url
 from app.config import Settings
 from app.main import create_app
 
@@ -39,12 +41,32 @@ def data_dir(tmp_path: Path) -> Path:
     return d
 
 
+#: 테스트가 실물 Chroma 를 볼 때 쓰는 주소. `docker compose up vector-store` 가 여는
+#: 포트이자 `Settings` 의 기본값이다. 환경변수로 읽지 않는 이유는 픽스처가 환경에 따라
+#: 다른 값을 주면 실패가 재현되지 않기 때문이다 — 서버가 그 자리에 없으면 **건너뛴다**.
+VECTOR_STORE_URL = "http://localhost:8001"
+
+
+def vector_store_is_reachable(url: str = VECTOR_STORE_URL) -> bool:
+    """TCP 연결만 해 본다. chromadb import 는 비싸고, 여기서 알고 싶은 것은 존재 여부다."""
+    endpoint = parse_url(url)
+    with socket.socket() as probe:
+        probe.settimeout(0.3)
+        return probe.connect_ex((endpoint.host, endpoint.port)) == 0
+
+
+needs_vector_store = pytest.mark.skipif(
+    not vector_store_is_reachable(),
+    reason=f"Chroma 서버({VECTOR_STORE_URL})가 떠 있지 않습니다 — `make vector-store` 로 띄웁니다",
+)
+
+
 @pytest.fixture
 def settings(data_dir: Path) -> Settings:
     """환경과 무관하게 결정론적인 설정. 상한은 테스트가 오래 걸리지 않게 짧게 잡는다."""
     return Settings(
         cache_url="redis://unused:6379/0",
-        vector_store_path=data_dir / "chroma",
+        vector_store_url=VECTOR_STORE_URL,
         registry_path=data_dir / "registry.sqlite3",
         probe_timeout_seconds=0.2,
         health_total_timeout_seconds=0.5,
