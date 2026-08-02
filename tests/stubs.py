@@ -21,6 +21,7 @@ from app.core.documents import (
 )
 from app.core.exceptions import StorageUnavailable
 from app.core.models import ProbeResult, Status
+from app.core.retrieval import ScoredChunk
 
 
 class StubProbe:
@@ -188,15 +189,36 @@ class StubVectorStore:
     - `fail_add_after`: 이 횟수만큼 성공한 뒤 `add_chunks` 가 실패한다. `0`이면 처음부터
       실패하고, `1`이면 배치 하나를 쓴 뒤 실패해 **부분 기록** 상태가 된다.
     - `fail_delete`: `delete_document` 가 항상 실패한다. 되돌리기까지 실패하는 경로다.
+    - `fail_query`: `query` 가 항상 실패한다. 저장소 장애가 빈 결과로 위장되지 않는지 본다.
+    - `query_delay`: 질의가 오래 걸리는 상황. **블로킹 지연을 스레드풀로 내보낸다** —
+      실물 어댑터가 그러하듯 오프로드 책임이 구현체에 있으므로, 대역도 같은 자리에서
+      같은 방식으로 처리해야 그 위 계층(서비스·라우터)의 블로킹만 남아 드러난다.
+
+    **질의는 완전 탐색 코사인이다.** 근사 검색(HNSW)의 흔들림이 없어야 검색 품질
+    테스트가 임베딩의 성질만 재게 된다. 실물 Chroma 와의 계약(필터 표현식·메타데이터
+    왕복)은 `test_vector_store.py` 가 따로 덮는다.
     """
 
-    def __init__(self, *, fail_add_after: int | None = None, fail_delete: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_add_after: int | None = None,
+        fail_delete: bool = False,
+        fail_query: bool = False,
+        query_delay: float = 0.0,
+    ) -> None:
         self.records: dict[str, dict] = {}
         self.fail_add_after = fail_add_after
         self.fail_delete = fail_delete
+        self.fail_query = fail_query
         self.add_calls = 0
+        self._query_delay = query_delay
         #: 배치 크기를 호출 순서대로 기록한다. 배치 경계를 확인하는 데 쓴다.
         self.batch_sizes: list[int] = []
+        #: 질의 호출을 `(top_k, 대상 삼중항)` 으로 기록한다. "거부된 요청은 저장소에
+        #: 닿지 않는다"와 "대상이 없으면 저장소를 건드리지 않는다"는 호출 **부재**로만
+        #: 확인되므로, 기록이 없으면 그 단언을 쓸 수 없다.
+        self.queries: list[tuple[int, tuple[StoredIndexVersion, ...]]] = []
 
     async def add_chunks(
         self,
@@ -265,6 +287,53 @@ class StubVectorStore:
         }
         return [StoredIndexVersion(*version) for version in sorted(versions)]
 
+    async def query(
+        self,
+        embedding: Sequence[float],
+        *,
+        top_k: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[ScoredChunk]:
+        self.queries.append((top_k, tuple(versions)))
+        if self._query_delay:
+            await asyncio.to_thread(time.sleep, self._query_delay)
+        if self.fail_query:
+            raise StorageUnavailable("주입된 질의 실패")
+        # 빈 목록은 **대상 없음**이다. 실물 어댑터와 같은 판정이라야 대역으로 통과한
+        # 테스트가 실물에서 뒤집히지 않는다.
+        if not versions:
+            return []
+        targets = {
+            (version.document_id, version.revision, version.index_signature) for version in versions
+        }
+        scored = [
+            (_cosine(embedding, record["embedding"]), record)
+            for record in self.records.values()
+            if (
+                record["chunk"].document_id,
+                record["chunk"].revision,
+                record["chunk"].index_signature,
+            )
+            in targets
+        ]
+        # 점수가 같은 청크의 순서까지 고정한다 — "같은 질의는 같은 결과"가 dict 순서에
+        # 기대면 저장 순서가 바뀌는 순간 거짓이 된다.
+        scored.sort(key=lambda item: (-item[0], item[1]["chunk"].id))
+        return [
+            ScoredChunk(
+                document_id=record["chunk"].document_id,
+                revision=record["chunk"].revision,
+                index_signature=record["chunk"].index_signature,
+                chunk_index=record["chunk"].chunk_index,
+                text=record["chunk"].text,
+                location=record["chunk"].location,
+                filename=record["filename"],
+                format=record["format"],
+                score=score,
+            )
+            for score, record in scored[:top_k]
+        ]
+
     # ── 테스트가 들여다보는 창 ──────────────────────────────────────────
 
     def embeddings_of(self, document_id: str) -> list[list[float]]:
@@ -287,6 +356,19 @@ class StubVectorStore:
             ),
             key=lambda chunk: chunk.chunk_index,
         )
+
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    """코사인 유사도를 `[0, 1]` 로 잘라 돌려준다.
+
+    실물 어댑터가 거리를 유사도로 바꾸며 클램프하는 것과 같은 정의역이다 — 대역이
+    범위를 벗어난 점수를 내면 `ScoredChunk` 가 거절해 테스트가 대역 탓으로 깨진다.
+    """
+    dot = sum(a * b for a, b in zip(left, right, strict=True))
+    norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
+    if not norm:
+        return 0.0
+    return min(1.0, max(0.0, dot / norm))
 
 
 def _matches(
