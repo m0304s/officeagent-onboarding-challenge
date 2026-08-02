@@ -1,8 +1,6 @@
 services:
   cache:
     image: redis:7-alpine
-    # 캐시가 늦게 뜨는 동안 API 가 503 을 내면 헬스체크와 얽혀 재시작 루프가 된다.
-    # 캐시 쪽에 자체 헬스체크를 걸어 API 가 그 뒤에 뜨게 한다 (design 결정 4).
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -14,14 +12,12 @@ services:
   vector-store:
     image: chromadb/chroma:1.5.9
     volumes:
-      # 이미지의 persist_path 가 /data 다.
-      - vector-store:/data
+      # 프로젝트 루트의 ./data/chroma를
+      # 컨테이너 내부 /data에 연결한다.
+      - ./data/chroma:/data
     ports:
-      # 호스트 8000 은 API 가 쓰므로 8001 로 연다. 도커 밖에서 개발할 때도 같은 주소
-      # (기본 설정값)를 쓰게 된다.
       - "8001:8000"
     healthcheck:
-      # 이미지에 curl·wget 이 없다. bash 의 /dev/tcp 로 포트만 확인한다.
       test: ["CMD", "bash", "-c", "cat < /dev/null > /dev/tcp/localhost/8000"]
       interval: 5s
       timeout: 3s
@@ -29,12 +25,23 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  vector-store-ui:
+    # Chroma 1.5.9 서버는 자체 UI 가 없다(루트 경로가 404). 비공식 admin UI 를 붙인다.
+    # 이미지가 arm64 전용이라 평가자 환경(amd64)에서 `docker compose up` 이 깨질 수
+    # 있다. 프로필로 격리해 기본 기동에서는 아예 뜨지 않게 한다 — `--profile gui`.
+    profiles: ["gui"]
+    image: fengzhichao/chromadb-admin:0.0.2
+    ports:
+      - "3001:3001"
+    depends_on:
+      vector-store:
+        condition: service_healthy
+    # 볼륨 없음. 접속 설정은 브라우저 localStorage 에만 남고 컨테이너는 상태가 없다.
+    # 벡터 데이터도 파일이 아니라 HTTP(v2 API)로 읽으므로 ./data 를 붙일 필요가 없다.
+    restart: unless-stopped
+
   api:
     build: .
-    # 워커 1개로 고정한다. 같은 문서에 대한 동시 요청의 직렬화를 **프로세스 안의**
-    # `asyncio.Lock` 으로 하고 있어(design 결정 8), 워커를 늘리면 그 잠금이 가장 먼저
-    # 깨진다. 늘리려면 외부 잠금 도입이 먼저다 — 벡터 스토어를 서버 모드로 옮긴 지금
-    # 남은 제약은 이것 하나다.
     command:
       - uvicorn
       - --factory
@@ -48,21 +55,14 @@ services:
     environment:
       APP_CACHE_URL: redis://cache:6379/0
       APP_VECTOR_STORE_URL: http://vector-store:8000
-      # 문서 레지스트리(SQLite). 벡터 스토어가 별도 서비스가 된 뒤에도 이 파일은
-      # API 쪽에 남으므로 자기 볼륨이 필요하다 — 컨테이너를 다시 만들면 "지금 유효한
-      # 리비전이 무엇인가"가 통째로 사라지기 때문이다.
       APP_REGISTRY_PATH: /data/registry.sqlite3
     ports:
       - "8000:8000"
     volumes:
-      - registry:/data
-      # 호스트 자격증명의 **사본**. 만료 시 CLI 가 갱신을 시도하므로 쓰기 가능하게 붙인다.
-      # `:ro` 로 붙이면 access token 수명(실측 약 8시간)이 끝나는 순간 인증이 끊긴다.
-      # 디렉터리는 scripts/sync-credentials.sh 가 미리 만든다 (`make up` 이 먼저 호출).
+      # 프로젝트 루트의 ./data/registry를
+      # 컨테이너 내부 /data에 연결한다.
+      - ./data/registry:/data
       - ./.secrets/claude:/home/app/.claude
-    # 호스트 UID 가 1000 이 아닌 리눅스에서 마운트한 자격증명을 컨테이너가 읽지 못하면
-    # 아래 줄의 주석을 풀면 된다. macOS(Docker Desktop)는 소유권을 매핑해 주므로 불필요.
-    # user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     depends_on:
       cache:
         condition: service_healthy
@@ -73,10 +73,5 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-      # 기동 유예. 이 시간 안의 실패는 재시도로 흡수된다.
       start_period: 30s
     restart: unless-stopped
-
-volumes:
-  vector-store:
-  registry:
