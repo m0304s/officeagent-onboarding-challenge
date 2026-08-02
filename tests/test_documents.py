@@ -5,6 +5,7 @@
 """
 
 import inspect
+from datetime import UTC, datetime
 
 import pytest
 
@@ -12,6 +13,11 @@ from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import (
     Chunk,
     ChunkLocation,
+    Document,
+    DocumentFormat,
+    IndexStatus,
+    IngestionStatus,
+    StoredIndexVersion,
     derive_document_id,
     derive_index_signature,
     derive_revision,
@@ -234,3 +240,105 @@ def test_empty_chunk_is_rejected():
             text="",
             location=ChunkLocation(char_start=0, char_end=1),
         )
+
+
+# ── 레코드가 스스로 하는 판정 ────────────────────────────────────────────
+#
+# 수집(재색인·`stale` 처리·기동 정리)과 검색(대상 집합·현재성 재검증)이 **같은 축들**을
+# 본다. 판정이 두 서비스에 따로 있으면 한쪽만 고쳐진 순간 수집이 유효하다고 여기는
+# 문서와 검색이 찾는 문서가 어긋나는데, 그때 **각자 자기 기준으로는 옳아서 어디에도
+# 오류가 남지 않는다.** 그래서 판정을 레코드에 두고, 여기서 직접 고정한다.
+
+SIGNATURE = "1111111111111111"
+OTHER_SIGNATURE = "2222222222222222"
+REVISION = "a" * 64
+OTHER_REVISION = "b" * 64
+
+
+def make_document(**overrides) -> Document:
+    defaults = {
+        "document_id": "doc-1",
+        "filename": "policy.txt",
+        "format": DocumentFormat.TXT,
+        "revision": REVISION,
+        "index_signature": SIGNATURE,
+        "chunk_count": 3,
+        "byte_size": 100,
+        "ingested_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    return Document(**{**defaults, **overrides})
+
+
+def test_a_document_indexed_under_another_configuration_does_not_match():
+    """서명이 다르면 벡터가 다른 의미 공간에 있다."""
+    document = make_document()
+
+    assert document.matches_index(SIGNATURE)
+    assert not document.matches_index(OTHER_SIGNATURE)
+
+
+def test_a_stale_document_matches_the_index_but_is_not_searchable():
+    """기동 정리는 `stale` 문서의 **서명을 그대로 둔다** — 재업로드를 재색인으로 잇기 위해서다.
+
+    그래서 서명만 보는 판정으로는 걸러지지 않는다. 청크가 0개인 문서를 검색 대상에
+    넣으면 대상 수만 늘고 결과는 나오지 않아, 빈 결과의 이유를 진단할 수 없게 된다.
+    """
+    stale = make_document(index_status=IndexStatus.STALE, chunk_count=0)
+
+    assert stale.matches_index(SIGNATURE), "서명은 그대로여야 재업로드가 재색인으로 이어진다"
+    assert not stale.is_searchable_under(SIGNATURE)
+
+
+def test_being_up_to_date_needs_all_three_axes():
+    """하나라도 어긋나면 다시 색인해야 한다.
+
+    `revision` 만 보면 모델이나 청킹을 바꾼 뒤 같은 파일을 다시 올려도 아무 일이
+    일어나지 않고, 사용자는 재색인했다고 믿는다.
+    """
+    document = make_document()
+    current = {"revision": REVISION, "index_signature": SIGNATURE}
+
+    assert document.is_up_to_date(**current)
+    assert not document.is_up_to_date(**{**current, "revision": OTHER_REVISION})
+    assert not document.is_up_to_date(**{**current, "index_signature": OTHER_SIGNATURE})
+    assert not make_document(index_status=IndexStatus.STALE, chunk_count=0).is_up_to_date(**current)
+
+
+def test_a_version_carries_all_three_axes_of_the_record():
+    """축 하나를 빠뜨려도 타입은 멀쩡하다 — 리비전이 빠지면 지운 문장이 검색된다."""
+    document = make_document()
+
+    version = StoredIndexVersion.of(document)
+
+    assert version == StoredIndexVersion(
+        document_id="doc-1", revision=REVISION, index_signature=SIGNATURE
+    )
+
+
+def test_versions_of_different_generations_are_different_values():
+    """값 객체로 비교하므로 집합 연산이 성립한다 — 기동 정리가 그 성질에 기댄다."""
+    document = make_document()
+
+    assert StoredIndexVersion.of(document) != StoredIndexVersion.of(
+        make_document(revision=OTHER_REVISION)
+    )
+    assert len({StoredIndexVersion.of(document), StoredIndexVersion.of(make_document())}) == 1
+
+
+@pytest.mark.parametrize(
+    ("current", "revision", "expected"),
+    [
+        (None, REVISION, IngestionStatus.CREATED),
+        ("same", OTHER_REVISION, IngestionStatus.REPLACED),
+        ("same", REVISION, IngestionStatus.REINDEXED),
+    ],
+    ids=["최초", "내용이 바뀜", "내용은 같음"],
+)
+def test_the_status_says_what_this_request_did(current, revision, expected):
+    """`REINDEXED` 를 `REPLACED` 와 뭉개면 `previous_revision` 이 현재 값과 같아진다.
+
+    응답이 "이전 리비전은 지금 리비전과 같다"고 말하게 되어 자기모순이 된다.
+    """
+    record = make_document() if current == "same" else None
+
+    assert IngestionStatus.of(record, revision) is expected

@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.adapters.protocols import DocumentRegistry, Embedder, VectorStore
-from app.core.documents import Document, IndexStatus, StoredIndexVersion
+from app.core.documents import Document, StoredIndexVersion
 from app.core.retrieval import ScoredChunk
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ class RetrievalService:
         scored = await self._store.query(
             embedding,
             top_k=effective_k,
-            versions=[_version_of(document) for document in current.values()],
+            versions=[StoredIndexVersion.of(document) for document in current.values()],
         )
 
         fresh = await self._drop_superseded(scored, current)
@@ -122,22 +122,20 @@ class RetrievalService:
     async def _current_versions(self) -> dict[str, Document]:
         """지금 검색해도 되는 문서만 `document_id → 레코드` 로.
 
-        조건은 둘이다 — `index_status` 가 `indexed` 이고, `index_signature` 가 현재
-        구성과 같을 것. 서명 축이 빠지면 구 구성으로 만든 벡터가 현재 질의 벡터와 같은
-        공간에 있는 척하고, 리비전 축은 레코드가 이미 "현재"만 들고 있어 자동으로 따라온다.
+        판정은 레코드가 한다(`Document.is_searchable_under`) — 수집의 `stale` 처리와
+        재색인 판정이 같은 축들을 보므로, 여기서 따로 구현하면 두 벌이 되고 한쪽만
+        고쳐진 순간 수집이 유효하다고 여기는 문서와 검색이 찾는 문서가 어긋난다.
+
+        리비전 축이 조건에 없는 이유는 레코드가 이미 "현재"만 들고 있어 자동으로
+        따라오기 때문이다. 그 가정이 질의 사이에 깨질 수 있다는 것이 아래 재검증이
+        존재하는 이유다.
         """
         documents = await self._registry.list_all()
         return {
             document.document_id: document
             for document in documents
-            if self._is_searchable(document)
+            if document.is_searchable_under(self._index_signature)
         }
-
-    def _is_searchable(self, document: Document) -> bool:
-        return (
-            document.index_status is IndexStatus.INDEXED
-            and document.index_signature == self._index_signature
-        )
 
     # ── 현재성 재검증 ───────────────────────────────────────────────────
 
@@ -188,24 +186,20 @@ class RetrievalService:
         )
         return [chunk for chunk in scored if chunk.document_id not in superseded]
 
-    def _is_still_current(self, record: Document | None, filtered_with: Document) -> bool:
+    @staticmethod
+    def _is_still_current(record: Document | None, filtered_with: Document) -> bool:
         """필터에 쓴 삼중항이 지금도 그 문서의 현재 값인가.
 
         `None` 은 삭제가 완료됐다는 뜻이므로 당연히 아니다. 삭제 경로가 이미 안전하다는
         사실과 무관하게 같은 판정을 하는 이유는, 두 경우를 가르는 분기가 하나 줄기
         때문이다 — 그 분기의 조건이 수집의 삭제 순서에 대한 가정이라 수집이 순서를
         바꾸면 조용히 틀린다.
+
+        비교 기준을 현재 설정이 아니라 **필터에 실제로 쓴 레코드**로 두는 이유는 질문이
+        "지금 검색 가능한가"가 아니라 "우리가 찾은 그 세대가 아직 현재인가"이기
+        때문이다. 두 값은 같지만(대상 집합이 이미 현재 서명으로 걸렀다) 의도가 다르다.
         """
-        return (
-            record is not None
-            and self._is_searchable(record)
-            and record.revision == filtered_with.revision
+        return record is not None and record.is_up_to_date(
+            revision=filtered_with.revision,
+            index_signature=filtered_with.index_signature,
         )
-
-
-def _version_of(document: Document) -> StoredIndexVersion:
-    return StoredIndexVersion(
-        document_id=document.document_id,
-        revision=document.revision,
-        index_signature=document.index_signature,
-    )

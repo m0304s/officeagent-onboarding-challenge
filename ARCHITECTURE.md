@@ -81,15 +81,18 @@ src/app/
   api/          라우터. HTTP 관심사만 — 검증, 상태 코드, 응답 직렬화
     routes/health.py
     routes/documents.py   업로드·목록·상세·삭제. 크기 상한 검사와 상태 코드 선택
+    routes/search.py      질의 검증(내용·문자 수·토큰 수·top_k 경계)과 응답 모양
     errors.py           도메인 예외 → HTTP 변환 (이 계층에서만)
     logging.py          JSON 포매터, 요청 단위 로그 미들웨어
   services/     유스케이스 오케스트레이션
     health.py           프로브를 모아 전체 상태를 판정
     ingestion.py        파싱(오프로드) → 청킹 → 토큰 가드 → 배치 임베딩·저장 → 커밋 → 정리
+    retrieval.py        질의 임베딩 → 대상 집합 → 저장소 질의 → 현재성 재검증 → 하한
   core/         도메인. 프레임워크·외부 라이브러리를 import 하지 않는다
     models.py           상태 값 객체 (Status, ProbeResult, HealthReport)
-    documents.py        문서 값 객체, 식별자·리비전·색인 서명 유도
-    chunking.py         분할 전략 레지스트리와 recursive 분할
+    documents.py        문서 값 객체, 식별자·리비전·색인 서명 유도, 색인 구성 판정
+    chunking.py         분할 전략 레지스트리와 recursive 분할, 겹침 보정
+    retrieval.py        검색 결과 값 객체 (ScoredChunk)
     exceptions.py       도메인 예외 기반 클래스, ErrorCode
   adapters/     외부 경계
     protocols.py        HealthProbe · DocumentParser · Embedder · VectorStore · DocumentRegistry
@@ -103,6 +106,10 @@ src/app/
 ```
 
 상위 레이어는 하위 레이어의 인터페이스만 알고 구현체는 모릅니다.
+
+**레코드가 스스로 답할 수 있는 질문은 레코드에 둡니다.** "이 문서가 현재 색인 구성으로 저장되어 있는가"(`matches_index`), "지금 검색 대상인가"(`is_searchable_under`), "이 내용을 이 구성으로 이미 갖고 있는가"(`is_up_to_date`) — 셋 다 `Document`의 메서드입니다. 수집(재색인 판정·`stale` 처리·기동 정리)과 검색(대상 집합·현재성 재검증)이 **같은 축들을 보기 때문**입니다. 각 서비스가 따로 구현하면 한쪽만 고쳐진 순간 수집이 유효하다고 여기는 문서와 검색이 찾는 문서가 어긋나는데, 그때 **각자 자기 기준으로는 옳아서 어디에도 오류가 남지 않습니다.** 색인 서명을 배선에서 한 번만 유도해 두 서비스에 주입하는 것(아래 "색인 서명")은 절반만 막습니다 — 값을 통일해도 그 값을 쓰는 규칙이 여러 벌이면 같은 자리가 다시 열립니다.
+
+서비스에 남는 것은 **그 판정으로 무엇을 할 것인가**입니다. "이미 최신이면 저장 경로에 진입하지 않는다", "검색 대상이 비면 저장소를 건드리지 않는다" 같은 결정이 유스케이스이고, 그 앞의 사실 판정은 도메인입니다.
 
 ### 경계를 컨벤션이 아니라 도구로 강제한다
 
