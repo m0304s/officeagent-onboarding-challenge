@@ -529,7 +529,7 @@ class IngestionService:
         limit = self._embedder.max_input_tokens
         guarded: list[TextChunk] = []
         for chunk in chunks:
-            if self._embedder.count_tokens(chunk.text) <= limit:
+            if self._embedder.count_document_tokens(chunk.text) <= limit:
                 guarded.append(chunk)
                 continue
             guarded.extend(self._shrink(chunk, limit))
@@ -542,7 +542,7 @@ class IngestionService:
         while size > _MIN_RESPLIT_SIZE:
             size = max(_MIN_RESPLIT_SIZE, size // 2)
             pieces = resplit(chunk, size=size, overlap=self._overlap_for(size))
-            if all(self._embedder.count_tokens(piece.text) <= limit for piece in pieces):
+            if all(self._embedder.count_document_tokens(piece.text) <= limit for piece in pieces):
                 logger.info(
                     "토큰 상한을 넘는 청크를 다시 쪼갰습니다",
                     extra={"resplit_size": size, "resplit_pieces": len(pieces)},

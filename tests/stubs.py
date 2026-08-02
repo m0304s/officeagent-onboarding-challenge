@@ -111,12 +111,25 @@ class FakeEmbedder:
             await asyncio.sleep(self._delay)
         return self._vector(text)
 
-    def count_tokens(self, text: str) -> int:
+    def count_document_tokens(self, text: str) -> int:
         """문자 수에 비례하는 결정론적 토큰 수.
 
         `chars_per_token`을 크게 잡으면 토큰 가드가 걸리는 상황을 실제 토크나이저
         없이 만들 수 있다.
         """
+        return self._count(text)
+
+    def count_query_tokens(self, text: str) -> int:
+        """문서 경로와 **같은 수**를 돌려준다.
+
+        페이크에는 역할 접두사가 없으므로 흉내 낼 차이도 없다. 두 경로의 계산이
+        실제로 갈리는지는 접두사를 아는 실물 어댑터에서 확인한다 — 여기서 인위적인
+        차이를 만들면 검증 대상이 페이크가 되고, 정작 확인하려던 성질은 여전히
+        실물에서 미확인으로 남는다. 벡터를 대칭으로 남긴 이유와 같다.
+        """
+        return self._count(text)
+
+    def _count(self, text: str) -> int:
         return max(1, math.ceil(len(text) / self._chars_per_token))
 
     def _vector(self, text: str) -> list[float]:

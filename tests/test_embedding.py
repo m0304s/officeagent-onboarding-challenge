@@ -135,8 +135,19 @@ def test_the_fakes_token_count_is_tunable():
     """토큰 가드가 걸리는 상황을 실제 토크나이저 없이 만들 수 있어야 한다."""
     text = "가" * 100
 
-    assert FakeEmbedder(chars_per_token=2).count_tokens(text) == 50
-    assert FakeEmbedder(chars_per_token=1).count_tokens(text) == 100
+    assert FakeEmbedder(chars_per_token=2).count_document_tokens(text) == 50
+    assert FakeEmbedder(chars_per_token=1).count_document_tokens(text) == 100
+
+
+def test_the_fake_counts_both_roles_the_same():
+    """페이크에는 역할 접두사가 없으므로 흉내 낼 차이도 없다.
+
+    여기서 인위적인 차이를 만들면 검증 대상이 페이크가 되고, 정작 확인하려던 성질
+    (두 경로가 실제로 다르게 센다)은 여전히 실물에서 미확인으로 남는다.
+    """
+    embedder = FakeEmbedder(chars_per_token=2)
+
+    assert embedder.count_query_tokens(KOREAN) == embedder.count_document_tokens(KOREAN)
 
 
 async def test_embedding_nothing_calls_nothing():
@@ -189,6 +200,56 @@ class _SlowModel:
         if self._delay:
             time.sleep(self._delay)
         return [[0.1] * 384 for _ in texts]
+
+
+# ── 토큰 계산 ────────────────────────────────────────────────────────────
+
+
+class _RecordingTokenizer:
+    """인코딩된 문자열을 그대로 남기는 토크나이저 대역. 토큰 하나가 문자 하나다."""
+
+    def __init__(self) -> None:
+        self.encoded: list[str] = []
+
+    def encode(self, text: str) -> list[str]:
+        self.encoded.append(text)
+        return list(text)
+
+
+class _TokenizerOnlyModel:
+    """토크나이저만 있는 모델 대역 — 가중치 없이 계산 경로만 본다."""
+
+    def __init__(self) -> None:
+        self.tokenizer = _RecordingTokenizer()
+
+
+def test_each_count_encodes_its_own_role_prefix():
+    """세는 문자열이 실제로 인코딩되는 문자열과 어긋나면 가드가 거짓말을 한다."""
+    embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
+    embedder._model = _TokenizerOnlyModel()
+
+    embedder.count_document_tokens(KOREAN)
+    embedder.count_query_tokens(KOREAN)
+
+    assert embedder._model.tokenizer.encoded == [
+        "passage: " + KOREAN,
+        "query: " + KOREAN,
+    ]
+
+
+def test_the_two_counts_differ_by_the_prefix_length():
+    """역할마다 인코딩되는 문자열이 다르므로 계산도 갈려야 한다.
+
+    하나로 뭉치면 둘 중 한쪽이 반드시 틀리고, 그 틀림은 **상한 바로 아래 입력이
+    조용히 잘리는** 방식으로만 드러난다.
+    """
+    embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
+    embedder._model = _TokenizerOnlyModel()
+
+    document = embedder.count_document_tokens(KOREAN)
+    query = embedder.count_query_tokens(KOREAN)
+
+    assert document - query == len("passage: ") - len("query: ")
 
 
 # ── 선로딩 ───────────────────────────────────────────────────────────────
@@ -328,10 +389,29 @@ async def test_documents_and_queries_land_in_different_places(real_embedder):
 @needs_weights
 def test_the_real_token_count_includes_the_prefix(real_embedder):
     """본문만 세면 접두사 몫만큼 과소 계산되어 상한 바로 아래 청크가 조용히 잘린다."""
-    with_prefix = real_embedder.count_tokens(KOREAN)
-    bare = len(real_embedder._model.tokenizer.encode(KOREAN))
+    with_prefix = real_embedder.count_document_tokens(KOREAN)
+    bare = len(real_embedder._model.tokenizer.encode(KOREAN, add_special_tokens=False))
 
     assert with_prefix > bare
+
+
+@needs_weights
+def test_the_real_query_count_matches_what_the_model_actually_encodes(real_embedder):
+    """**이 일치가 깨지면 가드가 통과시킨 질의가 잘린다.**
+
+    검색의 길이 가드는 이 수 하나로 "이 질의가 입력 창에 들어가는가"를 판정한다.
+    모델이 실제로 먹는 토큰 열(`tokenize`)보다 적게 세면, 가드를 통과한 질의의
+    뒷부분이 벡터에 반영되지 않으면서 호출부는 전부 반영됐다고 믿는다.
+
+    특수 토큰(`<s>`·`</s>`)까지 포함해야 성립한다 — 둘이 빠지면 계산이 2 적어진다.
+    """
+    counted = real_embedder.count_query_tokens(KOREAN)
+    fed = real_embedder._model.tokenize(["query: " + KOREAN])
+
+    assert counted == int(fed["attention_mask"][0].sum())
+    assert counted > len(
+        real_embedder._model.tokenizer.encode("query: " + KOREAN, add_special_tokens=False)
+    )
 
 
 @needs_weights

@@ -92,7 +92,15 @@ class Embedder(Protocol):
     구현체는 실패를 숨기지 말고 그대로 올린다 — 무엇이 준비되지 않았는지는 로그로
     남아야 하고, 판단은 호출자의 몫이다.
 
-    `count_tokens` 만 **동기**다. 토크나이저 호출은 블로킹이므로 `DocumentParser.parse`
+    **토큰 계산도 역할별로 둘이다.** `count_document_tokens`/`count_query_tokens` 가
+    `embed_documents`/`embed_query` 와 짝을 이룬다. 역할마다 실제로 인코딩되는 문자열이
+    다르므로(접두사 길이가 다르다) 하나로 뭉치면 둘 중 한쪽 계산이 반드시 틀리고,
+    그 틀림은 **상한 바로 아래 입력이 조용히 잘리는** 방식으로만 드러난다. 어느 역할의
+    수를 세는지가 이름에 있어야 호출부가 잘못 고를 수 없다. 접두사 문자열 자체는
+    여전히 어댑터 밖으로 나가지 않는다 — 역할이 둘이라는 사실만 드러나는데, 그건
+    `embed_*` 가 이미 드러내고 있다.
+
+    `count_*` 만 **동기**다. 토크나이저 호출은 블로킹이므로 `DocumentParser.parse`
     와 같은 이유로 동기로 선언한다 — 호출부가 오프로드를 의식할 수밖에 없게 만든다.
     인코딩(`embed_*`)은 반대로 async 인데, 배치마다 호출되는 자리라 호출부가 매번
     감싸면 중복만 늘고 어댑터가 배치 사이 양보까지 책임지는 편이 자연스럽다.
@@ -106,7 +114,9 @@ class Embedder(Protocol):
 
     async def embed_query(self, text: str) -> list[float]: ...
 
-    def count_tokens(self, text: str) -> int: ...
+    def count_document_tokens(self, text: str) -> int: ...
+
+    def count_query_tokens(self, text: str) -> int: ...
 
     async def warm_up(self) -> None: ...
 
