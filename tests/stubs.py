@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from app.core.documents import (
     Chunk,
@@ -86,6 +86,10 @@ class FakeEmbedder:
         self._chars_per_token = chars_per_token
         #: 인코딩 호출을 배치 단위로 기록한다. 배치 경계와 중복 인코딩 여부를 본다.
         self.batches: list[list[str]] = []
+        #: 질의 경로 호출을 순서대로 기록한다. **경로를 바꿔 써도 결과 형식은 멀쩡하므로**
+        #: ("문서용으로 질의를 인코딩했다") 그 실수는 호출 기록으로만 검출된다. 거부된
+        #: 요청이 임베딩을 유발하지 않는다는 성질도 이 목록의 **비어 있음**으로 확인한다.
+        self.queries: list[str] = []
         #: 선로딩 호출 횟수. 배선이 정말로 `warm_up` 을 부르는지 확인할 수단이다.
         self.warm_ups = 0
         #: 선로딩 실패를 주입한다 — "실패해도 기동은 계속된다"를 만드는 유일한 방법.
@@ -108,6 +112,14 @@ class FakeEmbedder:
         return [self._vector(text) for text in texts]
 
     async def embed_query(self, text: str) -> list[float]:
+        """문서 경로와 **같은 벡터**를 낸다 — 버그가 아니라 결정이다.
+
+        해시 기반 벡터에는 의미가 없으므로, 순위 단언은 "질의 문자열을 특정 청크 본문과
+        똑같이 두면 그 청크가 1위"라는 성질에 기댄다. 페이크를 비대칭으로 바꾸면 그
+        성질이 사라져 정렬·필터 단언이 전부 임의값이 된다. 비대칭성은 페이크가 아니라
+        실물 모델의 성질이라 `test_embedding.py` 가 실물로 확인한다.
+        """
+        self.queries.append(text)
         if self._delay:
             await asyncio.sleep(self._delay)
         return self._vector(text)
@@ -391,18 +403,50 @@ class StubDocumentRegistry:
     덮는다. 서비스 테스트가 이 대역을 쓰는 이유는 둘이다 — 임시 파일 없이 돌고,
     **커밋 실패를 주입**할 수 있다. 교체 순서에서 커밋은 "확정되는 순간"이라, 그 지점의
     실패는 저장 실패와 다른 경로다.
+
+    **조회 사이에 변경을 끼워 넣을 수도 있다.** 검색의 두 레지스트리 읽기 사이는 잠겨
+    있지 않아, 그 틈에 교체가 커밋되거나 삭제가 완료되는 인터리빙이 실제로 존재한다.
+    실제 동시 요청으로 그 틈을 맞히려면 타이밍에 기대야 하므로(느리고 재현되지 않는다)
+    훅으로 **확정적으로** 만든다.
+
+    - `after_list_all`: 대상 집합이 확정된 **직후** 한 번. 목록은 훅보다 먼저 스냅숏
+      되므로, 훅이 커밋한 새 리비전은 그 목록에 들어가지 않는다 — 그게 바로 재현하려는
+      상황이다.
+    - `before_get`: 현재성 재검증이 문서를 다시 읽기 **직전** 한 번. 저장소 질의가 끝난
+      뒤의 변경을 여기에 끼운다.
+
+    둘 다 **한 번만** 발동한다(발동하면서 스스로를 비운다). "그 순간 일어난 사건" 하나를
+    모사하는 것이지 매 조회마다 반복되는 상태가 아니다.
     """
 
-    def __init__(self, *, fail_commit: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_commit: bool = False,
+        after_list_all: Callable[[], Awaitable[None]] | None = None,
+        before_get: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self.documents: dict[str, Document] = {}
         self.fail_commit = fail_commit
         self.commits = 0
+        self.after_list_all = after_list_all
+        self.before_get = before_get
 
     async def get(self, document_id: str) -> Document | None:
+        await self._fire("before_get")
         return self.documents.get(document_id)
 
     async def list_all(self) -> list[Document]:
-        return list(self.documents.values())
+        documents = list(self.documents.values())
+        await self._fire("after_list_all")
+        return documents
+
+    async def _fire(self, name: str) -> None:
+        hook = getattr(self, name)
+        if hook is None:
+            return
+        setattr(self, name, None)
+        await hook()
 
     async def commit(self, document: Document) -> None:
         if self.fail_commit:
