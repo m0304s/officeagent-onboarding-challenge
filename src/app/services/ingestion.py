@@ -22,7 +22,7 @@ import anyio
 
 from app.adapters.parsers import ParserRegistry
 from app.adapters.protocols import DocumentRegistry, Embedder, VectorStore
-from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy, get_splitter, resplit
+from app.core.chunking import ChunkStrategy, get_splitter, resplit
 from app.core.documents import (
     Chunk,
     Document,
@@ -31,7 +31,6 @@ from app.core.documents import (
     IngestionStatus,
     TextChunk,
     derive_document_id,
-    derive_index_signature,
     derive_revision,
     identify_chunks,
 )
@@ -104,6 +103,7 @@ class IngestionService:
         vector_store: VectorStore,
         registry: DocumentRegistry,
         *,
+        index_signature: str,
         chunk_strategy: ChunkStrategy,
         chunk_size: int,
         chunk_overlap: int,
@@ -121,15 +121,12 @@ class IngestionService:
         self._chunk_overlap = chunk_overlap
         self._batch_size = embedding_batch_size
 
-        # 색인 서명도 기동 시점에 고정한다. 요청마다 다시 유도하면 요청 중간에 구성이
-        # 바뀐 것처럼 보일 수 있고, 무엇보다 이 값은 요청과 무관한 상수다.
-        self.index_signature = derive_index_signature(
-            embedder_signature=embedder.signature,
-            chunk_strategy=chunk_strategy.value,
-            chunk_strategy_version=CHUNK_STRATEGY_VERSION,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
+        # 색인 서명은 **주입받는다.** 여전히 기동 시점에 한 번 고정되는 상수지만,
+        # 유도하는 곳이 배선으로 올라갔다. 검색도 같은 값으로 필터하는데 두 서비스가
+        # 각자 유도하면 재료 목록이 둘이 되고, 한쪽만 고쳐진 순간 수집이 쓰는 서명과
+        # 검색이 찾는 서명이 어긋난다 — 각자 자기 기준으로는 옳아서 어디에도 오류가
+        # 남지 않는다.
+        self.index_signature = index_signature
 
         # 수집 동시성 총량. 상한에 걸린 요청은 실패하지 않고 대기한다.
         # **같은 문서의 직렬화는 이것이 담당하지 않는다** — 총량만 제한할 뿐 같은
