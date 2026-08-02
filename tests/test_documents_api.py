@@ -254,6 +254,39 @@ async def test_a_storage_failure_is_reported_as_service_unavailable(make_client,
         assert await document_ids(client) == []
 
 
+async def test_a_storage_failure_leaves_the_previous_revision_intact(
+    make_client, settings, vector_store
+):
+    """실패한 교체가 이전 리비전을 건드리면, 답할 수 있던 질문에 답할 수 없게 된다.
+
+    배치 하나를 쓴 **뒤** 실패시켜 부분 기록 상태를 만든다 — 그래야 되돌리기가 실제로
+    할 일이 생긴다. 응답이 돌아온 시점에 새 리비전 청크가 0개여야 한다.
+    """
+    one_at_a_time = settings.model_copy(update={"embedding_batch_size": 1})
+
+    async with make_client(settings=one_at_a_time) as client:
+        first = (
+            await client.post("/documents", **upload("policy.txt", LONG_KOREAN.encode("utf-8")))
+        ).json()
+        assert first["chunk_count"] > 1, "배치가 하나뿐이면 부분 기록이 만들어지지 않는다"
+
+        vector_store.fail_add_after = 1  # 첫 배치는 쓰이고 그다음이 실패한다
+        failed = await client.post(
+            "/documents", **upload("policy.txt", (LONG_KOREAN + " 연차 안내").encode("utf-8"))
+        )
+        detail = (await client.get(f"/documents/{first['document_id']}")).json()
+
+    assert failed.status_code == 503
+    assert failed.json()["error"]["code"] == "storage_unavailable"
+    assert (detail["revision"], detail["chunk_count"]) == (first["revision"], first["chunk_count"])
+    # 이전 리비전은 그대로, 새 리비전은 흔적 없이.
+    assert (
+        await vector_store.count_chunks(first["document_id"], revision=first["revision"])
+        == first["chunk_count"]
+    )
+    assert await vector_store.count_chunks(first["document_id"]) == first["chunk_count"]
+
+
 # ── 업로드 상한 ─────────────────────────────────────────────────────────
 
 
