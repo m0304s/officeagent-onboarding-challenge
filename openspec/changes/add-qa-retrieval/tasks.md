@@ -7,13 +7,13 @@
 
 ## 1. 설정과 도메인 값 객체
 
-- [ ] 1.1 설정 항목 4개 추가 — `retrieval_top_k`(기본 5, `gt=0`), `retrieval_max_top_k`(기본 50, `gt=0`), `retrieval_min_score`(범위 `[0, 1]`, **초안 0.75 · 5.3에서 계측으로 확정**), `retrieval_max_query_chars`(기본 1000, `gt=0`). 전부 기본값을 두어 "설정 없이 기동된다"는 기존 요구사항을 깨지 않는다 (design 결정 4·5·6)
-- [ ] 1.2 **`retrieval_top_k > retrieval_max_top_k` 는 기동을 막는다** — `model_validator`로 검증한다. 기존 `chunk_overlap >= chunk_size` 방어와 같은 자리·같은 방식이다. 그 구성에서는 어떤 요청도 통과할 수 없으므로 조용히 뜨면 안 된다 (design 결정 4)
-- [ ] 1.3 설정 테스트 — 새 항목 없이도 기동되고 기본값이 적용되는지 / 무효값(`top_k` 0, 상한 0, 하한 음수·1 초과, 질의 상한 0)이면 기동에 실패하는지 / **기본 K가 상한보다 크면 기동에 실패하는지** (spec "기본 K가 상한보다 크면 기동을 막는다")
-- [ ] 1.4 `core/retrieval.py` — `ScoredChunk` 값 객체. 담는 것은 `document_id`·`revision`·`index_signature`·`chunk_index`·`text`·`location`(`ChunkLocation` 재사용)·`filename`·`format`·`score`. **표준 라이브러리만** 쓴다(`core/`는 pydantic도 금지). 점수 범위(`0 ≤ score ≤ 1`)를 `__post_init__`에서 검증한다 (design 결정 2·3)
-- [ ] 1.5 `ScoredChunk` 테스트 — 범위를 벗어난 점수·음수 `chunk_index`가 거부되는지. 값 객체가 스스로 지키는 불변식이 있어야 어댑터의 변환 버그가 여기서 걸린다
-- [ ] 1.6 `core/exceptions.py`에 `EmptyQuery`(`empty_query`)·`QueryTooLong`(`query_too_long`)·`InvalidTopK`(`invalid_top_k`) 추가. `ErrorCode`에는 **추가만** 하고 기존 값을 바꾸지 않는다. `QueryTooLong`은 적용된 **문자 수 상한과 토큰 상한을 함께**(어느 쪽에 걸렸든 응답 모양이 같아야 소비자가 파서를 하나만 든다), `InvalidTopK`는 적용된 K 상한을 각각 `extra`로 나른다 — 설정에 달린 값이라 클라이언트가 미리 알 수 없다. **`InvalidTopK`는 상한 초과에만 쓴다** — 하한은 요청 모델의 정적 검증이 `validation_error`로 끝낸다 (design 결정 8)
-- [ ] 1.7 `api/errors.py`의 `ErrorCode → HTTP 상태` 표에 세 코드를 422로 등록. 변환은 여전히 이 계층에서만 한다
+- [x] 1.1 설정 항목 4개 추가 — `retrieval_top_k`(기본 5, `gt=0`), `retrieval_max_top_k`(기본 50, `gt=0`), `retrieval_min_score`(범위 `[0, 1]`, **초안 0.75 · 5.3에서 계측으로 확정**), `retrieval_max_query_chars`(기본 1000, `gt=0`). 전부 기본값을 두어 "설정 없이 기동된다"는 기존 요구사항을 깨지 않는다 (design 결정 4·5·6)
+- [x] 1.2 **`retrieval_top_k > retrieval_max_top_k` 는 기동을 막는다** — `model_validator`로 검증한다. 기존 `chunk_overlap >= chunk_size` 방어와 같은 자리·같은 방식이다. 그 구성에서는 어떤 요청도 통과할 수 없으므로 조용히 뜨면 안 된다 (design 결정 4)
+- [x] 1.3 설정 테스트 — 새 항목 없이도 기동되고 기본값이 적용되는지 / 무효값(`top_k` 0, 상한 0, 하한 음수·1 초과, 질의 상한 0)이면 기동에 실패하는지 / **기본 K가 상한보다 크면 기동에 실패하는지** (spec "기본 K가 상한보다 크면 기동을 막는다")
+- [x] 1.4 `core/retrieval.py` — `ScoredChunk` 값 객체. 담는 것은 `document_id`·`revision`·`index_signature`·`chunk_index`·`text`·`location`(`ChunkLocation` 재사용)·`filename`·`format`·`score`. **표준 라이브러리만** 쓴다(`core/`는 pydantic도 금지). 점수 범위(`0 ≤ score ≤ 1`)를 `__post_init__`에서 검증한다 (design 결정 2·3)
+- [x] 1.5 `ScoredChunk` 테스트 — 범위를 벗어난 점수·음수 `chunk_index`가 거부되는지. 값 객체가 스스로 지키는 불변식이 있어야 어댑터의 변환 버그가 여기서 걸린다
+- [x] 1.6 `core/exceptions.py`에 `EmptyQuery`(`empty_query`)·`QueryTooLong`(`query_too_long`)·`InvalidTopK`(`invalid_top_k`) 추가. `ErrorCode`에는 **추가만** 하고 기존 값을 바꾸지 않는다. `QueryTooLong`은 적용된 **문자 수 상한과 토큰 상한을 함께**(어느 쪽에 걸렸든 응답 모양이 같아야 소비자가 파서를 하나만 든다), `InvalidTopK`는 적용된 K 상한을 각각 `extra`로 나른다 — 설정에 달린 값이라 클라이언트가 미리 알 수 없다. **`InvalidTopK`는 상한 초과에만 쓴다** — 하한은 요청 모델의 정적 검증이 `validation_error`로 끝낸다 (design 결정 8)
+- [x] 1.7 `api/errors.py`의 `ErrorCode → HTTP 상태` 표에 세 코드를 422로 등록. 변환은 여전히 이 계층에서만 한다
 
 ## 2. 색인 서명 유도를 배선으로 올린다
 
