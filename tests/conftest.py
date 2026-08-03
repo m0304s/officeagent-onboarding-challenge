@@ -61,6 +61,30 @@ needs_vector_store = pytest.mark.skipif(
 )
 
 
+#: 실물 임베딩을 쓰는 테스트가 요구하는 모델. `Settings.embedding_model` 의 기본값과 같아야
+#: 한다 — 다른 모델로 품질을 재면 그 숫자는 배포되는 구성의 것이 아니다.
+EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
+
+
+def weights_are_cached(model_name: str = EMBEDDING_MODEL) -> bool:
+    """네트워크를 건드리지 않고 캐시만 확인한다."""
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(model_name, local_files_only=True)
+    except Exception:
+        return False
+    return True
+
+
+#: 실물 가중치가 필요한 테스트의 공통 스킵. `needs_vector_store` 와 같은 자리에 두는
+#: 이유도 같다 — 조건이 두 벌이 되면 한쪽만 고쳐진 채 다른 쪽이 조용히 안 돌 수 있다.
+needs_weights = pytest.mark.skipif(
+    not weights_are_cached(),
+    reason=f"{EMBEDDING_MODEL} 가중치가 로컬에 없습니다 (컨테이너 이미지에는 구워져 있습니다)",
+)
+
+
 @pytest.fixture
 def settings(data_dir: Path) -> Settings:
     """환경과 무관하게 결정론적인 설정. 상한은 테스트가 오래 걸리지 않게 짧게 잡는다."""

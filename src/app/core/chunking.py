@@ -273,6 +273,24 @@ def resplit(chunk: TextChunk, *, size: int, overlap: int) -> tuple[TextChunk, ..
     )
 
 
+def clamp_overlap(*, size: int, preferred: int) -> int:
+    """줄어든 청크 크기에 맞는 겹침. `resplit` 에 넘기기 전에 쓴다.
+
+    토큰 가드는 크기를 반씩 줄여가며 다시 쪼개는데, 설정된 겹침이 그대로면 어느
+    순간 겹침이 크기 이상이 되어 `resplit` 이 거절한다. 호출부가 그때마다 손으로
+    맞추면 **`_validate` 가 지키는 불변식을 아는 곳이 둘**이 된다 — 한쪽은 거절하고
+    한쪽은 조용히 맞추므로, 불변식이 바뀌면 맞추는 쪽이 소리 없이 낡는다.
+
+    돌려주는 값은 언제나 `0 < 반환값 < size` 다. 그래야 인접 청크가 겹치면서도
+    분할이 전진한다.
+    """
+    # 겹침이 1 이상이면서 크기보다 작으려면 크기가 최소 2 다. 호출부가 재분할 바닥값을
+    # 두므로 실제로 닿지는 않지만, 조용히 무효한 값을 돌려주는 것보다 낫다.
+    if size < 2:
+        raise ValueError("청크 크기가 2 미만이면 겹치면서 전진하는 분할이 불가능하다")
+    return max(1, min(preferred, size - 1))
+
+
 def _validate(size: int, overlap: int) -> None:
     if size <= 0:
         raise ValueError("청크 크기는 1 이상이어야 한다")

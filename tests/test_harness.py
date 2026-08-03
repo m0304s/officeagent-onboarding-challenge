@@ -5,6 +5,21 @@
 
 from pathlib import Path
 
+from app.adapters.protocols import DocumentRegistry, Embedder, VectorStore
+
+
+def test_the_stub_adapters_satisfy_their_protocols(embedder, vector_store, registry):
+    """대역이 프로토콜을 벗어나면 대역으로 통과한 테스트가 실물에서 깨진다.
+
+    임베더 쪽은 `test_embedding.py` 가 페이크와 실물을 같은 단언에 나란히 세워 이미
+    확인한다(질의 경로 — `embed_query`·`count_query_tokens` — 를 포함해서다). 저장소는
+    사정이 다르다: 실물 쪽 같은 단언(`test_vector_store.py`)이 Chroma 서버가 없으면
+    파일째 건너뛰므로, **기본 실행에서 `query` 계약을 확인하는 자리가 여기뿐**이다.
+    """
+    assert isinstance(embedder, Embedder)
+    assert isinstance(vector_store, VectorStore)
+    assert isinstance(registry, DocumentRegistry)
+
 
 async def test_app_client_reaches_the_app(client):
     response = await client.get("/health")

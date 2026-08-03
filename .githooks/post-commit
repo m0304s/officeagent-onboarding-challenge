@@ -74,8 +74,17 @@ $RETRO_FILES"
     if command -v claude >/dev/null 2>&1; then
         # Edit 규칙이 Write를 포함한 모든 파일 편집 도구를 커버한다.
         # Write(...) 형태의 규칙은 파일 권한 체크에 매칭되지 않아 쓰기가 차단된다.
+        #
+        # 세션 로그는 수 MB의 JSONL이다. Read로 통째로 읽히면 회고 한 편의 비용이
+        # 로그 크기에 비례해 늘어나므로, 집계는 python3/jq에 맡긴다.
+        # 파싱 스크립트는 /tmp에 쓰게 한다 — 워크스페이스 안에 쓰게 두면
+        # 미추적 파일이 남아 `ruff check .`를 깨뜨린 전례가 있다.
+        # acceptEdits는 워크스페이스 밖 쓰기를 자동 승인하지 않으므로 명시 규칙이 필요하고,
+        # macOS의 /tmp는 /private/tmp 심볼릭 링크라 두 경로를 모두 적는다.
         claude -p "$PROMPT" \
-            --allowedTools "Bash(git:*)" "Read" "Glob" "Grep" "Edit(retros/**)" \
+            --allowedTools "Bash(git:*)" "Bash(python3:*)" "Bash(jq:*)" \
+                           "Read" "Glob" "Grep" \
+                           "Edit(retros/**)" "Edit(/tmp/**)" "Edit(/private/tmp/**)" \
             --permission-mode acceptEdits
     elif command -v codex >/dev/null 2>&1; then
         codex --quiet "$PROMPT"

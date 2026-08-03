@@ -29,6 +29,11 @@ class ErrorCode(StrEnum):
     DOCUMENT_PARSE_ERROR = "document_parse_error"
     STORAGE_UNAVAILABLE = "storage_unavailable"
 
+    # 검색 (add-qa-retrieval)
+    EMPTY_QUERY = "empty_query"
+    QUERY_TOO_LONG = "query_too_long"
+    INVALID_TOP_K = "invalid_top_k"
+
 
 class AppError(Exception):
     """모든 도메인 예외의 기반.
@@ -112,6 +117,45 @@ class DocumentNotFound(AppError):
     """
 
     code = ErrorCode.NOT_FOUND
+
+
+class EmptyQuery(AppError):
+    """질의가 비었거나 공백 문자뿐이다.
+
+    프레임워크의 길이 검증에 맡기지 않는 이유는 두 가지다. 공백만 있는 질의는 길이가
+    0 이 아니라 그쪽으로 잡히지 않고, 무엇보다 수집이 같은 종류의 사건을
+    `EmptyDocument`로 이미 구분해 두었다 — 한쪽은 도메인 코드, 한쪽은 프레임워크
+    코드로 알리면 소비자가 분기를 둘 들어야 한다.
+    """
+
+    code = ErrorCode.EMPTY_QUERY
+
+
+class QueryTooLong(AppError):
+    """질의가 문자 수 상한이나 임베딩 입력 창을 넘었다.
+
+    `extra`에 **두 상한을 함께** 싣는다. 어느 쪽에 걸렸든 응답 모양이 같아야 소비자가
+    파서를 하나만 든다. 둘 다 클라이언트가 미리 알 수 없는 값이다 — 문자 상한은 배포
+    설정이고, 토큰 상한은 임베딩 모델이 선언한 입력 창이다.
+
+    자르지 않고 거부하는 이유: 질문을 반으로 잘라 각각 검색하면 그건 다른 질문이고,
+    조용히 자르면 잘린 뒷부분이 검색에 반영되지 않는데 사용자는 전부 반영됐다고 믿는다.
+    """
+
+    code = ErrorCode.QUERY_TOO_LONG
+
+
+class InvalidTopK(AppError):
+    """요청한 `top_k`가 설정된 상한을 넘었다. `extra`에 적용된 상한을 싣는다.
+
+    **상한 초과에만 쓴다.** `top_k >= 1`은 어느 배포에서나 같은 사실이라 요청 모델의
+    정적 검증이 `validation_error`로 끝낸다 — 스키마에 두면 OpenAPI 문서에 그대로
+    드러나 소비자가 요청을 보내기 전에 안다. 반면 상한은 기동 시점에야 정해지는 배포
+    설정이라 스키마에 넣을 수 없고, 응답이 알려 주지 않으면 클라이언트는 이분 탐색으로
+    알아내는 수밖에 없다. 검증 위치가 사실의 성격을 따라가고, 코드가 검증 위치를 따라간다.
+    """
+
+    code = ErrorCode.INVALID_TOP_K
 
 
 class StorageUnavailable(AppError):

@@ -1,8 +1,9 @@
-"""Chroma 벡터 스토어 — 쓰기·삭제·집계.
+"""Chroma 벡터 스토어 — 쓰기·삭제·집계·질의.
 
-**질의(`query`)는 없다.** retrieval change 가 자기 요구를 알고 나서 붙인다. 지금 정하면
-top-k·필터·거리 지표를 근거 없이 추측하게 되고, 그 추측이 문서에 적히는 순간 고치는 데
-설명이 붙는다.
+**거리 지표는 이 파일 밖으로 나가지 않는다.** Chroma 는 코사인 *거리*(작을수록 가깝다)를
+돌려주는데, 그 방향이 상위 계층까지 새면 저장소를 바꿔 지표가 달라지는 순간 임계값 비교가
+조용히 뒤집힌다 — 타입은 그대로라 어디서도 오류가 나지 않는다. 그래서 여기서 유사도로
+바꿔 내보낸다.
 
 **Chroma 서버 모드**로 접속한다(별도 컨테이너). 그래서 "도달 가능"의 의미가 네트워크
 도달이며, 그 점검은 `vector_store/probe.py` 가 담당한다.
@@ -18,8 +19,9 @@ from collections.abc import Sequence
 from typing import Any
 
 from app.adapters.vector_store.client import ChromaEndpoint, create_client, parse_url
-from app.core.documents import Chunk, DocumentFormat, StoredIndexVersion
+from app.core.documents import Chunk, ChunkLocation, DocumentFormat, StoredIndexVersion
 from app.core.exceptions import StorageUnavailable
+from app.core.retrieval import ScoredChunk
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +108,22 @@ class ChromaVectorStore:
     async def list_stored_versions(self) -> list[StoredIndexVersion]:
         return await self._offload(self._list_versions)
 
+    async def query(
+        self,
+        embedding: Sequence[float],
+        *,
+        top_k: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[ScoredChunk]:
+        """대상 삼중항으로 좁힌 뒤 벡터에 가까운 청크부터 돌려준다."""
+        # 빈 목록은 **대상 없음**이다. 저장소 필터 API 에서 "조건 없음 = 전체"가 흔한
+        # 관습이라, 여기서 `where=None` 으로 흘려보내면 문서가 하나도 유효하지 않을 때
+        # 검색이 전체 탐색으로 뒤집힌다 — 잔여 청크만 남은 저장소에서 사용자가 지운
+        # 문서가 검색된다. 저장소를 아예 건드리지 않는다.
+        if not versions:
+            return []
+        return await self._offload(self._query, list(embedding), top_k, tuple(versions))
+
     # ── 블로킹 구현 (스레드풀에서만 실행된다) ───────────────────────────
 
     def _add_chunks(
@@ -162,6 +180,29 @@ class ChromaVectorStore:
                 document_id=document_id, revision=revision, index_signature=signature
             )
             for document_id, revision, signature in sorted(versions)
+        ]
+
+    def _query(
+        self,
+        embedding: list[float],
+        top_k: int,
+        versions: tuple[StoredIndexVersion, ...],
+    ) -> list[ScoredChunk]:
+        response = self._get_collection().query(
+            query_embeddings=[embedding],
+            n_results=top_k,
+            where=_version_filter(versions),
+            # 거리를 명시적으로 요청한다. 기본 `include` 에 들어 있더라도 값을 적어 두면
+            # 라이브러리 기본이 바뀔 때 점수가 조용히 사라지지 않는다.
+            include=["metadatas", "documents", "distances"],
+        )
+        # 질의 벡터 하나를 보냈으므로 결과도 한 묶음이다. 대상이 없으면 빈 묶음이 온다.
+        metadatas = _first_batch(response, "metadatas")
+        documents = _first_batch(response, "documents")
+        distances = _first_batch(response, "distances")
+        return [
+            _scored_chunk(metadata, text, distance)
+            for metadata, text, distance in zip(metadatas, documents, distances, strict=True)
         ]
 
     # ── 클라이언트 ──────────────────────────────────────────────────────
@@ -221,6 +262,79 @@ def _metadata(chunk: Chunk, filename: str, document_format: DocumentFormat) -> d
     if chunk.location.page is not None:
         metadata["page"] = chunk.location.page
     return metadata
+
+
+def _first_batch(response: dict[str, Any], key: str) -> list[Any]:
+    """질의 응답에서 첫 묶음을 꺼낸다. 없으면 빈 목록.
+
+    Chroma 는 질의 벡터마다 한 묶음씩 돌려주고, 요청하지 않은 필드는 `None` 이다.
+    벡터를 하나만 보내므로 묶음도 하나다.
+    """
+    batches = response.get(key) or []
+    return list(batches[0]) if batches else []
+
+
+def _scored_chunk(metadata: dict[str, Any], text: str, distance: float) -> ScoredChunk:
+    """응답 한 줄을 결과 값 객체로 옮긴다.
+
+    `page` 는 **없을 수 있다** — 쪽 개념이 없는 포맷(txt·md)은 저장 시 키 자체를 넣지
+    않는다(`_metadata`). 그 규약의 반대편이 여기다.
+    """
+    return ScoredChunk(
+        document_id=metadata["document_id"],
+        revision=metadata["revision"],
+        index_signature=metadata["index_signature"],
+        chunk_index=metadata["chunk_index"],
+        text=text,
+        location=ChunkLocation(
+            char_start=metadata["char_start"],
+            char_end=metadata["char_end"],
+            page=metadata.get("page"),
+        ),
+        filename=metadata["filename"],
+        format=DocumentFormat(metadata["format"]),
+        score=_similarity(distance),
+    )
+
+
+def _similarity(distance: float) -> float:
+    """코사인 거리(작을수록 가깝다)를 `[0, 1]` 유사도(클수록 가깝다)로 바꾼다.
+
+    클램프하는 이유는 하한 설정의 정의역을 `[0, 1]` 로 고정하기 위해서다. 정규화된
+    벡터의 코사인 유사도는 이론상 음수가 될 수 있지만 현재 임베딩에서 실제로 관측되지
+    않는다. **클램프가 그 사실을 숨기므로** 실제로 발동하면 경고를 남긴다 — 조용히 0 으로
+    만들면 모델이 바뀌어 점수 분포가 이동했다는 신호가 사라진다.
+    """
+    similarity = 1.0 - distance
+    if not 0.0 <= similarity <= 1.0:
+        logger.warning(
+            "유사도가 [0, 1] 밖이라 잘라냈습니다 — 점수 분포가 이동했을 수 있습니다",
+            extra={"distance": distance, "similarity": similarity},
+        )
+        return min(1.0, max(0.0, similarity))
+    return similarity
+
+
+def _version_filter(versions: Sequence[StoredIndexVersion]) -> dict[str, Any]:
+    """대상 삼중항 목록을 Chroma 필터로 조립한다.
+
+    삼중항 하나가 `$and` 셋이고, 여럿이면 그것들을 `$or` 로 묶는다. `$or` 는 피연산자가
+    둘 이상일 때만 유효하므로 하나짜리는 `$and` 를 그대로 쓴다.
+
+    **호출자가 빈 목록을 걸러 준다**(`query`). 여기서 빈 필터를 만들면 그것이 곧 전체
+    검색이라 계약이 뒤집힌다.
+    """
+    clauses = [
+        {
+            "$and": [
+                {"document_id": version.document_id},
+                {"revision": version.revision},
+                {"index_signature": version.index_signature},
+            ]
+        }
+        for version in versions
+    ]
+    return clauses[0] if len(clauses) == 1 else {"$or": clauses}
 
 
 def _where(

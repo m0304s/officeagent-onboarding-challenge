@@ -122,7 +122,7 @@ async def test_chunks_over_the_token_window_are_resplit(store, registry):
     result = await service.ingest(POLICY, DATA)
 
     chunks = store.chunks_of(result.document.document_id)
-    assert all(embedder.count_tokens(chunk.text) <= 64 for chunk in chunks)
+    assert all(embedder.count_document_tokens(chunk.text) <= 64 for chunk in chunks)
     assert result.document.chunk_count == len(chunks)
 
 

@@ -67,6 +67,26 @@ class Settings(BaseSettings):
     # 같은 문서의 직렬화는 이것이 아니라 document_id 단위 잠금이 담당한다.
     ingestion_concurrency: int = Field(default=2, gt=0)
 
+    # ── 검색 ──────────────────────────────────────────────────────────
+    # 상위 K. 기본값 5 는 청크 겹침 설계(관련 절 1~2 + 인접 문맥 + 여유)에서 나온 값이고,
+    # 요청이 `top_k` 로 덮어쓸 수 있다 — 답변 품질을 보며 K 를 조정할 때 재배포가
+    # 필요 없게 열어 둔다.
+    retrieval_top_k: int = Field(default=5, gt=0)
+    # 그 열어 둔 문 때문에 상한이 필요하다. 상한이 없으면 `top_k=1000000` 한 줄이
+    # 저장소에서 전부를 긁어 와 직렬화된다. 50 은 기본값의 열 배이자 최악 응답 크기
+    # 600자 × 50 ≈ 30 KB 다. 상한도 설정인 이유는 K 실험에 재배포가 들지 않게 하기 위함.
+    retrieval_max_top_k: int = Field(default=50, gt=0)
+    # 유사도 하한. 어댑터가 거리를 `[0, 1]` 유사도로 바꿔 내보내므로 정의역이 그 범위다.
+    # **0.82 는 계측값이다** — `sample-docs` 로 관련 질의 4개·무관 질의 3개의 점수 분포를
+    # 실제로 재서 정했다(관련 1위 최솟값 0.8511 / 무관 1위 최댓값 0.8134). 초안이던 0.75 는
+    # 아무것도 거르지 못한다: e5 정규화 코사인은 무관한 한국어 문장 사이에서도 0.75~0.81 이
+    # 흔하다. 표본이 문서 2개·질의 7개뿐이라는 사실까지 ARCHITECTURE.md 에 함께 적었다.
+    retrieval_min_score: float = Field(default=0.82, ge=0, le=1)
+    # 질의 문자 수 상한. 이 상한이 막는 것은 조용한 절단이 아니라 **임의 길이 입력이
+    # 토크나이저에 들어가는 것**이다. 절단은 임베더가 선언한 입력 창(설정 아님)으로 막는다 —
+    # 문자 수만으로 절단을 막으려면 상한이 101자가 되어 정상 질문까지 거부된다.
+    retrieval_max_query_chars: int = Field(default=1000, gt=0)
+
     @model_validator(mode="after")
     def _overlap_must_be_smaller_than_chunk(self) -> "Settings":
         """겹침이 청크 크기 이상이면 분할이 진행되지 않는다 — 무한 루프가 된다."""
@@ -74,6 +94,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"chunk_overlap({self.chunk_overlap}) 은 "
                 f"chunk_size({self.chunk_size}) 보다 작아야 합니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _default_top_k_must_fit_under_its_ceiling(self) -> "Settings":
+        """기본 K 가 상한보다 크면 어떤 요청도 통과할 수 없다 — 조용히 기동하면 안 된다.
+
+        설정 둘이 서로 모순될 수 있는 자리라, 겹침·청크 크기와 같은 방식으로 막는다.
+        """
+        if self.retrieval_top_k > self.retrieval_max_top_k:
+            raise ValueError(
+                f"retrieval_top_k({self.retrieval_top_k}) 는 "
+                f"retrieval_max_top_k({self.retrieval_max_top_k}) 이하여야 합니다"
             )
         return self
 

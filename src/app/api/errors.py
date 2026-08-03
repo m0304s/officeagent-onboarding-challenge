@@ -61,6 +61,11 @@ _CODE_TO_STATUS: dict[ErrorCode, int] = {
     ErrorCode.DOCUMENT_PARSE_ERROR: HTTP_UNPROCESSABLE_ENTITY,
     ErrorCode.NOT_FOUND: HTTP_NOT_FOUND,
     ErrorCode.STORAGE_UNAVAILABLE: HTTP_SERVICE_UNAVAILABLE,
+    # 검색 요청 거부. 셋 다 422 다 — 요청 자체는 문법상 올바르고 값이 처리할 수 없는
+    # 것이라, 프레임워크의 요청 검증 실패(`validation_error`)와 같은 상태를 쓴다.
+    ErrorCode.EMPTY_QUERY: HTTP_UNPROCESSABLE_ENTITY,
+    ErrorCode.QUERY_TOO_LONG: HTTP_UNPROCESSABLE_ENTITY,
+    ErrorCode.INVALID_TOP_K: HTTP_UNPROCESSABLE_ENTITY,
 }
 
 

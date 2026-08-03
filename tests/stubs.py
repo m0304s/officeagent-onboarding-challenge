@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from app.core.documents import (
     Chunk,
@@ -21,6 +21,7 @@ from app.core.documents import (
 )
 from app.core.exceptions import StorageUnavailable
 from app.core.models import ProbeResult, Status
+from app.core.retrieval import ScoredChunk
 
 
 class StubProbe:
@@ -66,6 +67,10 @@ class FakeEmbedder:
 
     `delay`는 인코딩이 오래 걸리는 상황을 만든다 — 배치 사이에 이벤트 루프로 양보하지
     않으면 헬스 응답이 그만큼 늦어지는지 보는 데 쓴다.
+
+    `count_delay`는 **블로킹**이다(`time.sleep`). 토큰 계산은 프로토콜상 동기라 오프로드
+    책임이 호출부에 있고, 그 책임을 지키는지는 지연이 블로킹일 때만 드러난다 — `delay`
+    처럼 async 로 자면 누가 오프로드를 걷어내도 루프가 멈추지 않아 아무것도 확인되지 않는다.
     """
 
     def __init__(
@@ -75,6 +80,7 @@ class FakeEmbedder:
         signature: str | None = None,
         max_input_tokens: int = 512,
         delay: float = 0.0,
+        count_delay: float = 0.0,
         chars_per_token: int = 2,
         warm_up_error: Exception | None = None,
     ) -> None:
@@ -82,9 +88,14 @@ class FakeEmbedder:
         self.max_input_tokens = max_input_tokens
         self.signature = signature or f"fake-embedder/{dimension}/l2norm/none-v1"
         self._delay = delay
+        self._count_delay = count_delay
         self._chars_per_token = chars_per_token
         #: 인코딩 호출을 배치 단위로 기록한다. 배치 경계와 중복 인코딩 여부를 본다.
         self.batches: list[list[str]] = []
+        #: 질의 경로 호출을 순서대로 기록한다. **경로를 바꿔 써도 결과 형식은 멀쩡하므로**
+        #: ("문서용으로 질의를 인코딩했다") 그 실수는 호출 기록으로만 검출된다. 거부된
+        #: 요청이 임베딩을 유발하지 않는다는 성질도 이 목록의 **비어 있음**으로 확인한다.
+        self.queries: list[str] = []
         #: 선로딩 호출 횟수. 배선이 정말로 `warm_up` 을 부르는지 확인할 수단이다.
         self.warm_ups = 0
         #: 선로딩 실패를 주입한다 — "실패해도 기동은 계속된다"를 만드는 유일한 방법.
@@ -107,16 +118,39 @@ class FakeEmbedder:
         return [self._vector(text) for text in texts]
 
     async def embed_query(self, text: str) -> list[float]:
+        """문서 경로와 **같은 벡터**를 낸다 — 버그가 아니라 결정이다.
+
+        해시 기반 벡터에는 의미가 없으므로, 순위 단언은 "질의 문자열을 특정 청크 본문과
+        똑같이 두면 그 청크가 1위"라는 성질에 기댄다. 페이크를 비대칭으로 바꾸면 그
+        성질이 사라져 정렬·필터 단언이 전부 임의값이 된다. 비대칭성은 페이크가 아니라
+        실물 모델의 성질이라 `test_embedding.py` 가 실물로 확인한다.
+        """
+        self.queries.append(text)
         if self._delay:
             await asyncio.sleep(self._delay)
         return self._vector(text)
 
-    def count_tokens(self, text: str) -> int:
+    def count_document_tokens(self, text: str) -> int:
         """문자 수에 비례하는 결정론적 토큰 수.
 
         `chars_per_token`을 크게 잡으면 토큰 가드가 걸리는 상황을 실제 토크나이저
         없이 만들 수 있다.
         """
+        return self._count(text)
+
+    def count_query_tokens(self, text: str) -> int:
+        """문서 경로와 **같은 수**를 돌려준다.
+
+        페이크에는 역할 접두사가 없으므로 흉내 낼 차이도 없다. 두 경로의 계산이
+        실제로 갈리는지는 접두사를 아는 실물 어댑터에서 확인한다 — 여기서 인위적인
+        차이를 만들면 검증 대상이 페이크가 되고, 정작 확인하려던 성질은 여전히
+        실물에서 미확인으로 남는다. 벡터를 대칭으로 남긴 이유와 같다.
+        """
+        return self._count(text)
+
+    def _count(self, text: str) -> int:
+        if self._count_delay:
+            time.sleep(self._count_delay)  # 블로킹. 스레드풀이 아니면 루프가 멈춘다
         return max(1, math.ceil(len(text) / self._chars_per_token))
 
     def _vector(self, text: str) -> list[float]:
@@ -175,15 +209,36 @@ class StubVectorStore:
     - `fail_add_after`: 이 횟수만큼 성공한 뒤 `add_chunks` 가 실패한다. `0`이면 처음부터
       실패하고, `1`이면 배치 하나를 쓴 뒤 실패해 **부분 기록** 상태가 된다.
     - `fail_delete`: `delete_document` 가 항상 실패한다. 되돌리기까지 실패하는 경로다.
+    - `fail_query`: `query` 가 항상 실패한다. 저장소 장애가 빈 결과로 위장되지 않는지 본다.
+    - `query_delay`: 질의가 오래 걸리는 상황. **블로킹 지연을 스레드풀로 내보낸다** —
+      실물 어댑터가 그러하듯 오프로드 책임이 구현체에 있으므로, 대역도 같은 자리에서
+      같은 방식으로 처리해야 그 위 계층(서비스·라우터)의 블로킹만 남아 드러난다.
+
+    **질의는 완전 탐색 코사인이다.** 근사 검색(HNSW)의 흔들림이 없어야 검색 품질
+    테스트가 임베딩의 성질만 재게 된다. 실물 Chroma 와의 계약(필터 표현식·메타데이터
+    왕복)은 `test_vector_store.py` 가 따로 덮는다.
     """
 
-    def __init__(self, *, fail_add_after: int | None = None, fail_delete: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_add_after: int | None = None,
+        fail_delete: bool = False,
+        fail_query: bool = False,
+        query_delay: float = 0.0,
+    ) -> None:
         self.records: dict[str, dict] = {}
         self.fail_add_after = fail_add_after
         self.fail_delete = fail_delete
+        self.fail_query = fail_query
         self.add_calls = 0
+        self._query_delay = query_delay
         #: 배치 크기를 호출 순서대로 기록한다. 배치 경계를 확인하는 데 쓴다.
         self.batch_sizes: list[int] = []
+        #: 질의 호출을 `(top_k, 대상 삼중항)` 으로 기록한다. "거부된 요청은 저장소에
+        #: 닿지 않는다"와 "대상이 없으면 저장소를 건드리지 않는다"는 호출 **부재**로만
+        #: 확인되므로, 기록이 없으면 그 단언을 쓸 수 없다.
+        self.queries: list[tuple[int, tuple[StoredIndexVersion, ...]]] = []
 
     async def add_chunks(
         self,
@@ -252,6 +307,53 @@ class StubVectorStore:
         }
         return [StoredIndexVersion(*version) for version in sorted(versions)]
 
+    async def query(
+        self,
+        embedding: Sequence[float],
+        *,
+        top_k: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[ScoredChunk]:
+        self.queries.append((top_k, tuple(versions)))
+        if self._query_delay:
+            await asyncio.to_thread(time.sleep, self._query_delay)
+        if self.fail_query:
+            raise StorageUnavailable("주입된 질의 실패")
+        # 빈 목록은 **대상 없음**이다. 실물 어댑터와 같은 판정이라야 대역으로 통과한
+        # 테스트가 실물에서 뒤집히지 않는다.
+        if not versions:
+            return []
+        targets = {
+            (version.document_id, version.revision, version.index_signature) for version in versions
+        }
+        scored = [
+            (_cosine(embedding, record["embedding"]), record)
+            for record in self.records.values()
+            if (
+                record["chunk"].document_id,
+                record["chunk"].revision,
+                record["chunk"].index_signature,
+            )
+            in targets
+        ]
+        # 점수가 같은 청크의 순서까지 고정한다 — "같은 질의는 같은 결과"가 dict 순서에
+        # 기대면 저장 순서가 바뀌는 순간 거짓이 된다.
+        scored.sort(key=lambda item: (-item[0], item[1]["chunk"].id))
+        return [
+            ScoredChunk(
+                document_id=record["chunk"].document_id,
+                revision=record["chunk"].revision,
+                index_signature=record["chunk"].index_signature,
+                chunk_index=record["chunk"].chunk_index,
+                text=record["chunk"].text,
+                location=record["chunk"].location,
+                filename=record["filename"],
+                format=record["format"],
+                score=score,
+            )
+            for score, record in scored[:top_k]
+        ]
+
     # ── 테스트가 들여다보는 창 ──────────────────────────────────────────
 
     def embeddings_of(self, document_id: str) -> list[list[float]]:
@@ -276,6 +378,19 @@ class StubVectorStore:
         )
 
 
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    """코사인 유사도를 `[0, 1]` 로 잘라 돌려준다.
+
+    실물 어댑터가 거리를 유사도로 바꾸며 클램프하는 것과 같은 정의역이다 — 대역이
+    범위를 벗어난 점수를 내면 `ScoredChunk` 가 거절해 테스트가 대역 탓으로 깨진다.
+    """
+    dot = sum(a * b for a, b in zip(left, right, strict=True))
+    norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
+    if not norm:
+        return 0.0
+    return min(1.0, max(0.0, dot / norm))
+
+
 def _matches(
     chunk: Chunk,
     document_id: str | None,
@@ -296,18 +411,50 @@ class StubDocumentRegistry:
     덮는다. 서비스 테스트가 이 대역을 쓰는 이유는 둘이다 — 임시 파일 없이 돌고,
     **커밋 실패를 주입**할 수 있다. 교체 순서에서 커밋은 "확정되는 순간"이라, 그 지점의
     실패는 저장 실패와 다른 경로다.
+
+    **조회 사이에 변경을 끼워 넣을 수도 있다.** 검색의 두 레지스트리 읽기 사이는 잠겨
+    있지 않아, 그 틈에 교체가 커밋되거나 삭제가 완료되는 인터리빙이 실제로 존재한다.
+    실제 동시 요청으로 그 틈을 맞히려면 타이밍에 기대야 하므로(느리고 재현되지 않는다)
+    훅으로 **확정적으로** 만든다.
+
+    - `after_list_all`: 대상 집합이 확정된 **직후** 한 번. 목록은 훅보다 먼저 스냅숏
+      되므로, 훅이 커밋한 새 리비전은 그 목록에 들어가지 않는다 — 그게 바로 재현하려는
+      상황이다.
+    - `before_get`: 현재성 재검증이 문서를 다시 읽기 **직전** 한 번. 저장소 질의가 끝난
+      뒤의 변경을 여기에 끼운다.
+
+    둘 다 **한 번만** 발동한다(발동하면서 스스로를 비운다). "그 순간 일어난 사건" 하나를
+    모사하는 것이지 매 조회마다 반복되는 상태가 아니다.
     """
 
-    def __init__(self, *, fail_commit: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_commit: bool = False,
+        after_list_all: Callable[[], Awaitable[None]] | None = None,
+        before_get: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self.documents: dict[str, Document] = {}
         self.fail_commit = fail_commit
         self.commits = 0
+        self.after_list_all = after_list_all
+        self.before_get = before_get
 
     async def get(self, document_id: str) -> Document | None:
+        await self._fire("before_get")
         return self.documents.get(document_id)
 
     async def list_all(self) -> list[Document]:
-        return list(self.documents.values())
+        documents = list(self.documents.values())
+        await self._fire("after_list_all")
+        return documents
+
+    async def _fire(self, name: str) -> None:
+        hook = getattr(self, name)
+        if hook is None:
+            return
+        setattr(self, name, None)
+        await hook()
 
     async def commit(self, document: Document) -> None:
         if self.fail_commit:

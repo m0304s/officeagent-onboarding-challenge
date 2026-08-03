@@ -35,6 +35,11 @@ def test_boots_with_no_configuration_at_all(monkeypatch, tmp_path):
     assert settings.max_upload_bytes > 0
     assert settings.ingestion_concurrency > 0
     assert settings.embedding_model
+
+    # 검색 설정도 마찬가지다 — 새 항목이 기동 조건을 늘리지 않아야 한다.
+    assert 0 < settings.retrieval_top_k <= settings.retrieval_max_top_k
+    assert 0 <= settings.retrieval_min_score <= 1
+    assert settings.retrieval_max_query_chars > 0
     get_settings.cache_clear()
 
 
@@ -107,6 +112,48 @@ def test_overlap_not_smaller_than_chunk_size_fails_startup(monkeypatch, tmp_path
 
     message = str(exc_info.value)
     assert "chunk_overlap" in message and "chunk_size" in message
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "expected_field"),
+    [
+        ("APP_RETRIEVAL_TOP_K", "0", "retrieval_top_k"),
+        ("APP_RETRIEVAL_MAX_TOP_K", "0", "retrieval_max_top_k"),
+        # 하한은 어댑터가 내보내는 유사도의 정의역 `[0, 1]` 밖으로 나갈 수 없다.
+        # 음수면 아무것도 거르지 못하고, 1 초과면 무엇도 통과하지 못한다.
+        ("APP_RETRIEVAL_MIN_SCORE", "-0.1", "retrieval_min_score"),
+        ("APP_RETRIEVAL_MIN_SCORE", "1.5", "retrieval_min_score"),
+        ("APP_RETRIEVAL_MAX_QUERY_CHARS", "0", "retrieval_max_query_chars"),
+    ],
+)
+def test_invalid_retrieval_values_fail_startup(
+    monkeypatch, tmp_path, variable, value, expected_field
+):
+    """검색 설정도 무효값이면 조용히 기본값으로 흘러가지 않고 기동을 멈춘다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(variable, value)
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    assert expected_field in str(exc_info.value)
+
+
+def test_default_top_k_above_the_ceiling_fails_startup(monkeypatch, tmp_path):
+    """기본 K 가 상한보다 크면 어떤 요청도 통과할 수 없다 — 기동 단계에서 막는다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RETRIEVAL_TOP_K", "10")
+    monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "5")
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "retrieval_top_k" in message and "retrieval_max_top_k" in message
 
 
 def test_unimplemented_chunk_strategy_fails_startup(monkeypatch, tmp_path):

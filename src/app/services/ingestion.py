@@ -22,16 +22,16 @@ import anyio
 
 from app.adapters.parsers import ParserRegistry
 from app.adapters.protocols import DocumentRegistry, Embedder, VectorStore
-from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy, get_splitter, resplit
+from app.core.chunking import ChunkStrategy, clamp_overlap, get_splitter, resplit
 from app.core.documents import (
     Chunk,
     Document,
     DocumentFormat,
     IndexStatus,
     IngestionStatus,
+    StoredIndexVersion,
     TextChunk,
     derive_document_id,
-    derive_index_signature,
     derive_revision,
     identify_chunks,
 )
@@ -104,6 +104,7 @@ class IngestionService:
         vector_store: VectorStore,
         registry: DocumentRegistry,
         *,
+        index_signature: str,
         chunk_strategy: ChunkStrategy,
         chunk_size: int,
         chunk_overlap: int,
@@ -121,15 +122,12 @@ class IngestionService:
         self._chunk_overlap = chunk_overlap
         self._batch_size = embedding_batch_size
 
-        # 색인 서명도 기동 시점에 고정한다. 요청마다 다시 유도하면 요청 중간에 구성이
-        # 바뀐 것처럼 보일 수 있고, 무엇보다 이 값은 요청과 무관한 상수다.
-        self.index_signature = derive_index_signature(
-            embedder_signature=embedder.signature,
-            chunk_strategy=chunk_strategy.value,
-            chunk_strategy_version=CHUNK_STRATEGY_VERSION,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
+        # 색인 서명은 **주입받는다.** 여전히 기동 시점에 한 번 고정되는 상수지만,
+        # 유도하는 곳이 배선으로 올라갔다. 검색도 같은 값으로 필터하는데 두 서비스가
+        # 각자 유도하면 재료 목록이 둘이 되고, 한쪽만 고쳐진 순간 수집이 쓰는 서명과
+        # 검색이 찾는 서명이 어긋난다 — 각자 자기 기준으로는 옳아서 어디에도 오류가
+        # 남지 않는다.
+        self.index_signature = index_signature
 
         # 수집 동시성 총량. 상한에 걸린 요청은 실패하지 않고 대기한다.
         # **같은 문서의 직렬화는 이것이 담당하지 않는다** — 총량만 제한할 뿐 같은
@@ -283,7 +281,7 @@ class IngestionService:
         # **지우고 나서 커밋한다.** 반대로 하면 커밋 후 죽었을 때 `chunk_count: 0`
         # 인데 청크가 남아 있는, 아무도 지우지 않는 상태가 된다.
         for document in documents:
-            if document.index_signature == self.index_signature:
+            if document.matches_index(self.index_signature):
                 continue
             # 서명은 그대로 둔다 — 그래야 재업로드가 `unchanged` 단축에 걸리지 않고
             # 재색인으로 이어진다. 대신 이미 처리된 문서는 다시 쓰지 않는다. 매 기동마다
@@ -301,12 +299,12 @@ class IngestionService:
         # 정합성 수단이 아니다. 요청 안의 되돌리기가 닿지 못하는 실패(프로세스 강제
         # 종료, 되돌리기 자체의 실패)가 남긴 잔여물만 회수한다.
         current_versions = {
-            (document.document_id, document.revision, document.index_signature)
+            StoredIndexVersion.of(document)
             for document in documents
-            if document.index_signature == self.index_signature
+            if document.matches_index(self.index_signature)
         }
         for version in stored:
-            if (version.document_id, version.revision, version.index_signature) in current_versions:
+            if version in current_versions:
                 continue
             removed += await self._store.delete_document(
                 version.document_id,
@@ -373,7 +371,7 @@ class IngestionService:
 
         result = IngestionResult(
             document=document,
-            status=self._status_for(current, revision),
+            status=IngestionStatus.of(current, revision),
             previous_revision=(
                 current.revision if current and current.revision != revision else None
             ),
@@ -478,29 +476,16 @@ class IngestionService:
     # ── 판정 ────────────────────────────────────────────────────────────
 
     def _is_unchanged(self, current: Document | None, revision: str) -> bool:
-        """단축 조건은 `revision` 과 `index_signature` **둘 다**다.
+        """색인을 아예 시작하지 않아도 되는가.
 
-        `revision` 만 보면 모델이나 청킹을 바꾼 뒤 같은 파일을 다시 올려도 아무 일이
-        일어나지 않는다. 구 구성으로 만든 벡터가 그대로 남고 사용자는 재색인했다고 믿는다.
+        "이미 이 내용을 이 구성으로 갖고 있는가"는 레코드가 스스로 답한다
+        (`Document.is_up_to_date`) — 검색도 같은 축들을 보므로 판정이 두 벌이면
+        어긋날 수 있다. 여기 남는 것은 **그래서 무엇을 할 것인가**, 즉 저장 경로에
+        진입하지 않는다는 유스케이스 결정뿐이다.
         """
-        return (
-            current is not None
-            and current.revision == revision
-            and current.index_signature == self.index_signature
-            # 기동 정리는 `stale` 문서의 서명을 그대로 두므로 위 조건에서 이미
-            # 걸러지지만, 청크가 0개인 문서를 "변경 없음"이라고 답하는 일은 어떤
-            # 경로로도 일어나면 안 된다.
-            and current.index_status is IndexStatus.INDEXED
+        return current is not None and current.is_up_to_date(
+            revision=revision, index_signature=self.index_signature
         )
-
-    @staticmethod
-    def _status_for(current: Document | None, revision: str) -> IngestionStatus:
-        if current is None:
-            return IngestionStatus.CREATED
-        if current.revision != revision:
-            return IngestionStatus.REPLACED
-        # 내용은 같은데 여기까지 왔다 = 색인 구성이 달라졌거나 `stale` 이다.
-        return IngestionStatus.REINDEXED
 
     @staticmethod
     def _no_text_error(filename: str, page_count: int | None) -> Exception:
@@ -532,7 +517,7 @@ class IngestionService:
         limit = self._embedder.max_input_tokens
         guarded: list[TextChunk] = []
         for chunk in chunks:
-            if self._embedder.count_tokens(chunk.text) <= limit:
+            if self._embedder.count_document_tokens(chunk.text) <= limit:
                 guarded.append(chunk)
                 continue
             guarded.extend(self._shrink(chunk, limit))
@@ -544,8 +529,10 @@ class IngestionService:
         pieces: tuple[TextChunk, ...] = (chunk,)
         while size > _MIN_RESPLIT_SIZE:
             size = max(_MIN_RESPLIT_SIZE, size // 2)
-            pieces = resplit(chunk, size=size, overlap=self._overlap_for(size))
-            if all(self._embedder.count_tokens(piece.text) <= limit for piece in pieces):
+            pieces = resplit(
+                chunk, size=size, overlap=clamp_overlap(size=size, preferred=self._chunk_overlap)
+            )
+            if all(self._embedder.count_document_tokens(piece.text) <= limit for piece in pieces):
                 logger.info(
                     "토큰 상한을 넘는 청크를 다시 쪼갰습니다",
                     extra={"resplit_size": size, "resplit_pieces": len(pieces)},
@@ -560,10 +547,6 @@ class IngestionService:
             extra={"resplit_size": size, "resplit_pieces": len(pieces)},
         )
         return pieces
-
-    def _overlap_for(self, size: int) -> int:
-        """줄어든 청크 크기에 맞춘 겹침. 겹침이 크기 이상이면 분할이 전진하지 않는다."""
-        return max(1, min(self._chunk_overlap, size - 1))
 
     # ── 문서 단위 잠금 ──────────────────────────────────────────────────
 

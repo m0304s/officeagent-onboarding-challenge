@@ -144,21 +144,35 @@ class SentenceTransformerEmbedder:
 
     # ── 토큰 계산 ───────────────────────────────────────────────────────
 
-    def count_tokens(self, text: str) -> int:
-        """청크 하나가 실제로 몇 토큰으로 인코딩되는지.
+    def count_document_tokens(self, text: str) -> int:
+        """청크 하나가 실제로 몇 토큰으로 인코딩되는지 — 문서 경로 기준.
 
-        **접두사를 포함해 센다.** 실제로 인코딩되는 문자열이 `passage: ` + 본문이라,
-        본문만 세면 접두사 몫만큼 과소 계산되어 상한 바로 아래 청크가 조용히 잘린다.
+        수집의 토큰 가드가 쓴다.
+        """
+        return self._count(_PASSAGE_PREFIX + text)
 
-        문서 경로(`passage: `) 기준이다. 이 값을 쓰는 곳이 수집의 토큰 가드뿐이고,
-        질의는 청크보다 훨씬 짧아 가드 대상이 아니다.
+    def count_query_tokens(self, text: str) -> int:
+        """질의 하나가 실제로 몇 토큰으로 인코딩되는지 — 질의 경로 기준.
 
-        **블로킹이다.** 토크나이저 호출이고, 첫 호출은 모델 로딩까지 유발한다.
+        검색의 길이 가드가 쓴다. 질의에는 재분할이 성립하지 않으므로(질문 하나를
+        반으로 잘라 각각 검색하면 다른 질문이다) 호출부는 자르지 않고 거부한다.
+        """
+        return self._count(_QUERY_PREFIX + text)
+
+    def _count(self, prefixed: str) -> int:
+        """블로킹. 스레드풀에서만 호출한다.
+
+        **실제로 인코딩되는 문자열 그대로 센다** — 역할 접두사를 포함하고, 토크나이저가
+        붙이는 특수 토큰(`<s>`·`</s>`)까지 포함한다(`encode` 의 기본 동작이다). 본문만
+        세면 그 몫만큼 과소 계산되어 상한 바로 아래 입력이 조용히 잘린다. 잘린 부분은
+        벡터에 반영되지 않으면서 호출부는 전부 반영됐다고 믿는다.
+
+        **블로킹인 이유**: 토크나이저 호출이고 첫 호출은 모델 로딩까지 유발한다.
         `DocumentParser.parse` 와 같은 이유로 동기로 두어 호출부가 오프로드를 의식하게
         한다.
         """
         model = self._ensure_model()
-        return len(model.tokenizer.encode(_PASSAGE_PREFIX + text))
+        return len(model.tokenizer.encode(prefixed))
 
     # ── 로딩 ────────────────────────────────────────────────────────────
 

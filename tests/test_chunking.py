@@ -13,6 +13,7 @@ import pytest
 from app.core.chunking import (
     CHUNK_SPLITTERS,
     ChunkStrategy,
+    clamp_overlap,
     get_splitter,
     resplit,
     split_recursive,
@@ -259,6 +260,36 @@ def test_resplit_of_a_chunk_that_already_fits_returns_it_unchanged():
 
     assert [piece.text for piece in pieces] == ["짧은 청크"]
     assert pieces[0].location.char_start == 5
+
+
+@pytest.mark.parametrize("size", [2, 3, 41, SIZE])
+def test_the_clamped_overlap_always_lets_resplit_proceed(size):
+    """토큰 가드는 크기를 반씩 줄인다. 설정된 겹침이 그대로면 어느 순간 크기 이상이 된다.
+
+    호출부가 그때마다 손으로 맞추면 **불변식을 아는 곳이 둘**이 되어, 한쪽(`_validate`)은
+    거절하고 한쪽은 조용히 맞추게 된다. 여기서 재는 것은 돌려준 값이 언제나 `resplit`
+    이 받아들이는 범위 안이라는 것이다.
+    """
+    overlap = clamp_overlap(size=size, preferred=OVERLAP)
+
+    assert 0 < overlap < size
+    # 실제로 통과하는지까지 본다 — 범위만 맞고 거절당하면 계약이 거짓이다.
+    resplit(TextChunk(text=PROSE[:200], location=ChunkLocation(0, 200)), size=size, overlap=overlap)
+
+
+def test_a_smaller_preferred_overlap_survives_untouched():
+    """줄이기만 한다 — 크기가 넉넉하면 설정값이 그대로 쓰여야 한다."""
+    assert clamp_overlap(size=SIZE, preferred=7) == 7
+
+
+def test_a_size_too_small_to_overlap_is_rejected():
+    """크기 1 에서는 "겹치면서 전진한다"가 성립하지 않는다.
+
+    호출부가 재분할 바닥값을 두어 실제로 닿지 않지만, 조용히 무효한 겹침을 돌려주면
+    그 값이 `resplit` 에서 터지고 원인이 여기라는 사실이 드러나지 않는다.
+    """
+    with pytest.raises(ValueError):
+        clamp_overlap(size=1, preferred=OVERLAP)
 
 
 # ── 전략 레지스트리 ──────────────────────────────────────────────────────

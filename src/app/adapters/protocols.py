@@ -21,6 +21,7 @@ from app.core.documents import (
     StoredIndexVersion,
 )
 from app.core.models import ProbeResult
+from app.core.retrieval import ScoredChunk
 
 
 @runtime_checkable
@@ -92,7 +93,15 @@ class Embedder(Protocol):
     구현체는 실패를 숨기지 말고 그대로 올린다 — 무엇이 준비되지 않았는지는 로그로
     남아야 하고, 판단은 호출자의 몫이다.
 
-    `count_tokens` 만 **동기**다. 토크나이저 호출은 블로킹이므로 `DocumentParser.parse`
+    **토큰 계산도 역할별로 둘이다.** `count_document_tokens`/`count_query_tokens` 가
+    `embed_documents`/`embed_query` 와 짝을 이룬다. 역할마다 실제로 인코딩되는 문자열이
+    다르므로(접두사 길이가 다르다) 하나로 뭉치면 둘 중 한쪽 계산이 반드시 틀리고,
+    그 틀림은 **상한 바로 아래 입력이 조용히 잘리는** 방식으로만 드러난다. 어느 역할의
+    수를 세는지가 이름에 있어야 호출부가 잘못 고를 수 없다. 접두사 문자열 자체는
+    여전히 어댑터 밖으로 나가지 않는다 — 역할이 둘이라는 사실만 드러나는데, 그건
+    `embed_*` 가 이미 드러내고 있다.
+
+    `count_*` 만 **동기**다. 토크나이저 호출은 블로킹이므로 `DocumentParser.parse`
     와 같은 이유로 동기로 선언한다 — 호출부가 오프로드를 의식할 수밖에 없게 만든다.
     인코딩(`embed_*`)은 반대로 async 인데, 배치마다 호출되는 자리라 호출부가 매번
     감싸면 중복만 늘고 어댑터가 배치 사이 양보까지 책임지는 편이 자연스럽다.
@@ -106,19 +115,32 @@ class Embedder(Protocol):
 
     async def embed_query(self, text: str) -> list[float]: ...
 
-    def count_tokens(self, text: str) -> int: ...
+    def count_document_tokens(self, text: str) -> int: ...
+
+    def count_query_tokens(self, text: str) -> int: ...
 
     async def warm_up(self) -> None: ...
 
 
 @runtime_checkable
 class VectorStore(Protocol):
-    """청크와 벡터를 보관한다.
+    """청크와 벡터를 보관하고, 벡터 하나에 가까운 청크를 돌려준다.
 
-    **`query` 가 없다.** 검색 질의는 retrieval change 가 자기 요구(top-k·필터·거리
-    지표·재랭킹)를 알고 나서 붙인다. 지금 정하면 근거 없이 추측한 인터페이스가 되고,
-    문서에 적히는 순간 고치는 데 설명이 붙는다. 여기 있는 것은 수집이 **실제로 쓰는**
-    쓰기·삭제·집계 면뿐이다.
+    **`query` 는 벡터를 받는다 — 질의 문자열이 아니다.** 문자열을 받게 하면 어댑터가
+    임베더를 알아야 하고, 저장소가 임베딩 모델에 의존하는 순간 둘 중 하나를 갈아끼울 때
+    다른 하나가 딸려 온다. `add_chunks` 가 텍스트가 아니라 벡터를 받는 것과 같은 규율이다.
+
+    **검색 대상은 호출자가 삼중항 목록으로 정한다.** 저장소에는 검색되면 안 되는 청크가
+    남아 있을 수 있으므로(되돌리기가 닿지 못한 실패, 확정 뒤의 정리 실패), 무엇이 지금
+    유효한지는 레지스트리를 아는 서비스만 답할 수 있다. **빈 목록은 "대상 없음"이고
+    "조건 없음"이 아니다** — 구현체는 저장소를 건드리지 않고 빈 결과를 돌려준다.
+
+    `document_ids` 같은 별도 범위 필터를 두지 않는 이유는 소비자가 없어서다. 필요해지면
+    `versions` 를 만드는 쪽에서 좁히면 되고, 이 인터페이스가 이미 범위 지정의 일반형이다.
+
+    **점수는 유사도로 나간다** — 클수록 가깝다. 저장소가 거리를 돌려주더라도 구현체가
+    `[0, 1]` 유사도로 바꿔 넣는다. 그 변환이 구현체 안에만 있어야 저장소를 바꿔 거리
+    지표가 달라져도 상위 계층의 비교 방향이 조용히 뒤집히지 않는다.
 
     프로토콜은 async 이고 오프로드는 **구현체 안에서** 한다 — 파서와 반대 방향인데
     이유가 다르다. 파서는 CPU 바운드에 수백 ms~초라 호출부가 오프로드를 의식해야
@@ -166,6 +188,22 @@ class VectorStore(Protocol):
 
         기동 정리가 "레지스트리가 가리키지 않는 청크"를 찾는 데 쓴다. 레지스트리만
         보면 잔여 청크의 존재 자체를 알 수 없다.
+        """
+        ...
+
+    async def query(
+        self,
+        embedding: Sequence[float],
+        *,
+        top_k: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[ScoredChunk]:
+        """`versions` 에 든 삼중항의 청크 중 벡터에 가까운 것부터 최대 `top_k` 개.
+
+        점수 **내림차순**이고, 결과 수가 `top_k` 보다 적을 수 있다(대상이 그만큼뿐일
+        때). 모자란 자리를 채우지 않는다.
+
+        `versions` 가 비면 저장소를 건드리지 않고 빈 목록을 돌려준다.
         """
         ...
 

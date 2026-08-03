@@ -33,10 +33,13 @@ from app.adapters.registry import SqliteDocumentRegistry
 from app.adapters.vector_store import ChromaVectorStore, VectorStoreProbe, collection_for
 from app.api.errors import register_error_handlers
 from app.api.logging import RequestLoggingMiddleware, configure_logging
-from app.api.routes import documents, health
+from app.api.routes import documents, health, search
 from app.config import Settings, get_settings
+from app.core.chunking import CHUNK_STRATEGY_VERSION
+from app.core.documents import derive_index_signature
 from app.services.health import HealthService
 from app.services.ingestion import IngestionService
+from app.services.retrieval import RetrievalService
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +140,24 @@ def create_app(
             settings.vector_store_url, collection_name=collection_for(embedder.dimension)
         )
 
+    # **색인 서명은 여기서 한 번만 유도한다.** 수집은 이 값으로 청크를 찍고 검색은
+    # 이 값으로 필터하는데, 두 서비스가 각자 유도하면 재료 목록이 두 곳에 생긴다.
+    # 한쪽만 고쳐진 순간 방금 올린 문서가 검색되지 않으면서 어디에도 오류가 남지
+    # 않는다 — 두 값이 각자 자기 기준으로는 옳기 때문이다.
+    index_signature = derive_index_signature(
+        embedder_signature=embedder.signature,
+        chunk_strategy=settings.chunk_strategy.value,
+        chunk_strategy_version=CHUNK_STRATEGY_VERSION,
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+    )
+
+    # **두 서비스가 같은 레지스트리 인스턴스를 본다.** 검색의 대상 집합은 수집이 방금
+    # 커밋한 값을 읽어야 하므로, 여기서 하나로 묶어 두지 않으면 업로드 직후의 문서가
+    # 검색되지 않는다.
+    if registry is None:
+        registry = SqliteDocumentRegistry(settings.registry_path)
+
     # 기동 훅이 선로딩을 부르려면 임베더에 닿아야 한다. 수집 서비스 안에서 꺼내지
     # 않는 이유는 그게 서비스의 내부 구성이기 때문이다 — 배선이 배선한 것을 들고 있는다.
     app.state.embedder = embedder
@@ -144,13 +165,25 @@ def create_app(
         ParserRegistry(default_parsers() if parsers is None else parsers),
         embedder,
         vector_store,
-        SqliteDocumentRegistry(settings.registry_path) if registry is None else registry,
+        registry,
+        index_signature=index_signature,
         chunk_strategy=settings.chunk_strategy,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
         embedding_batch_size=settings.embedding_batch_size,
         concurrency=settings.ingestion_concurrency,
     )
+    app.state.retrieval_service = RetrievalService(
+        embedder,
+        vector_store,
+        registry,
+        # 수집이 청크를 찍은 것과 **같은 서명**이다. 이 한 줄이 두 서비스를 같은 색인
+        # 세대에 묶는다.
+        index_signature=index_signature,
+        top_k=settings.retrieval_top_k,
+        min_score=settings.retrieval_min_score,
+    )
     app.include_router(health.router)
     app.include_router(documents.router)
+    app.include_router(search.router)
     return app

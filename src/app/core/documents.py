@@ -95,6 +95,25 @@ class IngestionStatus(StrEnum):
     REINDEXED = "reindexed"
     UNCHANGED = "unchanged"
 
+    @classmethod
+    def of(cls, current: "Document | None", revision: str) -> "IngestionStatus":
+        """이전 상태와 새 리비전으로 이번 요청의 결과를 분류한다.
+
+        판정을 값 옆에 두는 이유는 위 docstring 때문이다 — 세 값을 어떻게 가르는지가
+        열거형의 존재 이유인데 그 판정이 다른 레이어에 있으면, 규칙의 **설명**과
+        **구현**이 갈려 한쪽만 고쳐질 수 있다.
+
+        `UNCHANGED`는 여기서 나오지 않는다. 그 판정은 "저장을 아예 시작하지 않는다"는
+        결정이라 색인 경로에 진입하기 전에 끝나고(`Document.is_up_to_date`), 여기까지
+        온 요청은 이미 무언가를 썼다.
+        """
+        if current is None:
+            return cls.CREATED
+        if current.revision != revision:
+            return cls.REPLACED
+        # 내용은 같은데 여기까지 왔다 = 색인 구성이 달라졌거나 `stale` 이다.
+        return cls.REINDEXED
+
 
 @dataclass(frozen=True)
 class ChunkLocation:
@@ -235,6 +254,21 @@ class StoredIndexVersion:
     revision: str
     index_signature: str
 
+    @classmethod
+    def of(cls, document: "Document") -> "StoredIndexVersion":
+        """레지스트리 레코드가 가리키는 조합.
+
+        "지금 유효한 것"(레지스트리)에서 "저장소에서 찾을 것"(삼중항)으로 넘어가는
+        변환이다. 호출부가 세 필드를 손으로 옮기면 축 하나를 빠뜨려도 타입이 멀쩡하고,
+        무엇보다 같은 변환이 여러 곳에 생겨 한 곳만 고쳐질 수 있다 — 리비전 축이
+        빠지면 사용자가 지운 문장이 검색된다.
+        """
+        return cls(
+            document_id=document.document_id,
+            revision=document.revision,
+            index_signature=document.index_signature,
+        )
+
 
 @dataclass(frozen=True)
 class Document:
@@ -259,6 +293,41 @@ class Document:
             raise ValueError("chunk_count 는 0 이상이어야 한다")
         if self.byte_size < 0:
             raise ValueError("byte_size 는 0 이상이어야 한다")
+
+    # ── 색인 구성에 대한 판정 ───────────────────────────────────────────
+    #
+    # 셋 다 **레코드가 스스로 답할 수 있는 질문**이라 여기 둔다. 수집과 검색이 각자
+    # 구현하면 같은 개념의 구현이 둘이 되고, 한쪽만 고쳐진 순간 수집이 유효하다고
+    # 여기는 문서와 검색이 찾는 문서가 어긋난다 — **각자 자기 기준으로는 옳아서 어디에도
+    # 오류가 남지 않는다.** 색인 서명을 배선에서 한 번만 유도해 두 서비스에 주입하는
+    # 것으로는 절반만 막힌다. 값을 통일해도 그 값을 쓰는 규칙이 여러 벌이면 같은 자리가
+    # 다시 열린다.
+
+    def matches_index(self, index_signature: str) -> bool:
+        """이 문서의 청크가 주어진 색인 구성으로 만들어졌는가.
+
+        서명이 다르면 벡터가 다른 의미 공간에 있다. 검색되면 안 되고, 재업로드는
+        재색인으로 이어져야 한다.
+        """
+        return self.index_signature == index_signature
+
+    def is_searchable_under(self, index_signature: str) -> bool:
+        """지금 검색 대상인가 — 구성이 맞고, 청크가 실제로 있어야 한다.
+
+        `stale` 은 기동 정리가 청크를 지웠다는 뜻이다. 서명은 그대로 두므로(재업로드가
+        `unchanged` 단축에 걸리지 않게 하려고) 서명만 봐서는 걸러지지 않는다.
+        """
+        return self.matches_index(index_signature) and self.index_status is IndexStatus.INDEXED
+
+    def is_up_to_date(self, *, revision: str, index_signature: str) -> bool:
+        """이 내용을 이 구성으로 이미 색인해 두었는가.
+
+        **세 축을 모두 본다.** `revision` 만 보면 모델이나 청킹을 바꾼 뒤 같은 파일을
+        다시 올려도 아무 일이 일어나지 않아, 구 구성 벡터가 남은 채 사용자는 재색인
+        했다고 믿는다. `index_status` 까지 보는 이유는 청크가 0개인 문서를 "변경 없음"
+        이라고 답하는 일이 어떤 경로로도 일어나면 안 되기 때문이다.
+        """
+        return self.revision == revision and self.is_searchable_under(index_signature)
 
 
 def identify_chunks(

@@ -1,11 +1,14 @@
-"""벡터 스토어 (Chroma) — 쓰기·삭제·집계.
+"""벡터 스토어 (Chroma) — 쓰기·삭제·집계·질의.
 
 가장 중요한 단언은 **같은 `revision` 의 서로 다른 서명 청크가 공존한다**는 것이다.
 재색인은 `revision` 이 그대로인 채 일어나므로, 청크 id 에 서명이 없으면 새 청크가
 이전 청크를 그 자리에서 덮어쓴다. 그러면 "새로 쓰고 → 커밋 → 지우기" 순서가 무너져
 쓰는 도중에 이미 이전 벡터가 사라지고, 실패해도 되돌릴 원본이 없다.
 
-질의는 검증하지 않는다 — `query` 는 이 어댑터에 없다(retrieval change 의 몫).
+질의 쪽에서 가장 중요한 것은 **빈 대상 목록이 전체 검색으로 뒤집히지 않는다**는 단언이다.
+저장소 필터 API 에서 "조건 없음 = 전체"가 흔한 관습이라 실수하기 쉬운 자리이고, 뒤집히면
+사용자가 지운 문서가 검색된다. 검색 품질(무엇이 1위인가)은 여기서 재지 않는다 — 그건
+임베딩의 성질이라 실물 모델로 따로 본다.
 
 **실물 서버가 필요하다.** Chroma 를 서버 모드로 쓰므로 이 파일은 대역으로 대체할 수 없다 —
 대역으로 바꾸는 순간 확인하려는 것(우리 메타데이터·필터·id 규약이 *실제 Chroma* 에서
@@ -87,12 +90,34 @@ def make_vectors(count: int) -> list[list[float]]:
     return [[float(index)] * DIMENSION for index in range(count)]
 
 
-async def store_chunks(store: ChromaVectorStore, chunks, **kwargs) -> None:
+#: 질의 테스트가 쓰는 기준 벡터. `make_query_vectors` 의 첫 벡터와 방향이 같다.
+QUERY_VECTOR = [1.0, 0.0, 0.0, 0.0]
+
+
+def make_query_vectors(count: int, *, offset: float = 0.0) -> list[list[float]]:
+    """`QUERY_VECTOR` 에서 **뒤로 갈수록 멀어지는** 벡터.
+
+    `make_vectors` 를 질의에 쓸 수 없다 — 첫 벡터가 영벡터라 코사인 거리가 정의되지
+    않는다. 순서를 미리 알 수 있게 만들어야 "내림차순인가"가 우연이 아닌 단언이 된다.
+    `offset` 은 두 문서·두 리비전을 섞을 때 서로 다른 거리대에 놓는 데 쓴다.
+    """
+    return [[1.0, 0.3 * (index + offset), 0.0, 0.0] for index in range(count)]
+
+
+async def store_chunks(store: ChromaVectorStore, chunks, *, vectors=None, **kwargs) -> None:
     await store.add_chunks(
         chunks,
-        make_vectors(len(chunks)),
+        make_vectors(len(chunks)) if vectors is None else vectors,
         filename=kwargs.get("filename", "company-policy.txt"),
         document_format=kwargs.get("document_format", DocumentFormat.TXT),
+    )
+
+
+def version_of(
+    document_id: str = DOCUMENT_ID, revision: str = "rev-1", index_signature: str = "sig-1"
+) -> StoredIndexVersion:
+    return StoredIndexVersion(
+        document_id=document_id, revision=revision, index_signature=index_signature
     )
 
 
@@ -251,6 +276,136 @@ async def test_stored_versions_report_every_combination(store):
 
 async def test_stored_versions_are_empty_on_a_fresh_store(store):
     assert await store.list_stored_versions() == []
+
+
+# ── 질의 ────────────────────────────────────────────────────────────────
+
+
+async def test_a_stored_chunk_comes_back_for_a_query(store):
+    chunks = make_chunks(3)
+    await store_chunks(store, chunks, vectors=make_query_vectors(3))
+
+    results = await store.query(QUERY_VECTOR, top_k=5, versions=[version_of()])
+
+    assert [result.text for result in results] == [chunk.text for chunk in chunks]
+    assert all(0 <= result.score <= 1 for result in results)
+
+
+async def test_the_result_count_is_capped_by_top_k(store):
+    """`top_k` 가 저장소 부하이자 응답 크기다 — 넘겨도 조용히 무시되면 상한이 무의미해진다."""
+    await store_chunks(store, make_chunks(3), vectors=make_query_vectors(3))
+
+    results = await store.query(QUERY_VECTOR, top_k=2, versions=[version_of()])
+
+    assert len(results) == 2
+
+
+async def test_results_are_ordered_by_descending_score(store):
+    """벡터를 뒤로 갈수록 멀게 만들어 두었으므로 순서가 미리 정해져 있다."""
+    await store_chunks(store, make_chunks(4), vectors=make_query_vectors(4))
+
+    results = await store.query(QUERY_VECTOR, top_k=4, versions=[version_of()])
+
+    scores = [result.score for result in results]
+    assert scores == sorted(scores, reverse=True)
+    assert [result.chunk_index for result in results] == [0, 1, 2, 3]
+
+
+async def test_a_version_outside_the_target_set_is_not_returned(store):
+    """교체 뒤 이전 세대 정리가 실패해 남은 청크가 이 경로로 새어 나간다."""
+    await store_chunks(store, make_chunks(2, revision="rev-1"), vectors=make_query_vectors(2))
+    await store_chunks(
+        store, make_chunks(2, revision="rev-2"), vectors=make_query_vectors(2, offset=5)
+    )
+
+    results = await store.query(QUERY_VECTOR, top_k=10, versions=[version_of(revision="rev-2")])
+
+    assert len(results) == 2
+    assert {result.revision for result in results} == {"rev-2"}
+
+
+async def test_an_empty_target_set_returns_nothing_rather_than_everything(store):
+    """**"조건 없음 = 전체"로 뒤집히면 사용자가 지운 문서가 검색된다.**
+
+    저장소 필터 API 에서 그 관습이 흔하므로 실수하기 쉬운 자리다. 유효한 문서가 하나도
+    없는 상태에서 잔여 청크가 검색되는 것이 정확히 이 실수의 모양이라, 청크를 저장해
+    둔 채로 확인한다.
+    """
+    await store_chunks(store, make_chunks(3), vectors=make_query_vectors(3))
+
+    assert await store.query(QUERY_VECTOR, top_k=10, versions=[]) == []
+
+
+async def test_the_same_revision_under_another_signature_is_not_mixed_in(store):
+    """재색인은 `revision` 이 그대로인 채 일어난다 — 서명 축이 빠지면 두 세대가 섞인다."""
+    await store_chunks(
+        store, make_chunks(2, index_signature="sig-1"), vectors=make_query_vectors(2)
+    )
+    await store_chunks(
+        store, make_chunks(2, index_signature="sig-2"), vectors=make_query_vectors(2, offset=5)
+    )
+
+    results = await store.query(
+        QUERY_VECTOR, top_k=10, versions=[version_of(index_signature="sig-1")]
+    )
+
+    assert len(results) == 2
+    assert {result.index_signature for result in results} == {"sig-1"}
+
+
+async def test_a_query_spans_every_target_in_the_set(store):
+    """대상이 여럿이면 `$or` 로 묶인다 — 하나만 통과하면 나머지 문서가 통째로 사라진다."""
+    await store_chunks(store, make_chunks(1), vectors=make_query_vectors(1))
+    await store_chunks(
+        store, make_chunks(1, document_id=OTHER_ID), vectors=make_query_vectors(1, offset=2)
+    )
+
+    results = await store.query(
+        QUERY_VECTOR, top_k=10, versions=[version_of(), version_of(document_id=OTHER_ID)]
+    )
+
+    assert {result.document_id for result in results} == {DOCUMENT_ID, OTHER_ID}
+
+
+async def test_the_result_carries_the_source_metadata(store):
+    """출처 표기가 이 값들을 그대로 읽는다. 하나라도 빠지면 "어느 문서의 어디"를 말할 수 없다."""
+    await store_chunks(
+        store,
+        make_chunks(1, page=3),
+        vectors=make_query_vectors(1),
+        filename="handbook.pdf",
+        document_format=DocumentFormat.PDF,
+    )
+
+    result = (await store.query(QUERY_VECTOR, top_k=1, versions=[version_of()]))[0]
+
+    assert result.document_id == DOCUMENT_ID
+    assert result.revision == "rev-1"
+    assert result.index_signature == "sig-1"
+    assert result.chunk_index == 0
+    assert result.filename == "handbook.pdf"
+    assert result.format is DocumentFormat.PDF
+    assert (result.location.char_start, result.location.char_end) == (0, 50)
+    assert result.location.page == 3
+
+
+async def test_a_page_less_format_comes_back_without_a_page(store):
+    """수집이 값 없는 키를 넣지 않는다는 규약의 반대편이다 — 없는 키에서 터지면 안 된다."""
+    await store_chunks(store, make_chunks(1), vectors=make_query_vectors(1))
+
+    result = (await store.query(QUERY_VECTOR, top_k=1, versions=[version_of()]))[0]
+
+    assert result.location.page is None
+    assert result.format is DocumentFormat.TXT
+
+
+async def test_a_failing_query_becomes_a_domain_error(store):
+    """빈 결과로 위장하면 벡터 스토어가 죽은 동안 "근거를 찾지 못했습니다"가 나간다."""
+    await store_chunks(store, make_chunks(1), vectors=make_query_vectors(1))
+
+    with pytest.raises(StorageUnavailable):
+        # 차원이 다른 질의 벡터 — 저장소가 거절한다.
+        await store.query([0.5] * (DIMENSION + 4), top_k=1, versions=[version_of()])
 
 
 # ── 컬렉션은 차원마다 나뉜다 ────────────────────────────────────────────

@@ -1,4 +1,4 @@
-.PHONY: up down logs gui sync-credentials vector-store test test-all lint
+.PHONY: up down logs gui sync-credentials vector-store test test-all test-container lint
 
 VENV := .venv
 
@@ -36,6 +36,13 @@ vector-store:
 
 test-all: vector-store $(VENV)/bin/pytest
 	$(VENV)/bin/pytest
+
+# 검색 품질 테스트(로컬 임베딩 실물)는 가중치가 있어야 돈다. 호스트에 없으면 건너뛰지만
+# **이미지에는 구워져 있으므로** 여기서는 실행된다. 반대로 Chroma 는 컨테이너 안에서
+# `localhost:8001` 이 아니라서 실물 스토어 테스트는 건너뛴다 — 그쪽은 `test-all` 이 덮는다.
+test-container:
+	docker build --target test -t document-qa-api:test .
+	docker run --rm document-qa-api:test
 
 lint: $(VENV)/bin/pytest
 	$(VENV)/bin/ruff check .
