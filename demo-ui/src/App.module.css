@@ -1,0 +1,27 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  max-width: var(--layout-max-width);
+  min-height: 100%;
+  margin: 0 auto;
+  padding: var(--space-md);
+}
+
+/* 좁은 화면이 기본이다. 넓어지면 문서 패널이 고정 폭으로 왼쪽에 붙는다. */
+.main {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-md);
+  align-items: start;
+}
+
+@media (min-width: 960px) {
+  .page {
+    padding: var(--space-lg) var(--space-page-sm);
+  }
+
+  .main {
+    grid-template-columns: var(--layout-panel-width) minmax(0, 1fr);
+  }
+}

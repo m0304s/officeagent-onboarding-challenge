@@ -1,0 +1,60 @@
+.zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-md) var(--space-sm);
+  border: 1px dashed var(--color-border-control);
+  border-radius: var(--radius-card);
+  text-align: center;
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    background-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.zone:hover {
+  border-color: var(--color-border-strong);
+}
+
+.dragging {
+  border-color: var(--color-accent);
+  border-style: solid;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.disabled {
+  opacity: 0.5;
+}
+
+/* 초점 링은 숨은 input 이 받는다. 시각적으로는 label 이 트리거라 여기로 옮겨 그린다. */
+.zone:has(input:focus-visible) {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-text-on-inverse);
+  font-weight: var(--font-weight-emphasis);
+  cursor: pointer;
+}
+
+.disabled .label {
+  cursor: not-allowed;
+}
+
+.hint {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.formats {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  opacity: 0.8;
+}

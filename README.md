@@ -19,7 +19,8 @@ change 단위로 점진적으로 구현합니다. **아래 표에서 "구현됨"
 | 문서 목록·상세·삭제 (`GET`/`DELETE /documents`) | 구현됨 |
 | 재업로드 교체·재색인, 기동 시 저장소 정리 | 구현됨 |
 | 벡터 검색 — 질의 임베딩 → 대상 필터 → 상위 K (`POST /search`) | 구현됨 |
-| LLM 답변 생성, 스트리밍 | 미구현 |
+| LLM 답변 생성 + SSE 스트리밍 — 출처 표기·환각 억제·재시도 (`POST /qa`) | 구현됨 |
+| 데모 UI — 문서 패널 + 스트리밍 Q&A 콘솔 ([`demo-ui/`](./demo-ui/)) | 구현됨 (선택 실행) |
 | 응답 캐싱, 캐시 무효화 | 미구현 |
 
 계획은 [`openspec/changes/`](./openspec/changes/)에 change별로 있습니다.
@@ -104,11 +105,16 @@ curl -s -X POST http://127.0.0.1:8000/documents -F "file=@sample-docs/company-po
 `.txt` · `.md` · `.pdf`를 받습니다. 응답에 청크 본문은 싣지 않습니다 — 청크는 벡터 스토어에 저장되며, 여기서는 그 결과만 보고합니다.
 
 ```json
-{"document_id":"b166d4ad-...","filename":"company-policy.txt","format":"txt",
- "revision":"2ccbdc60...","index_signature":"e78999af0e98a7d4","index_status":"indexed",
- "chunk_count":3,"byte_size":1708,"ingested_at":"2026-08-02T04:11:52.913Z",
+{"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt","format":"txt",
+ "revision":"2ccbdc608106...","index_signature":"e78999af0e98a7d4","index_status":"indexed",
+ "chunk_count":1,"byte_size":1172,"ingested_at":"2026-08-03T11:36:21.140245Z",
  "status":"created","previous_revision":null}
 ```
+
+> 이 문서의 응답 예시는 **실제로 실행해 받은 값**입니다 — `sample-docs/` 두 건을 올리고
+> 아래 검색을 그대로 호출한 한 번의 실행에서 나왔습니다. `document_id`는 파일명에서,
+> `revision`은 내용에서 유도되므로 같은 파일을 올리면 같은 값이 나옵니다.
+> `score`는 임베딩 실수 연산이라 플랫폼에 따라 끝자리가 다를 수 있습니다.
 
 #### `status` — 이번 요청이 무엇을 했는가
 
@@ -163,13 +169,15 @@ curl -s -X POST http://127.0.0.1:8000/search \
 
 ```json
 {"query":"교육비는 얼마까지 지원되나요?","top_k":3,"count":1,
- "results":[{"document_id":"b166d4ad-...","filename":"company-policy.txt","format":"txt",
-             "revision":"2ccbdc60...","chunk_index":1,
-             "text":"교육비는 연 200만원까지 지원합니다. ...",
-             "score":0.8734,"char_start":142,"char_end":538,"page":null}]}
+ "results":[{"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt","format":"txt",
+             "revision":"2ccbdc608106...","chunk_index":0,
+             "text":"[사내 복리후생 안내]\n\n1. 교육비 지원\n임직원은 연간 최대 200만원까지 직무 관련 교육비를 지원받을 수 있습니다.\n신청은 매월 15일까지 HR팀에 신청서를 제출해야 하며, 승인 후 비용이 환급됩니다. ...",
+             "score":0.8609192999999999,"char_start":0,"char_end":527,"page":null}]}
 ```
 
-**검색은 답변을 만들지 않습니다.** 응답에 답변 필드도 거절 문구도 없습니다 — "이 근거로 답할 수 있는가"는 본문을 읽어야 하는 판정이라 답변 생성(다음 change)의 몫이고, 검색이 하는 판정은 "이 청크를 다음 단계에 보여줄 가치가 있는가"(유사도 하한)까지입니다. 그래서 이 엔드포인트는 `/qa`가 생긴 뒤에도 남습니다. **답이 이상할 때 원인이 검색인지 생성인지 가르는 관측 지점**이 이것입니다 — 근거가 애초에 안 잡혔는지, 잡혔는데 답이 틀렸는지가 여기서 갈립니다.
+문서 둘을 올렸는데 결과가 하나인 것은 오류가 아닙니다. 기본 청크 크기(600자)에서 `company-policy.txt`는 청크 하나가 되고, `development-guide.md`의 청크 둘은 이 질의에서 **유사도 하한에 걸려 떨어집니다.** 검색이 하는 판정이 바로 이것입니다.
+
+**검색은 답변을 만들지 않습니다.** 응답에 답변 필드도 거절 문구도 없습니다 — "이 근거로 답할 수 있는가"는 본문을 읽어야 하는 판정이라 [답변 생성](#답변-api-sse)의 몫이고, 검색이 하는 판정은 "이 청크를 다음 단계에 보여줄 가치가 있는가"(유사도 하한)까지입니다. 그래서 이 엔드포인트는 `/qa`가 생긴 뒤에도 남습니다. **답이 이상할 때 원인이 검색인지 생성인지 가르는 관측 지점**이 이것입니다 — 근거가 애초에 안 잡혔는지, 잡혔는데 답이 틀렸는지가 여기서 갈립니다.
 
 결과 하나가 스스로 출처를 말합니다. 인용 한 줄을 만들려고 문서를 다시 조회할 필요가 없습니다.
 
@@ -206,10 +214,137 @@ curl -s -X POST http://127.0.0.1:8000/search \
 검색 로그도 한 줄입니다. **질의 문자열과 청크 본문은 싣지 않습니다.**
 
 ```json
-{"level":"INFO","logger":"app.api.routes.search","message":"검색 요청을 처리했습니다","request_id":"9f2c...","top_k":5,"result_count":3,"top_score":0.8734,"target_documents":2}
+{"level":"INFO","logger":"app.api.routes.search","message":"검색 요청을 처리했습니다","request_id":"0cb02e2d63e6...","top_k":5,"result_count":1,"top_score":0.8609192999999999,"target_documents":2}
 ```
 
 `target_documents`가 있어야 빈 결과의 이유가 갈립니다 — `0`이면 올린 문서가 없거나 전부 `stale`인 것이고, 대상이 있는데 결과가 `0`이면 유사도 하한에 걸린 것입니다.
+
+### 답변 API (SSE)
+
+| 메서드 | 경로 | 하는 일 |
+|---|---|---|
+| `POST` | `/qa` | 근거를 찾아 먼저 보내고, 그 근거만으로 답변을 생성해 조각 단위로 흘려보냄 |
+
+**스트리밍이 유일한 표면입니다.** 전체 답변만 필요하면 마지막 `done` 이벤트 하나만 읽으면 됩니다 — 답변 전문·인용·종료 사유가 거기 다 들어 있습니다.
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/qa \
+  -H 'content-type: application/json' \
+  -d '{"question":"교육비는 얼마까지 지원되나요?","top_k":3}'
+```
+
+`-N`이 없으면 curl이 응답을 버퍼링해 스트리밍이 눈에 보이지 않습니다. 아래는 **실제로 받은 출력**입니다(근거 본문은 길어서 줄였습니다).
+
+```
+event: sources
+data: {"results":[{"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt",
+       "format":"txt","revision":"2ccbdc608106...","chunk_index":0,"text":"[사내 복리후생 안내]\n\n1. 교육비 지원\n...",
+       "score":0.86091971,"char_start":0,"char_end":527,"page":null}],"count":1,"top_k":3,"target_documents":2}
+
+event: answer
+data: {"text":"임"}
+
+event: answer
+data: {"text":"직"}
+
+... (answer 이벤트 26회)
+
+event: done
+data: {"finish_reason":"stop","answer":"임직원은 연간 최대 200만 원까지 직무 관련 교육비를 지원받을 수 있습니다.[1]",
+       "citations":[{"marker":1,"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt",
+       "format":"txt","revision":"2ccbdc608106...","chunk_index":0,"score":0.86091971,
+       "char_start":0,"char_end":527,"page":null}],"dropped_markers":0,"elapsed_ms":7385}
+```
+
+**조각이 26개인 것은 서버가 나눈 것이 아닙니다.** CLI가 토큰 단위로 델타를 흘리고, 서버는 그것을 쪼개지도 합치지도 않고 그대로 전달합니다.
+
+| 이벤트 | 횟수 | 내용 |
+|---|---|---|
+| `sources` | 정확히 1회, **항상 먼저** | `results`(`/search`와 같은 모양)·`count`·`top_k`·`target_documents` |
+| `answer` | 0회 이상 | `text` — 답변 조각. 이어 붙이면 `done`의 `answer`와 같습니다 |
+| `done` | 0 또는 1회, **마지막** | `finish_reason`·`answer`·`citations`·`dropped_markers`·`elapsed_ms` |
+| `error` | 0 또는 1회, **마지막** | `code`·`message`·`attempts`·`reason` |
+
+**스트림은 `done` 또는 `error` 정확히 하나로 닫힙니다.** 둘 다 나오거나 종료 이벤트 없이 끊기는 경우는 없습니다. 응답이 길어져 조각 사이가 벌어지면 `: keep-alive` 주석이 15초마다 나가는데, **주석은 이벤트가 아니라서** `EventSource`나 표준 SSE 파서에는 나타나지 않습니다.
+
+#### `finish_reason` — 왜 끝났는가
+
+| 값 | 언제 | `answer` | `citations` |
+|---|---|---|---|
+| `stop` | 근거로 답했음 | 생성기가 쓴 답변 | 검증을 통과한 마커 |
+| `no_evidence` | 검색 결과가 0건이라 **생성기를 아예 부르지 않음** | **빈 문자열** | 비어 있음 |
+| `insufficient_evidence` | 근거는 있으나 생성기가 "답할 수 없다"고 판정 | 생성기가 쓴 사유 | 비어 있음 |
+
+거절이 두 갈래인 이유는 사용자가 할 일이 다르기 때문입니다 — 앞은 문서를 올려야 하고, 뒤는 질문을 바꿔야 합니다.
+
+**`no_evidence`일 때 서버는 문구를 만들지 않습니다.** `answer`는 빈 문자열이고 `answer` 이벤트도 나가지 않습니다. 화면에 무엇을 띄울지는 소비자가 정합니다 — **답변 문자열을 만드는 곳은 생성기뿐**이라는 규칙에 예외를 두지 않기 위해서입니다.
+
+```
+event: sources
+data: {"results":[],"count":0,"top_k":3,"target_documents":3}
+
+event: done
+data: {"finish_reason":"no_evidence","answer":"","citations":[],"dropped_markers":0,"elapsed_ms":75}
+```
+
+문서가 셋 있는데 근거가 0건인 것은 오류가 아닙니다 — 질문("태양계에서 가장 큰 행성은?")이 어느 문서와도 가깝지 않아 [유사도 하한](#설정)에 전부 걸린 것입니다. 그 판정에 LLM이 필요하지 않으므로 **호출도 하지 않고 75밀리초에 끝납니다.**
+
+근거는 잡혔는데 질문을 뒷받침하지 않으면 **모델이 그렇게 판정하고 사유를 직접 씁니다.** 아래도 실제 출력입니다.
+
+```
+event: done
+data: {"finish_reason":"insufficient_evidence","answer":"제공된 근거에는 서울의 오늘 날씨 정보가 없습니다.",
+       "citations":[],"dropped_markers":0,"elapsed_ms":4983}
+```
+
+#### 인용 — 답변이 무엇을 근거로 했는가
+
+답변 본문의 `[1]` 마커가 `sources`의 몇 번째 결과인지를 가리킵니다. **마커는 본문에서 지우지 않습니다** — 지우면 흘러간 문장과 `done.answer`가 달라집니다.
+
+- 등장 순서대로, 중복은 한 번만 실립니다.
+- **근거 목록에 없는 번호는 버립니다.** 없는 근거를 가리키는 인용은 환각이고, 번호가 붙어 있어 가장 그럴듯해 보이는 형태입니다. 버린 개수가 `dropped_markers`로 나갑니다.
+- 인용 항목의 값은 같은 스트림의 `sources`에 실린 값과 같습니다. 인용이 새 사실을 만들지 않습니다.
+
+마커가 하나도 없는 답변도 유효합니다(`finish_reason: "stop"` + 빈 `citations`).
+
+#### 거절되는 경우
+
+**질의 검증과 검색은 스트림을 열기 전에 끝납니다.** 상태 코드는 첫 바이트와 함께 확정되므로, 여기서 실패하면 SSE가 아니라 평범한 JSON 오류 응답이 돌아옵니다.
+
+| 상황 | 상태 | 코드 | 콘텐츠 타입 |
+|---|---:|---|---|
+| 질문이 비었거나 공백뿐 | 422 | `empty_query` | `application/json` |
+| 질문 길이 상한 초과 | 422 | `query_too_long` | `application/json` |
+| `top_k`가 `1` 미만 / 상한 초과 | 422 | `validation_error` / `invalid_top_k` | `application/json` |
+| 벡터 스토어 접근 실패 | 503 | `storage_unavailable` | `application/json` |
+| 생성 시도 소진 | 200 | `llm_unavailable` (**`error` 이벤트**) | `text/event-stream` |
+| LLM 인증 없음·만료 | 200 | `llm_unauthenticated` (**`error` 이벤트**) | `text/event-stream` |
+
+`/search`와 **같은 코드·같은 형식**입니다. 같은 질의가 경로에 따라 다른 답을 받지 않습니다.
+
+#### 인증이 없으면 `/qa`만 실패합니다
+
+`.secrets/codex/auth.json`이 없거나 만료된 상태에서도 **서비스는 정상 기동하고 `/health`·`/documents`·`/search`가 전부 동작합니다.** 인증 부재는 질문한 시점에만, 그 사실 그대로 드러납니다.
+
+```
+event: sources
+data: {...근거는 정상적으로 나갑니다...}
+
+event: error
+data: {"code":"llm_unauthenticated","message":"답변 생성기가 인증되지 않았습니다","attempts":1,"reason":"unauthenticated"}
+```
+
+`attempts`가 `1`인 것은 **재시도하지 않기 때문**입니다 — 백오프를 몇 번 돌아도 자격증명이 생기지 않습니다. 시도 소진(`llm_unavailable`)과 코드를 나눈 이유가 이것입니다: 앞은 [자격증명 주입 경로](#llm-자격증명-동기화)를 확인할 일이고, 뒤는 재시도나 상한 조정입니다.
+
+#### 로그
+
+**질문·근거 본문·답변 본문은 남기지 않습니다.** 질문 자체가 개인정보일 수 있고 근거는 문서 내용 그 자체이며, 답변은 그 둘을 합친 것이라 가장 민감합니다.
+
+```json
+{"level":"INFO","logger":"app.services.qa","message":"답변 생성 요청을 처리했습니다","request_id":"3f83da8a...","source_count":1,"target_documents":2,"finish_reason":"stop","citation_count":1,"dropped_markers":0,"attempts":1,"elapsed_ms":7385}
+```
+
+`dropped_markers`가 늘어나는 것이 프롬프트 열화의 가장 이른 신호이고, `attempts`가 생성 불안정을 같은 방식으로 드러냅니다.
 
 ### 오류 응답
 
@@ -237,6 +372,41 @@ JSON 한 줄로 출력되며, 요청마다 `x-request-id`가 응답 헤더로 �
 ```json
 {"level":"INFO","logger":"app.api.routes.documents","message":"문서 업로드 완료","request_id":"df09ee03...","document_id":"b166d4ad-...","document_filename":"handbook.pdf","format":"pdf","revision":"662b78b2c395","byte_size":15013,"page_count":3,"chunk_count":5,"ingestion_status":"created"}
 ```
+
+## 데모 UI (선택)
+
+`/qa`가 실제로 **조각 단위로** 답하는지, 답변의 `[1]`이 어느 문서의 어느 대목을 가리키는지를
+브라우저에서 확인하는 화면입니다. API 서버와 별개로 도는 **선택 절차**이고, 띄우지 않아도
+`docker compose up`과 테스트는 그대로 동작합니다.
+
+```bash
+cd demo-ui && npm install && npm run dev
+```
+
+Node.js 20 이상이 필요합니다. 뜬 뒤 **`http://localhost:5173`** 으로 접속하세요
+(`127.0.0.1`이 아닙니다 — Vite가 `localhost` 이름으로 바인딩합니다).
+
+API 서버가 `http://127.0.0.1:8000`에 떠 있어야 합니다. 다른 곳이면 `VITE_API_TARGET`으로 바꿉니다.
+
+| 하려는 것 | 명령 |
+|---|---|
+| 기동 | `cd demo-ui && npm run dev` |
+| 다른 API 주소로 | `VITE_API_TARGET=http://192.168.0.10:8000 npm run dev` |
+| 타입 검사 + 빌드 | `cd demo-ui && npm run build` |
+
+**서버는 CORS를 열지 않습니다.** 대신 Vite dev 서버가 `/api`를 API로 프록시합니다 — 브라우저가
+5173 한 출처만 보게 해서 프리플라이트 자체를 없앴습니다. 데모 하나 때문에 API의 미들웨어 체인을
+영구히 넓히지 않으려는 선택입니다. 그래서 `npm run build`의 산출물을 정적으로 열면 API 호출이
+실패합니다. **데모는 dev 서버로 도는 것이 전제입니다.**
+
+화면은 왼쪽 문서 패널(업로드·목록·삭제)과 오른쪽 Q&A 콘솔(질문·근거·스트리밍 답변·인용)로
+나뉩니다. 시각·상호작용 규칙과 QA 체크리스트는 [`demo-ui/DESIGN.md`](./demo-ui/DESIGN.md)에 있습니다.
+
+> 자격증명이 없는 환경에서는 **문서 수집·근거 검색·헬스가 전부 정상이고 답변만 실패합니다.**
+> 화면이 그 사실을 다른 실패와 구분해 표시합니다 — 고장이 아니라 [정상 동작](#인증이-없으면-qa만-실패합니다)입니다.
+
+> 검색이 계속 0건이면 `./data/chroma`와 `./data/registry`가 어긋난 상태일 수 있습니다.
+> 문서를 지웠다가 다시 올리면 복구됩니다.
 
 ## LLM 자격증명 동기화
 
@@ -296,8 +466,19 @@ docker compose run --build --rm test
 | 구조 층 (필터·순서·경계·오류) | ✅ |
 | 실물 Chroma 어댑터 | ✅ (`depends_on`이 띄웁니다) |
 | 검색 품질 (임베딩 실물) | ✅ (가중치가 이미지에 있습니다) |
+| **실물 CLI (답변 생성)** | ❌ — 구독이 필요해 기본 실행에서 뺍니다 (바로 아래) |
 
 **LLM 구독도 API 키도 필요 없습니다.** 건너뛴 항목이 있으면 실행 결과에 사유와 함께 표시됩니다.
+
+### 실물 CLI 층
+
+답변 생성 테스트는 전부 페이크 생성기와 **저장해 둔 실물 알림 샘플**(`tests/fixtures/codex/`) 위에서 돕니다. 프로세스 인자 형태나 JSON-RPC 스키마가 바뀌는 것은 그 층에서 잡히지 않으므로, 실제로 `codex app-server`를 부르는 테스트를 `llm` 마커 뒤에 따로 두었습니다.
+
+```bash
+docker compose run --build --rm test python -m pytest -m llm
+```
+
+**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`660 passed, 2 deselected`).
 
 호스트에서 직접 돌리고 싶다면 아래도 됩니다. 이때 실물 Chroma 층은 `docker compose up -d --wait vector-store`로 서버를 띄워야 실행되고, 검색 품질 층은 임베딩 가중치가 캐시돼 있어야 실행됩니다.
 
@@ -336,6 +517,14 @@ docker compose run --build --rm test ruff format --check .
 | `APP_RETRIEVAL_MAX_TOP_K` | 요청이 지정할 수 있는 `top_k`의 상한 | `50` |
 | `APP_RETRIEVAL_MIN_SCORE` | 유사도 하한. 이 값 미만인 청크는 반환되지 않습니다 | `0.82` |
 | `APP_RETRIEVAL_MAX_QUERY_CHARS` | 질의 문자 수 상한 | `1000` |
+| `APP_QA_LLM_TIMEOUT_SECONDS` | 생성 **한 시도**의 시간 상한(초) | `60.0` |
+| `APP_QA_LLM_MAX_ATTEMPTS` | 최대 시도 횟수. `1`이면 재시도하지 않음 | `3` |
+| `APP_QA_LLM_RETRY_BACKOFF_SECONDS` | 재시도 백오프 기준(초). 대기가 1초 → 2초로 늘어남 | `1.0` |
+| `APP_QA_SSE_HEARTBEAT_SECONDS` | 조용한 구간에 `: keep-alive` 주석을 내보내는 간격(초) | `15.0` |
+| `APP_QA_CONCURRENCY` | 동시 생성 상한 = **세션 풀 크기**. 걸린 요청은 실패하지 않고 대기 | `2` |
+| `APP_QA_LLM_MODEL` | 모델 식별자. 비우면 CLI 기본값 | (빈 값) |
+| `APP_QA_LLM_INTERRUPT_GRACE_SECONDS` | 턴 중단 후 종료 알림을 기다리는 유예(초). 넘기면 세션 폐기 | `2.0` |
+| `APP_QA_LLM_SESSION_STARTUP_TIMEOUT_SECONDS` | 생성기 프로세스 기동 + 핸드셰이크 상한(초) | `30.0` |
 
 구현되지 않은 `APP_CHUNK_STRATEGY` 값(현재 구현된 것은 `recursive` 하나입니다)이나 청크 크기 이상의 겹침을 넣으면 **기동에 실패합니다.** 잘못된 색인 구성으로 조용히 뜨는 것보다 낫기 때문입니다.
 
@@ -360,9 +549,9 @@ docker compose run --build --rm test ruff format --check .
 | 캐시 DB | Redis | 정확 매치는 키 조회, 유사 질문은 질문 임베딩 유사도로 판정. TTL·태그 기반 무효화가 자연스러움 |
 | 린터 | ruff | 포매팅과 린팅을 한 도구로 통일. 레이어 경계도 린트 규칙으로 강제 |
 
-> Codex SDK는 **아직 애플리케이션 코드에서 호출하지 않습니다** — 답변 생성 change에서 도입됩니다. Redis도 현재는 헬스 점검에만 쓰입니다. sentence-transformers·Chroma·SQLite·PyMuPDF는 수집 경로에서 실제로 쓰입니다.
+> Codex CLI는 `POST /qa`가 실제로 호출합니다 — `codex app-server`(stdio 위의 JSON-RPC) 세션을 풀에 두고 `item/agentMessage/delta` 알림을 그대로 SSE `answer` 이벤트로 흘립니다. `codex exec`가 아닌 이유는 실측입니다(`exec`에는 토큰 델타가 없어 4,808자 답변도 한 이벤트로 옵니다). 근거는 [`ARCHITECTURE.md`](./ARCHITECTURE.md#llm-sdk-통합-방식)에 있습니다.
 >
-> 실행 환경은 확인했습니다. 컨테이너 안에서 `codex login status`가 `Logged in using ChatGPT`를 반환하고 `codex exec`가 실제 답변을 생성하는 것까지 봤습니다. 남은 미검증 가정은 [`docs/SPIKES.md`](./docs/SPIKES.md)에 모아 두었고, 각각 다음 change의 첫 태스크가 됩니다.
+> **Redis는 현재도 헬스 점검에만 쓰입니다** — 캐싱은 다음 change입니다. sentence-transformers·Chroma·SQLite·PyMuPDF는 수집·검색 경로에서 실제로 쓰입니다.
 
 설계 근거는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)에 있습니다.
 

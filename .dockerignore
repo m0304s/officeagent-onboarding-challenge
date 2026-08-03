@@ -7,6 +7,9 @@ data/
 retros/
 openspec/
 docs/
+# 데모 UI 는 이미지에 들어가지 않는다. 빼지 않으면 `node_modules` 가 빌드 컨텍스트에
+# 딸려가 상시 실행하는 `docker compose run --build --rm test` 가 매번 느려진다.
+demo-ui/
 # `sample-docs/` 와 `tests/` 는 컨텍스트에 남긴다 — **테스트 스테이지가 둘 다 COPY 한다**
 # (검색 품질 테스트가 리포의 실제 샘플 문서를 읽는다). 런타임 스테이지는 둘 다 복사하지
 # 않으므로 서비스 이미지에는 여전히 들어가지 않는다.

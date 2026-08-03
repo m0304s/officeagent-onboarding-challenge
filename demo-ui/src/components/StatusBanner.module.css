@@ -1,0 +1,41 @@
+.banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-tight-2);
+  padding: var(--space-xs);
+  border: 1px solid var(--color-border-control);
+  border-left-width: 3px;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-sunken);
+}
+
+.title {
+  font-weight: var(--font-weight-emphasis);
+}
+
+.detail {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--font-line-height-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.danger {
+  border-left-color: var(--color-danger);
+}
+
+.danger .title {
+  color: var(--color-danger);
+}
+
+.warn {
+  border-left-color: var(--color-warning);
+}
+
+.warn .title {
+  color: var(--color-warning);
+}
+
+.neutral {
+  border-left-color: var(--color-border-strong);
+}

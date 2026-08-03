@@ -1,0 +1,24 @@
+.wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-tight-3);
+}
+
+.detail {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}

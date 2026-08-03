@@ -22,10 +22,11 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.adapters.llm import AppServerSession
 from app.config import Settings
 from app.main import create_app
 from tests.conftest import booted
-from tests.stubs import FakeEmbedder
+from tests.stubs import FakeEmbedder, ScriptedGenerator
 
 
 @pytest.fixture
@@ -80,6 +81,59 @@ async def test_헬스는_LLM_제공자를_의존성으로_보고하지_않는다
     _, body = await _get_health(settings, healthy_probes)
 
     assert set(body["dependencies"]) == {"cache", "vector_store"}
+
+
+@pytest.mark.parametrize("home", ["home_without_credentials", "home_with_corrupted_credentials"])
+async def test_기동_중에는_생성기가_불리지_않는다(make_app, request, home):
+    """자격증명 상태가 어느 쪽이든 기동 경로는 생성기에 닿지 않는다.
+
+    닿으면 인증이 없는 평가자 환경에서 기동이 실패하거나 느려진다 — 그 실패는 답변
+    기능 하나가 아니라 서비스 전체를 잃는 형태로 나타난다.
+    """
+    request.getfixturevalue(home)
+    generator = ScriptedGenerator()
+
+    async with booted(make_app(generator=generator)) as client:
+        assert (await client.get("/health")).status_code == 200
+
+    assert generator.calls == 0, "기동 경로가 생성기를 불렀다"
+    assert generator.open_turns == 0
+
+
+async def test_기본_배선의_풀은_첫_요청까지_세션을_띄우지_않는다(
+    settings, healthy_probes, home_without_credentials, monkeypatch
+):
+    """지연 기동을 **세션 기동 자체를 금지해** 확인한다.
+
+    대역을 주입하면 "우리가 준 대역을 안 불렀다"까지만 확인되고, 기본 배선이 무엇을
+    하는지는 미확인으로 남는다 — 정작 평가자 환경에서 도는 것은 그쪽이다.
+    """
+
+    async def refuse(_launch):
+        raise AssertionError("기동 경로가 app-server 세션을 띄웠다")
+
+    monkeypatch.setattr(AppServerSession, "start", refuse)
+
+    app = create_app(settings=settings, probes=healthy_probes)
+    async with booted(app) as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert app.state.session_pool is not None, "기본 배선에 세션 풀이 없다"
+    assert app.state.session_pool.idle == 0
+
+
+async def test_종료가_세션_풀을_회수한다(settings, healthy_probes, home_without_credentials):
+    """회수하지 않으면 컨테이너에 자식 프로세스가 남는다.
+
+    닫힌 풀이 세션을 더 빌려주지 않는다는 사실로 관측한다 — 프로세스가 뜬 적 없는
+    상태에서도 성립하는 유일한 창이다."""
+    app = create_app(settings=settings, probes=healthy_probes)
+    async with booted(app) as client:
+        assert (await client.get("/health")).status_code == 200
+
+    with pytest.raises(RuntimeError):
+        await app.state.session_pool.acquire()
 
 
 async def test_기본_배선은_외부_서비스가_없어도_헬스에_응답한다(settings, home_without_credentials):

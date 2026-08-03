@@ -25,6 +25,36 @@ JSONL 로그는 한 파일이 수 MB에 이른다. **`Read`로 통째로 읽지 
 `json`이면 충분하다)나 `jq`로 집계한 요약만 가져온다. 파싱 스크립트가 필요하면 `/tmp` 아래에
 쓴다 — 리포지토리 안에 두면 미추적 파일이 남아 lint를 깨뜨린다.
 
+#### 집계 도구가 없거나 막힌 환경 (먼저 확인할 것)
+
+**이 훅은 샌드박스 안에서 돌고, 도구 가용성이 기계마다 다르다.** 아래 한 줄을 **먼저** 쳐서
+무엇이 있는지 확정한다. 이 확인을 건너뛰면 매 회차 처음부터 우회로를 다시 찾게 된다
+(실제로 열아홉 회차 반복됐다 — `retros/2026-08-03_1741_retro.md`).
+
+```bash
+command -v python3 jq
+```
+
+- **둘 중 하나라도 나오면** 그것으로 집계한다. 위 절차 그대로.
+- **둘 다 없으면**(Windows 호스트에서 관측된 상태 — `python`·`py`·`python3`가 모두 Windows
+  Store 별칭이라 exit 49로 죽고 `jq`도 없다) 셸을 더 시도하지 말고 **Claude Code 내장 도구만으로**
+  집계한다. 아래가 그 절차다.
+
+| 알고 싶은 것 | 도구 | 방법 |
+|---|---|---|
+| 대상 로그 파일 목록 | `Glob` | `~/.claude/projects/<인코딩된-경로>/*.jsonl` |
+| 프롬프트 수 | `Grep` | `"type":"user"` 패턴, `output_mode: "count"` |
+| 도구별 호출 수 | `Grep` | `"name":"<도구명>"` 패턴, `output_mode: "count"` — 도구마다 한 번 |
+| 에러 수와 내용 | `Grep` | `is_error":true` / `Exit code`, `output_mode: "content"` + `-o` + `head_limit` |
+| 세션 시작·종료 시각 | `Bash` | `head -n 8 <파일>` 과 `tail -c 130 <파일>` 로 **양 끝만** 뽑는다 |
+
+**하지 말 것** — 이 환경들에서 전부 거부되거나 실패한 시도들이다.
+
+- `python -c` / `node -e` 로 인라인 파싱 (인터프리터 자체가 없다)
+- Bash heredoc, `/tmp`·`%TEMP%`에 스크립트 `Write` (샌드박스가 막는다)
+- PowerShell 장문 명령 (약 965바이트에서 잘린다)
+- `Grep`에 `output_mode: "content"`를 `head_limit` 없이 쓰기 (수 MB가 컨텍스트로 쏟아진다)
+
 로그에서 다음을 추출한다:
 
 - **사용자 프롬프트**: `type: "human"` 엔트리의 `message.content`

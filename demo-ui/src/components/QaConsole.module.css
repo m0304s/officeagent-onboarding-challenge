@@ -1,0 +1,16 @@
+.console {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--color-bg-panel);
+}
+
+.heading {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-heading);
+  font-weight: var(--font-weight-heading);
+}

@@ -1,16 +1,7 @@
 """SQLite 문서 레지스트리.
 
-**왜 별도 저장소인가.** "이 문서의 지금 유효한 리비전"을 벡터 스토어 메타데이터에서
-유도하면, 교체 도중에는 두 리비전의 청크가 공존하므로 그 순간 답이 둘이 된다. 청크
-전체의 메타데이터를 한 번에 바꾸는 원자적 연산도 없다.
-
-**왜 SQLite 인가.** 표준 라이브러리라 의존성도 이미지 크기도 늘지 않고, 트랜잭션이
-있어 리비전 교체가 원자적이다. 벡터 스토어와 같은 볼륨에 두면 영속화 경로가 하나다.
-기각한 대안은 `ARCHITECTURE.md` "문서 레지스트리" 참조.
-
-연결은 **연산마다 새로 연다.** 각 연산이 서로 다른 워커 스레드에서 실행되는데
-`sqlite3.Connection` 은 스레드 간 공유가 안전하지 않다. 문서 수십 건 규모에서 연결
-비용은 무시할 수 있고, 연결을 들고 다니면 스레드 소유권을 직접 관리해야 한다.
+연결을 연산마다 새로 연다 — `sqlite3.Connection` 은 스레드 간 공유가 안전하지 않고
+연산마다 워커 스레드가 다르다. 별도 저장소인 이유는 `ARCHITECTURE.md` 저장소 절에 있다.
 """
 
 import asyncio
@@ -136,11 +127,7 @@ class SqliteDocumentRegistry:
         return sqlite3.connect(self._path)
 
     def _ensure_schema(self) -> None:
-        """스키마는 최초 접근 시 만든다 — 기동 조건을 늘리지 않기 위해서다.
-
-        마이그레이션 도구도, 준비 스크립트도 두지 않는다. 평가자가 새 볼륨에서
-        `docker compose up` 한 줄로 시작할 수 있어야 한다.
-        """
+        """스키마를 최초 접근 시 만든다 — 새 볼륨에서 준비 스크립트 없이 시작하게."""
         if self._schema_ready:
             return
         with self._schema_lock:
@@ -152,11 +139,9 @@ class SqliteDocumentRegistry:
             self._schema_ready = True
 
     async def _offload(self, operation, *args):
-        """파일 I/O 를 이벤트 루프 밖으로 내보내고, 실패를 도메인 예외로 바꾼다.
+        """파일 I/O 를 루프 밖으로 내보내고 실패를 도메인 예외로 바꾼다.
 
-        `sqlite3.OperationalError` 가 라우터까지 새면 계층 경계가 무의미해지고 내부
-        메시지(파일 경로 등)가 응답에 노출된다.
-        """
+        `sqlite3.OperationalError` 가 새면 파일 경로 같은 내부 정보가 응답에 노출된다."""
         try:
             return await asyncio.to_thread(operation, *args)
         except (sqlite3.Error, OSError) as exc:

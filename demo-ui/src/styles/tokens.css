@@ -1,0 +1,132 @@
+/* 토큰 단일 출처. 원시 층은 브리프 값 그대로, 의미 층만 컴포넌트가 참조한다.
+   원시 이름이 역할이 아니라 모양을 가리켜서(`surface.raised` 가 밝은 회색이다) 층을
+   나눴다 — 컴포넌트가 원시 이름을 직접 쓰면 값을 바꿀 때 이름이 거짓말을 시작한다.
+   조정한 항목과 실측 대비율은 `demo-ui/DESIGN.md` 에 있다. */
+
+:root {
+  /* ── 원시: 색 ─────────────────────────────────────────────── */
+  --raw-color-text-primary: #eaeaea;
+  --raw-color-text-secondary: #ffffff;
+  --raw-color-text-tertiary: #9ea6b6;
+  --raw-color-text-inverse: #333333;
+  --raw-color-surface-base: #000000;
+  --raw-color-surface-muted: #111826;
+  --raw-color-surface-raised: #dddddd;
+  --raw-color-surface-strong: #050a14;
+  --raw-color-border-default: #e5e7eb;
+  --raw-color-border-muted: #171e2c;
+
+  /* 브리프에 없어 새로 정의한 상태 색. 괄호는 base(#000)/muted(#111826) 실측 대비율. */
+  --raw-color-accent: #7cb0ff; /* 9.51 / 8.04 */
+  --raw-color-success: #4ade80; /* 12.05 / 10.19 */
+  --raw-color-warning: #fbbf24; /* 12.58 / 10.64 */
+  --raw-color-danger: #ff9b9b; /* 10.41 / 8.81 */
+  --raw-color-focus: #a8c7ff; /* 12.28 / 10.38 */
+  /* 원시 경계값(#171e2c)은 검정 위에서 1.26 이라 조작 요소의 경계로 못 쓴다. */
+  --raw-color-border-control: #5c6678; /* 3.63 / 3.07 */
+
+  /* ── 원시: 타이포 ─────────────────────────────────────────── */
+  --raw-font-family-stack: "Pretendard", Arial, sans-serif;
+  --raw-font-size-xs: 16px;
+  --raw-font-size-sm: 18px;
+  --raw-font-size-md: 56px;
+  --raw-font-size-lg: 86px;
+  --raw-font-line-height-base: 24px;
+
+  /* ── 원시: 간격·모서리·그림자·모션 ───────────────────────── */
+  --raw-space-1: 10px;
+  --raw-space-2: 12px;
+  --raw-space-3: 16px;
+  --raw-space-4: 20px;
+  --raw-space-5: 28px;
+  --raw-space-6: 80px;
+  --raw-space-7: 120px;
+  --raw-space-8: 140px;
+  --raw-radius-xs: 10px;
+  --raw-radius-sm: 12px;
+  --raw-radius-md: 14px;
+  --raw-shadow-1: rgba(255, 255, 255, 0.55) 0 15px 18px 0 inset;
+  --raw-shadow-2: rgba(255, 255, 255, 0.35) 0 -4px 6.9px 0 inset;
+  --raw-motion-duration-instant: 300ms;
+
+  /* ── 의미: 표면과 글자 ────────────────────────────────────── */
+  --color-bg-page: var(--raw-color-surface-base);
+  --color-bg-panel: var(--raw-color-surface-muted);
+  --color-bg-sunken: var(--raw-color-surface-strong);
+  --color-bg-inverse: var(--raw-color-surface-raised);
+  --color-text-body: var(--raw-color-text-primary);
+  --color-text-strong: var(--raw-color-text-secondary);
+  --color-text-muted: var(--raw-color-text-tertiary);
+  --color-text-on-inverse: var(--raw-color-text-inverse);
+
+  /* ── 의미: 경계 ───────────────────────────────────────────── */
+  /* subtle 은 채워진 면 사이의 장식용 구분선 전용이다. 조작 요소의 경계로 쓰면
+     1.4.11(3:1)을 못 지킨다 — 그 자리는 control 과 strong 이 맡는다. */
+  --color-border-subtle: var(--raw-color-border-muted);
+  --color-border-control: var(--raw-color-border-control);
+  --color-border-strong: var(--raw-color-border-default);
+
+  /* ── 의미: 상태 ───────────────────────────────────────────── */
+  --color-accent: var(--raw-color-accent);
+  --color-success: var(--raw-color-success);
+  --color-warning: var(--raw-color-warning);
+  --color-danger: var(--raw-color-danger);
+  --color-focus-ring: var(--raw-color-focus);
+  /* `color-mix` 의 양 끝. 흰색·검정을 리터럴로 적으면 토큰 파일 밖에 원시 색이 생긴다. */
+  --color-mix-lighten: var(--raw-color-text-secondary);
+  --color-mix-darken: var(--raw-color-surface-base);
+
+  /* ── 의미: 타이포 ─────────────────────────────────────────── */
+  --font-family-base: var(--raw-font-family-stack);
+  --font-size-body: var(--raw-font-size-xs);
+  --font-size-lead: var(--raw-font-size-sm);
+  --font-size-display: var(--raw-font-size-md);
+  --font-size-hero: var(--raw-font-size-lg);
+  /* 16 → 18 다음이 56 이라 카드·섹션 제목에 쓸 단이 비어 있다. 파생 토큰으로 채운다. */
+  --font-size-title: 28px;
+  --font-size-heading: 20px;
+  --font-size-caption: 14px;
+  --font-line-height-base: var(--raw-font-line-height-base);
+  --font-line-height-relaxed: 1.7;
+  /* 브리프의 base 는 600 이다. 장문 본문에 600 은 읽기 부담이라 본문만 400 으로 낮추고
+     600 은 강조 자리에 남긴다. */
+  --font-weight-body: 400;
+  --font-weight-emphasis: 600;
+  --font-weight-heading: 600;
+
+  /* ── 의미: 간격 ───────────────────────────────────────────── */
+  /* 컴포넌트 내부는 1~5 만 쓴다. 6 이상은 페이지 여백 전용 — 그 위를 컴포넌트가
+     쓰기 시작하면 360px 뷰포트에서 콘텐츠가 사라진다. */
+  /* 브리프의 최소 간격이 10px 이라 배지 안쪽·목록 항목 사이처럼 촘촘한 자리를 채울 단이
+     없다. 컴포넌트 내부 전용으로만 쓰는 마이크로 단 셋을 파생 토큰으로 둔다. */
+  --space-tight-1: 2px;
+  --space-tight-2: 4px;
+  --space-tight-3: 6px;
+  --space-2xs: var(--raw-space-1);
+  --space-xs: var(--raw-space-2);
+  --space-sm: var(--raw-space-3);
+  --space-md: var(--raw-space-4);
+  --space-lg: var(--raw-space-5);
+  --space-page-sm: var(--raw-space-6);
+  --space-page-md: var(--raw-space-7);
+  --space-page-lg: var(--raw-space-8);
+
+  /* ── 의미: 모서리·그림자·모션 ────────────────────────────── */
+  /* 브리프의 최소 모서리가 10px 이라 초점 링과 인라인 칩에 쓸 단이 없다. */
+  --radius-hairline: 2px;
+  --radius-chip: 4px;
+  --radius-control: var(--raw-radius-xs);
+  --radius-card: var(--raw-radius-sm);
+  --radius-panel: var(--raw-radius-md);
+  --shadow-inset-top: var(--raw-shadow-1);
+  --shadow-inset-bottom: var(--raw-shadow-2);
+  /* 브리프의 "instant"(300ms)는 즉각이 아니다. 값은 보존하고 이름만 바로잡은 뒤,
+     마이크로 상태 전환용으로 짧은 단을 하나 더 둔다. */
+  --motion-duration-base: var(--raw-motion-duration-instant);
+  --motion-duration-fast: 120ms;
+  --motion-easing-standard: cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* ── 의미: 레이아웃 ───────────────────────────────────────── */
+  --layout-max-width: 1440px;
+  --layout-panel-width: 380px;
+}

@@ -21,7 +21,14 @@ import asyncio
 import pytest
 
 from tests.api_harness import LONG_KOREAN, upload
-from tests.stubs import FakeEmbedder, StubParser, StubVectorStore
+from tests.qa_harness import QUESTION, VERDICT_ANSWERABLE
+from tests.stubs import (
+    FakeEmbedder,
+    GenerationTurn,
+    ScriptedGenerator,
+    StubParser,
+    StubVectorStore,
+)
 
 DATA = LONG_KOREAN.encode("utf-8")
 OTHER_DATA = (LONG_KOREAN + "\n\n연차는 입사 첫해부터 15일입니다.").encode("utf-8")
@@ -291,6 +298,40 @@ async def test_health_answers_while_a_query_is_being_counted(make_client):
 
     assert health.status_code == 200
     assert elapsed < delay, f"헬스가 토큰 계산({delay}s)에 끌려갔다 — {elapsed:.3f}s"
+
+
+# ── 답변 생성 중에도 헬스가 즉시 응답한다 ──────────────────────────────
+#
+# 생성은 초 단위다. 그 대기가 이벤트 루프를 붙잡으면 답변 하나가 서비스 전체를 멈춘다 —
+# 스펙이 "헬스 응답 시간은 헬스 자신의 상한만으로 결정된다"고 못 박은 자리다.
+
+
+async def test_health_answers_while_an_answer_is_being_generated(make_client, settings):
+    """생성 지연이 다른 요청을 막지 않는다.
+
+    `/qa` 는 스트림이라 응답이 늦게 끝나는 것이 정상이다. 확인하는 것은 그 대기가 **다른
+    요청의 처리**를 늦추지 않는다는 것이고, 그래서 헬스가 스트림보다 먼저 끝나야 한다.
+    """
+    delay = 0.3
+    turn = GenerationTurn(chunks=(VERDICT_ANSWERABLE, "교육비는 지원됩니다 [1]."), delay=delay)
+    generator = ScriptedGenerator(turns=(turn,))
+    answerable = settings.model_copy(update={"retrieval_min_score": 0.0})
+
+    async with make_client(settings=answerable, generator=generator) as client:
+        created = await client.post("/documents", **upload("policy.txt", DATA))
+        assert created.status_code == 201, created.text
+
+        answering = asyncio.create_task(client.post("/qa", json={"question": QUESTION}))
+        await until(lambda: generator.calls > 0)  # 생성이 실제로 시작된 뒤에 잰다
+
+        health, elapsed = await measure(client.get("/health"))
+
+        assert not answering.done(), "생성이 이미 끝나 이 테스트는 아무것도 확인하지 못했다"
+        response = await answering
+
+    assert response.status_code == 200
+    assert health.status_code == 200
+    assert elapsed < delay, f"헬스가 답변 생성({delay}s)에 끌려갔다 — {elapsed:.3f}s"
 
 
 @pytest.mark.parametrize("concurrency", [1, 2])

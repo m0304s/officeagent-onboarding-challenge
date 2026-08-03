@@ -13,7 +13,7 @@
 ## ~~S-2. 마운트한 자격증명을 컨테이너 안의 CLI가 인증에 쓰는가~~ (해소)
 
 - **결과**: **사실이었다.** 호스트의 `~/.codex/auth.json`을 리눅스 컨테이너에 마운트한 상태에서 `codex login status`가 `Logged in using ChatGPT`를 반환했고, 이어진 `codex exec` 호출이 인증 오류 없이 통과했다.
-- **남은 조각**: 위 확인은 `node:22-slim`에 `/root/.codex`로 붙여서 했다. 이 리포의 이미지에서 `app`(uid 1000)이 `/home/app/.codex`로 읽는 경로는 `docker compose up` 실행으로 함께 확인한다.
+- ~~**남은 조각**: 위 확인은 `node:22-slim`에 `/root/.codex`로 붙여서 했다. 이 리포의 이미지에서 `app`(uid 1000)이 `/home/app/.codex`로 읽는 경로는 `docker compose up` 실행으로 함께 확인한다.~~ → **확인됨**(2026-08-03, `add-answer-generation` 1장 실측). `docker compose up`으로 뜬 `api` 컨테이너 안에서 `uid=1000(app)`·`HOME=/home/app`인 채로 `codex login status`가 `Logged in using ChatGPT`를 반환했고, 이어진 `codex exec --json`이 실제 답변을 생성했다. 실측 전체는 `ARCHITECTURE.md`의 "컨테이너 안에서의 실측".
 
 ## S-3. refresh token이 회전해 호스트 CLI가 로그아웃되는가
 
@@ -21,6 +21,7 @@
 - **현재 상태**: 컨테이너가 가진 것은 **사본**이다(design 결정 5-1). 갱신 시 refresh token이 회전하는 방식이면 호스트가 들고 있는 값이 무효가 되어 호스트 CLI가 로그아웃될 수 있다. **회전 여부 미확인.**
 - **확인 방법**: 컨테이너를 access token 만료를 넘겨 띄워 둔 뒤, 사본의 토큰이 바뀌었는지와 호스트 `codex`가 여전히 동작하는지 확인.
 - **완화책(이미 적용)**: 기동할 때마다 재추출해 사본이 묵는 창을 컨테이너 수명으로 제한.
+- **표면을 바꾸며 확률이 올라갔다** (2026-08-03, `add-answer-generation` 1-B장): 어댑터가 `codex app-server` 세션을 **요청 사이에 살려 둔다**. 일회성 `codex exec` 프로세스는 요청이 끝나면 죽어 갱신을 만날 창이 요청 하나만큼이었지만, 살아 있는 세션은 access token 만료를 그 자리에서 넘긴다 — **이 스파이크가 걸리는 확률 자체가 높아졌다.** 완화책(기동할 때마다 재추출)은 그대로 유효하지만 창의 길이는 컨테이너 수명이지 요청 수명이 아니게 됐다.
 - **틀렸을 경우**: 호스트 재로그인이 필요하다는 경고를 `README.md`에 이미 적어 둠. 빈발하면 자격증명을 읽기 전용으로 붙이고 짧은 세션만 지원하는 쪽으로 후퇴.
 
 ## S-4. 호스트 UID가 1000이 아닌 리눅스에서 자격증명 마운트가 읽히는가

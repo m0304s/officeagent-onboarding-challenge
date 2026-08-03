@@ -30,7 +30,7 @@ context: |
   |------|------|------|
   | 언어 | Python 3.11+ | PRD 고정 조건 |
   | 웹 프레임워크 | FastAPI | PRD 고정 조건. SSE(StreamingResponse)와 async 파이프라인이 네이티브 |
-  | LLM SDK | `claude-code-sdk` (pip) | PRD가 제시한 두 SDK 중 택 1. API 키 없이 Claude Pro/Max 구독으로 동작하고, 파이썬 네이티브라 subprocess 래핑 없이 async 스트리밍·타임아웃 제어가 가능 |
+  | LLM SDK | **Codex CLI** (`@openai/codex`) | PRD가 제시한 두 SDK 중 택 1. API 키 없이 구독으로 동작한다. `claude-code-sdk`에서 **갈아탔다** — 자격증명이 세 OS 모두 평문 파일이라 컨테이너가 볼륨으로 읽을 수 있고, macOS Keychain에 있는 쪽은 `docker compose up` 한 줄에 인증을 넣을 방법이 없었다 (근거는 `ARCHITECTURE.md` "LLM SDK 통합 방식") |
   | 임베딩 | sentence-transformers (로컬) | 로컬 오픈소스 모델이라 테스트가 LLM 구독 없이 실행된다(PRD 가산점). 임베딩이 네트워크·과금에 묶이지 않아 ingestion/retrieval 테스트를 실물로 돌릴 수 있음 |
   | 벡터 DB | Chroma (서버 모드, 별도 컨테이너) | 메타데이터 필터와 문서 단위 삭제를 지원해 리비전 교체·캐시 무효화 연동이 가능. 저장소를 앱 프로세스 밖으로 빼 API 재배포와 수명이 분리됨 (임베디드 퍼시스턴트에서 전환 — 근거는 `ARCHITECTURE.md`) |
   | 캐시 DB | Redis | 정확 매치는 키 조회, 유사 질문은 질문 임베딩 유사도로 판정. TTL·태그 기반 무효화가 자연스럽고 캐시 계층이 저장소 수준에서 분리됨 |
@@ -76,7 +76,8 @@ context: |
   | Retrieval | 질의에 대해 기대한 청크/문서가 상위에 검색되는가 |
   | 캐시 무효화 | 문서 변경(추가·삭제·재업로드) 후 관련 캐시가 실제로 무효화되는가 |
 
-  - **LLM 호출은 목/스텁으로 대체한다.** 전체 스위트가 Claude 구독 없이 `pytest` 한 줄로 통과해야 한다.
+  - **LLM 호출은 목/스텁으로 대체한다.** 전체 스위트가 구독 없이 `pytest` 한 줄로 통과해야 한다.
+    실물 CLI를 부르는 층은 `llm` 마커 뒤에 두어 기본 실행에서 빠진다(`pytest -m llm` 으로만 돈다).
   - 임베딩은 로컬 모델이므로 목이 아니라 실물로 돌린다. retrieval 테스트가 실제 검색 품질을 검증하게 한다.
   - 테스트 문서는 `sample-docs/`를 쓰고, 픽스처는 격리된 임시 벡터 스토어·캐시를 사용해
     실행 순서에 의존하지 않게 한다.
@@ -122,7 +123,7 @@ context: |
 
   | 의존성 | 용도 | 비고 |
   |--------|------|------|
-  | `claude-code-sdk` (pip) | LLM 답변 생성 | API 키 불필요, Claude Pro/Max 구독 기반. 로컬 CLI를 프로그래밍 방식으로 호출 |
+  | Codex CLI (`@openai/codex`, 이미지에 설치) | LLM 답변 생성 | API 키 불필요, 구독 기반. 파이썬 SDK가 없어 `codex app-server` 프로세스를 띄우고 stdio 위의 JSON-RPC로 대화한다 — 프로세스 수명·타임아웃·재시도가 우리 몫이다 |
   | `sentence-transformers` | 문서·질문 임베딩 | 로컬 실행. 최초 실행 시 모델 다운로드 — Docker 빌드 단계에서 미리 받아 첫 요청 지연을 없앤다 |
   | Chroma | 벡터 저장·검색 | 서버 모드(`chromadb/chroma`, compose 서비스), 볼륨 마운트로 영속화. 클라이언트와 서버 버전을 맞춘다 |
   | Redis | LLM 응답 캐시 | Docker Compose 서비스로 기동 |
@@ -131,9 +132,9 @@ context: |
 
   런타임 전제:
   - 평가자 환경에서 `docker compose up` 한 줄로 기동되어야 한다.
-  - `claude-code-sdk`는 구독 인증에 의존하므로, **인증이 없는 환경에서도 서버가 기동되고 테스트가
-    통과**해야 한다. 인증 부재는 QA 요청 시점의 명확한 에러로 드러나야 하며, 부팅 실패나
-    테스트 실패로 이어져서는 안 된다.
+  - Codex CLI는 구독 인증에 의존하므로, **인증이 없는 환경에서도 서버가 기동되고 테스트가
+    통과**해야 한다. 인증 부재는 QA 요청 시점의 명확한 에러(`llm_unauthenticated`)로 드러나야 하며,
+    부팅 실패나 테스트 실패로 이어져서는 안 된다.
 
   ## 참고 문서
 
@@ -147,7 +148,7 @@ rules:
     - 완성도보다 설계 의도가 평가 대상이므로, 범위를 넓히는 대신 의도를 분명히 한다.
 
   specs:
-    - 스펙은 관측 가능한 동작만 기술한다. 라이브러리 이름(Chroma, Redis, claude-code-sdk)이나 내부 함수명은 design.md로 보낸다.
+    - 스펙은 관측 가능한 동작만 기술한다. 라이브러리 이름(Chroma, Redis, Codex CLI)이나 내부 함수명은 design.md로 보낸다.
     - QA 관련 스펙에는 스트리밍 동작, 출처 표기 형태, 근거가 없을 때의 거절 동작을 각각 시나리오로 둔다.
     - 캐시 관련 스펙에는 정확 매치 히트, 유사 질문 히트, 문서 변경 후 무효화를 각각 시나리오로 둔다.
     - 에러 경로를 빠뜨리지 않는다 - 지원하지 않는 파일 포맷, 빈 문서, LLM 타임아웃, 벡터 검색 결과 없음.
@@ -157,7 +158,7 @@ rules:
     - 레이어 분리(api / services / core / adapters)를 어떻게 지키는지, 어댑터 인터페이스가 무엇인지 명시한다.
     - LLM 호출 설계는 스트리밍·timeout·retry·구조화 출력을 모두 다룬다.
     - 캐시 설계는 키 구성, 유사도 판정 기준, 무효화 시 캐시-문서 의존 관계 추적 방식을 구체적으로 적는다.
-    - 이미 확정된 스택(Python 3.11+/FastAPI/claude-code-sdk/sentence-transformers/Chroma/Redis)을 바꾸는 설계라면, 바꾼 이유를 남기고 `ARCHITECTURE.md`·`README.md`도 같이 고치도록 tasks에 넣는다.
+    - 이미 확정된 스택(Python 3.11+/FastAPI/Codex CLI/sentence-transformers/Chroma/Redis)을 바꾸는 설계라면, 바꾼 이유를 남기고 `ARCHITECTURE.md`·`README.md`도 같이 고치도록 tasks에 넣는다.
 
   tasks:
     - 구현 태스크에는 대응하는 테스트 태스크를 함께 둔다. 핵심 3경로(ingestion·retrieval·캐시 무효화)를 건드리는 변경은 테스트가 선택이 아니다.

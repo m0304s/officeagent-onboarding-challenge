@@ -1,0 +1,47 @@
+body {
+  background: var(--color-bg-page);
+  color: var(--color-text-body);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-body);
+  line-height: var(--font-line-height-base);
+  /* 한국어는 기본 규칙이 어느 글자에서나 줄을 바꿔서 단어 가운데가 잘린다. 어절 단위로
+     끊고, 넘치는 긴 토큰만 강제로 접는다. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+/* 초점 표시는 전역에서 한 번만 정한다. 이것을 지우는 선언은 어느 컴포넌트에도 두지 않는다. */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-hairline);
+}
+
+a {
+  color: var(--color-accent);
+}
+
+/* 화면에서는 감추고 보조 기술에는 남긴다. `display: none` 은 낭독도 막는다. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,10 +1,6 @@
 """구조화 로깅과 요청 단위 로그.
-
-로그를 JSON 한 줄로 낸다. 포맷 문자열에 따옴표를 끼워 흉내내면 메시지에 따옴표나 줄바꿈이
-섞이는 순간 깨진 JSON 이 나오므로, 포매터에서 직렬화한다.
-
-요청 단위 로그는 이후 change 의 전제다. 스트리밍 응답이나 LLM 호출을 디버깅하려면
-"어느 요청이 얼마나 걸렸고 무엇을 반환했는가"가 먼저 있어야 한다.
+직렬화를 포매터에서 한다 — 포맷 문자열로 흉내내면 메시지에 따옴표나 줄바꿈이 섞이는
+순간 깨진 JSON 이 나온다.
 """
 
 import json
@@ -27,10 +23,7 @@ _RESERVED = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | 
 
 
 class JsonFormatter(logging.Formatter):
-    """로그 레코드를 JSON 한 줄로 직렬화한다.
-
-    `logger.info("...", extra={...})` 로 넘긴 항목은 최상위 키로 합쳐진다.
-    """
+    """로그 레코드를 JSON 한 줄로. `extra={...}` 항목은 최상위 키로 합쳐진다."""
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {
@@ -42,7 +35,7 @@ class JsonFormatter(logging.Formatter):
             if key not in _RESERVED:
                 payload[key] = value
         if record.exc_info:
-            # 스택 트레이스는 로그에만 남는다. 응답 본문에는 절대 싣지 않는다.
+            # 스택 트레이스는 로그까지다 — 응답 본문에 실으면 내부 정보가 샌다.
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -71,8 +64,7 @@ def configure_logging(level: str = "INFO") -> None:
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """요청마다 식별자를 붙이고 처리 결과를 한 줄로 남긴다.
 
-    예외가 나도 로그를 남긴 뒤 다시 던진다. 여기서 삼키면 오류 핸들러가 응답을 만들 수 없다.
-    """
+    예외는 로그를 남긴 뒤 다시 던진다 — 삼키면 오류 핸들러가 응답을 만들 수 없다."""
 
     async def dispatch(
         self,
