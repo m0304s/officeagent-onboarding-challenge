@@ -1,0 +1,73 @@
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-xs);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-sunken);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+
+/* 긴 파일명이 패널을 밀어내지 않게 한다 — 360px 에서 가로 스크롤이 생기는 첫 원인이다. */
+.filename {
+  overflow: hidden;
+  color: var(--color-text-body);
+  font-weight: var(--font-weight-emphasis);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: var(--space-tight-3) var(--space-2xs);
+  margin: 0;
+  font-size: var(--font-size-caption);
+}
+
+.meta div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.meta dt {
+  color: var(--color-text-muted);
+}
+
+.meta dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+  justify-content: flex-end;
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 45%, transparent);
+  border-radius: var(--radius-control);
+}
+
+.confirmText {
+  color: var(--color-danger);
+  font-size: var(--font-size-caption);
+}

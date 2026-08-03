@@ -7,6 +7,10 @@ build/
 .venv/
 venv/
 
+# Node (demo-ui). `dist/` 는 위의 Python 규칙이 이미 잡는다.
+node_modules/
+demo-ui/.vite/
+
 # Environment
 .env
 

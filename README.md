@@ -20,6 +20,7 @@ change 단위로 점진적으로 구현합니다. **아래 표에서 "구현됨"
 | 재업로드 교체·재색인, 기동 시 저장소 정리 | 구현됨 |
 | 벡터 검색 — 질의 임베딩 → 대상 필터 → 상위 K (`POST /search`) | 구현됨 |
 | LLM 답변 생성 + SSE 스트리밍 — 출처 표기·환각 억제·재시도 (`POST /qa`) | 구현됨 |
+| 데모 UI — 문서 패널 + 스트리밍 Q&A 콘솔 ([`demo-ui/`](./demo-ui/)) | 구현됨 (선택 실행) |
 | 응답 캐싱, 캐시 무효화 | 미구현 |
 
 계획은 [`openspec/changes/`](./openspec/changes/)에 change별로 있습니다.
@@ -371,6 +372,41 @@ JSON 한 줄로 출력되며, 요청마다 `x-request-id`가 응답 헤더로 �
 ```json
 {"level":"INFO","logger":"app.api.routes.documents","message":"문서 업로드 완료","request_id":"df09ee03...","document_id":"b166d4ad-...","document_filename":"handbook.pdf","format":"pdf","revision":"662b78b2c395","byte_size":15013,"page_count":3,"chunk_count":5,"ingestion_status":"created"}
 ```
+
+## 데모 UI (선택)
+
+`/qa`가 실제로 **조각 단위로** 답하는지, 답변의 `[1]`이 어느 문서의 어느 대목을 가리키는지를
+브라우저에서 확인하는 화면입니다. API 서버와 별개로 도는 **선택 절차**이고, 띄우지 않아도
+`docker compose up`과 테스트는 그대로 동작합니다.
+
+```bash
+cd demo-ui && npm install && npm run dev
+```
+
+Node.js 20 이상이 필요합니다. 뜬 뒤 **`http://localhost:5173`** 으로 접속하세요
+(`127.0.0.1`이 아닙니다 — Vite가 `localhost` 이름으로 바인딩합니다).
+
+API 서버가 `http://127.0.0.1:8000`에 떠 있어야 합니다. 다른 곳이면 `VITE_API_TARGET`으로 바꿉니다.
+
+| 하려는 것 | 명령 |
+|---|---|
+| 기동 | `cd demo-ui && npm run dev` |
+| 다른 API 주소로 | `VITE_API_TARGET=http://192.168.0.10:8000 npm run dev` |
+| 타입 검사 + 빌드 | `cd demo-ui && npm run build` |
+
+**서버는 CORS를 열지 않습니다.** 대신 Vite dev 서버가 `/api`를 API로 프록시합니다 — 브라우저가
+5173 한 출처만 보게 해서 프리플라이트 자체를 없앴습니다. 데모 하나 때문에 API의 미들웨어 체인을
+영구히 넓히지 않으려는 선택입니다. 그래서 `npm run build`의 산출물을 정적으로 열면 API 호출이
+실패합니다. **데모는 dev 서버로 도는 것이 전제입니다.**
+
+화면은 왼쪽 문서 패널(업로드·목록·삭제)과 오른쪽 Q&A 콘솔(질문·근거·스트리밍 답변·인용)로
+나뉩니다. 시각·상호작용 규칙과 QA 체크리스트는 [`demo-ui/DESIGN.md`](./demo-ui/DESIGN.md)에 있습니다.
+
+> 자격증명이 없는 환경에서는 **문서 수집·근거 검색·헬스가 전부 정상이고 답변만 실패합니다.**
+> 화면이 그 사실을 다른 실패와 구분해 표시합니다 — 고장이 아니라 [정상 동작](#인증이-없으면-qa만-실패합니다)입니다.
+
+> 검색이 계속 0건이면 `./data/chroma`와 `./data/registry`가 어긋난 상태일 수 있습니다.
+> 문서를 지웠다가 다시 올리면 복구됩니다.
 
 ## LLM 자격증명 동기화
 

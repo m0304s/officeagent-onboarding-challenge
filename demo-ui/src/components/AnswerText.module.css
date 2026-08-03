@@ -1,0 +1,16 @@
+.marker {
+  display: inline-block;
+  padding: 0 var(--space-tight-2);
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+  text-decoration: none;
+  vertical-align: baseline;
+}
+
+.marker:hover {
+  background: color-mix(in srgb, var(--color-accent) 34%, transparent);
+  text-decoration: underline;
+}

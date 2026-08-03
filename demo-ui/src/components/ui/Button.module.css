@@ -1,0 +1,97 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2xs);
+  min-height: 44px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-body);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-emphasis);
+  line-height: 1.2;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-fast) var(--motion-easing-standard),
+    border-color var(--motion-duration-fast) var(--motion-easing-standard),
+    color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  background: color-mix(in srgb, var(--color-text-body) 10%, transparent);
+}
+
+.button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text-body) 18%, transparent);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 진행 중에는 눌러도 아무 일이 없어야 하지만, 초점은 남아야 중단 버튼으로 탭 이동이 된다. */
+.loading {
+  cursor: progress;
+}
+
+.primary {
+  border-color: transparent;
+  background: var(--color-accent);
+  color: var(--color-text-on-inverse);
+}
+
+.primary:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--color-accent) 82%, var(--color-mix-lighten));
+}
+
+.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 72%, var(--color-mix-darken));
+}
+
+.danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.danger:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+}
+
+.ghost {
+  min-height: 32px;
+  padding: var(--space-2xs) var(--space-xs);
+  border-color: transparent;
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-body);
+}
+
+.ghost:hover:not(:disabled) {
+  border-color: var(--color-border-control);
+  color: var(--color-text-body);
+}
+
+/* 오류 상태의 버튼 — 폼이 거부됐을 때 제출 버튼이 그 사실을 들고 있어야 한다. */
+.invalid {
+  border-color: var(--color-danger);
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

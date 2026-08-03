@@ -1,0 +1,93 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.heading {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-tight-3);
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-tight-3);
+  padding: var(--space-2xs);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-sunken);
+}
+
+.itemHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+
+.filename {
+  overflow: hidden;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.score {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  flex: none;
+}
+
+/* 청크 본문은 원문 그대로라 줄바꿈을 살린다. 긴 단어는 강제로 접어 가로 스크롤을 막는다. */
+.text {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--font-line-height-relaxed);
+  white-space: pre-wrap;
+}
+
+.itemFoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.meta {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  opacity: 0.85;
+}
+
+.toggle {
+  padding: var(--space-tight-1) var(--space-tight-3);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-body);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.toggle:hover {
+  border-color: var(--color-border-strong);
+}

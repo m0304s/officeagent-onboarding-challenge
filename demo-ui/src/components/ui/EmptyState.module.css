@@ -1,0 +1,21 @@
+.empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-lg) var(--space-sm);
+  border: 1px dashed var(--color-border-control);
+  border-radius: var(--radius-card);
+  text-align: center;
+}
+
+.title {
+  color: var(--color-text-body);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.body {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--font-line-height-relaxed);
+}

@@ -1,0 +1,53 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-sunken);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.heading {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-heading);
+  font-weight: var(--font-weight-heading);
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-tight-3);
+}
+
+/* 모델 출력은 줄바꿈이 의미를 갖는다. 긴 URL 같은 토큰은 강제로 접어 가로 스크롤을 막는다. */
+.body {
+  color: var(--color-text-body);
+  font-size: var(--font-size-body);
+  line-height: var(--font-line-height-relaxed);
+  white-space: pre-wrap;
+}
+
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 2px;
+  background: var(--color-accent);
+  vertical-align: text-bottom;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
