@@ -31,10 +31,14 @@
       → `error` 알림의 `codexErrorInfo.responseStreamDisconnected.httpStatusCode == 401`. **구조화된 값이라 문구 매칭이 필요 없다.** 첫 401이 약 2초(CLI 자체 재시도를 끝까지 기다리면 18.6초)
 - [x] 1B.4 종료 판정의 함정을 확인한다
       → **`turn/failed` 라는 알림은 없다.** 실패해도 메서드는 `turn/completed`이고 성패는 `turn.status`에 있다. `ErrorNotification`에 `willRetry`가 있어 CLI 자체 재시도와 우리 정책을 가를 수 있다
-- [ ] 1B.5 app-server 알림 스트림을 `tests/fixtures/codex/` 아래에 픽스처로 뜬다 — 성공 1건, 401 1건. 채취 조건을 README에 남긴다
-- [ ] 1B.6 exec 픽스처 4건을 지운다 — 새 설계에서 읽는 테스트가 없다. 안 쓰는 픽스처는 CLI 버전이 올라도 아무도 고치지 않고, 나중에 읽는 사람이 "이게 현재 형식"으로 착각한다. 실측의 **결론**은 `ARCHITECTURE.md` 산문에 남고 파일은 git 이력에 있다
-- [ ] 1B.7 `ARCHITECTURE.md`의 실측 절을 다시 쓴다 — exec 표를 "왜 이걸 안 쓰는가"로 프레이밍하고 app-server 실측을 주 절로 올린다
-- [ ] 1B.8 `docs/SPIKES.md` S-3에 한 줄 덧붙인다 — 세션이 요청 사이에 살아 있어 자격증명 갱신을 만날 확률이 일회성 프로세스보다 높다
+- [x] 1B.5 app-server 알림 스트림을 `tests/fixtures/codex/` 아래에 픽스처로 뜬다 — 성공 1건, 401 1건. 채취 조건을 README에 남긴다
+      → `app_server_answerable.jsonl`(58줄, 델타 38건) · `app_server_unauthenticated.jsonl`(23줄, `error` 10건). **이어 붙인 델타 77자가 `item/completed` 전문과 바이트 단위로 일치**함을 확인. 채취 중 파서 함정 셋을 새로 발견 — ① `codexErrorInfo`가 객체가 아니라 문자열 `"other"`로 오는 회차가 있다 ② 우리 프롬프트가 `userMessage` 아이템으로 되돌아와 `item.type` 필터가 필수다 ③ **`threadId` 없는 알림이 넷 있다**(`configWarning`·`remoteControl/status/changed`·`thread/started`·`account/rateLimits/updated`) — 3.5의 라우팅은 "세션 수준 알림은 큐에 넣지 않는다"와 함께여야 성립한다
+- [x] 1B.6 exec 픽스처 4건을 지운다 — 새 설계에서 읽는 테스트가 없다. 안 쓰는 픽스처는 CLI 버전이 올라도 아무도 고치지 않고, 나중에 읽는 사람이 "이게 현재 형식"으로 착각한다. 실측의 **결론**은 `ARCHITECTURE.md` 산문에 남고 파일은 git 이력에 있다
+      → 4건 삭제. 꺼내는 방법(`git show 8e503fc:...`)을 픽스처 README에 남겼다
+- [x] 1B.7 `ARCHITECTURE.md`의 실측 절을 다시 쓴다 — exec 표를 "왜 이걸 안 쓰는가"로 프레이밍하고 app-server 실측을 주 절로 올린다
+      → "컨테이너 안에서의 실측"을 네 소절로 재편: 두 표면의 대비 → 주 표면(app-server) → 참고 표면(exec, 쓰지 않음) → bwrap(양 표면 공통). 1B.5에서 새로 나온 파서 함정 셋과 시간표를 주 소절에 넣었다. 함께 정정한 것 — `docs/superpowers/specs/2026-08-03-...md`의 "모든 알림이 threadId를 싣는다"가 1B.5 실측으로 거짓이 되어 그 자리에 정정을 남겼다
+- [x] 1B.8 `docs/SPIKES.md` S-3에 한 줄 덧붙인다 — 세션이 요청 사이에 살아 있어 자격증명 갱신을 만날 확률이 일회성 프로세스보다 높다
+      → 완화책은 유효하나 창의 길이가 "요청 수명"에서 "컨테이너 수명"으로 바뀌었다는 점까지 적었다
 
 ## 2. 도메인 값 객체와 프롬프트
 

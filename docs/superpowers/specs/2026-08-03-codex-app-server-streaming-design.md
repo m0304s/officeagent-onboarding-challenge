@@ -61,7 +61,8 @@
 
 ### 프로토콜에서 확인한 사실
 
-- 모든 알림이 `threadId`를 싣는다 → **threadId로 라우팅이 성립한다.**
+- ~~모든 알림이 `threadId`를 싣는다~~ → **정정**(2026-08-03, tasks 1B.5 픽스처 채취 중): 델타·`item/*`·`error`·`turn/*`은 싣지만 `configWarning`·`remoteControl/status/changed`·`thread/started`·`account/rateLimits/updated` 넷은 싣지 않는다. threadId 라우팅은 성립하되 **"threadId 없는 알림은 세션 수준이라 큐에 넣지 않고 로그로만 남긴다"는 규칙과 함께**여야 한다 (아래 결정 3의 `session.py` 몫).
+- `codexErrorInfo`가 **항상 객체는 아니다** — 마지막 `error` 알림에서는 문자열 `"other"`로 온다. 객체를 가정한 체이닝은 거기서 죽는다 (같은 채취 중 발견).
 - `ErrorNotification`에 **`willRetry: boolean`**이 있다 → CLI가 자체 재시도 중인지 알 수 있다.
 - **`turn/failed`라는 알림은 없다.** 종료는 항상 `turn/completed`이고 성패는 `turn.status`에 있다.
   메서드 이름만 보면 실패를 성공으로 센다.

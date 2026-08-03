@@ -1,4 +1,0 @@
-{"type":"thread.started","thread_id":"019fc60f-2b2a-7002-88c5-293c253b0554"}
-{"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"VERDICT: ANSWERABLE\n직무 관련 교육비는 연간 최대 200만 원까지 지원됩니다.[1]\n매월 15일까지 HR팀에 신청서를 제출해야 하며, 승인 후 비용이 환급됩니다.[1]"}}
-{"type":"turn.completed","usage":{"input_tokens":13310,"cached_input_tokens":9984,"cache_write_input_tokens":0,"output_tokens":55,"reasoning_output_tokens":0}}
