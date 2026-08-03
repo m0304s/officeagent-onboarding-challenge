@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from app.config import Settings, get_settings
+from app.config import Settings, get_settings, llm_environment
 from app.core.chunking import ChunkStrategy
 from app.core.exceptions import ConfigurationError
 
@@ -40,6 +40,17 @@ def test_boots_with_no_configuration_at_all(monkeypatch, tmp_path):
     assert 0 < settings.retrieval_top_k <= settings.retrieval_max_top_k
     assert 0 <= settings.retrieval_min_score <= 1
     assert settings.retrieval_max_query_chars > 0
+
+    # 답변 생성 설정도 마찬가지다. `qa_llm_model` 만 빈 문자열이 기본값인데, 그건 "CLI
+    # 기본 모델을 쓴다"는 뜻이라 값이 아니라 부재가 의미다.
+    assert settings.qa_llm_timeout_seconds > 0
+    assert settings.qa_llm_max_attempts >= 1
+    assert settings.qa_llm_retry_backoff_seconds > 0
+    assert settings.qa_sse_heartbeat_seconds > 0
+    assert settings.qa_concurrency > 0
+    assert settings.qa_llm_interrupt_grace_seconds > 0
+    assert settings.qa_llm_session_startup_timeout_seconds > 0
+    assert settings.qa_llm_model == ""
     get_settings.cache_clear()
 
 
@@ -154,6 +165,90 @@ def test_default_top_k_above_the_ceiling_fails_startup(monkeypatch, tmp_path):
 
     message = str(exc_info.value)
     assert "retrieval_top_k" in message and "retrieval_max_top_k" in message
+
+
+# ── 답변 생성 설정 ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "field", "expected"),
+    [
+        ("APP_QA_LLM_TIMEOUT_SECONDS", "12.5", "qa_llm_timeout_seconds", 12.5),
+        ("APP_QA_LLM_MAX_ATTEMPTS", "1", "qa_llm_max_attempts", 1),
+        ("APP_QA_LLM_RETRY_BACKOFF_SECONDS", "0.25", "qa_llm_retry_backoff_seconds", 0.25),
+        ("APP_QA_SSE_HEARTBEAT_SECONDS", "5", "qa_sse_heartbeat_seconds", 5.0),
+        ("APP_QA_CONCURRENCY", "4", "qa_concurrency", 4),
+        ("APP_QA_LLM_MODEL", "gpt-5-codex", "qa_llm_model", "gpt-5-codex"),
+        ("APP_QA_LLM_INTERRUPT_GRACE_SECONDS", "0.5", "qa_llm_interrupt_grace_seconds", 0.5),
+        (
+            "APP_QA_LLM_SESSION_STARTUP_TIMEOUT_SECONDS",
+            "45",
+            "qa_llm_session_startup_timeout_seconds",
+            45.0,
+        ),
+    ],
+)
+def test_answer_generation_settings_can_be_overridden_by_environment(
+    monkeypatch, tmp_path, variable, value, field, expected
+):
+    """상한을 조정하는 데 재배포가 들지 않아야 한다 — 전부 환경변수로 덮인다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(variable, value)
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert getattr(settings, field) == expected
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "expected_field"),
+    [
+        ("APP_QA_LLM_TIMEOUT_SECONDS", "0", "qa_llm_timeout_seconds"),
+        # 0 이면 어떤 시도도 하지 않아 생성기가 영영 불리지 않는다.
+        ("APP_QA_LLM_MAX_ATTEMPTS", "0", "qa_llm_max_attempts"),
+        ("APP_QA_LLM_RETRY_BACKOFF_SECONDS", "0", "qa_llm_retry_backoff_seconds"),
+        ("APP_QA_SSE_HEARTBEAT_SECONDS", "0", "qa_sse_heartbeat_seconds"),
+        ("APP_QA_CONCURRENCY", "0", "qa_concurrency"),
+        ("APP_QA_LLM_INTERRUPT_GRACE_SECONDS", "0", "qa_llm_interrupt_grace_seconds"),
+        (
+            "APP_QA_LLM_SESSION_STARTUP_TIMEOUT_SECONDS",
+            "0",
+            "qa_llm_session_startup_timeout_seconds",
+        ),
+    ],
+)
+def test_invalid_answer_generation_values_fail_startup(
+    monkeypatch, tmp_path, variable, value, expected_field
+):
+    """생성 설정도 무효값이면 조용히 기본값으로 흘러가지 않고 기동을 멈춘다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(variable, value)
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    assert expected_field in str(exc_info.value)
+
+
+def test_the_generator_environment_carries_only_the_three_names(monkeypatch):
+    """생성기에게 넘길 환경은 상속이 아니라 목록이다.
+
+    컨테이너 환경변수에 저장소 접속 정보가 들어 있어, 도구를 쓸 수 있는 에이전트에게
+    통째로 넘길 이유가 없다. 어댑터가 아니라 여기서 정해진다.
+    """
+    monkeypatch.setenv("APP_CACHE_URL", "redis://secret-host:6379/0")
+    monkeypatch.setenv("HOME", "/home/app")
+    monkeypatch.setenv("CODEX_HOME", "/home/app/.codex")
+
+    environment = llm_environment()
+
+    assert set(environment) <= {"HOME", "PATH", "CODEX_HOME"}
+    assert environment["HOME"] == "/home/app"
+    assert "APP_CACHE_URL" not in environment
 
 
 def test_unimplemented_chunk_strategy_fails_startup(monkeypatch, tmp_path):

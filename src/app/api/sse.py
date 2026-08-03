@@ -145,8 +145,7 @@ async def frames(
 async def _pump(events: AsyncIterator[QaEvent], queue: "asyncio.Queue[Any]") -> None:
     """서비스 스트림을 통째로 한 태스크에서 돌려 큐로 옮긴다.
 
-    조각마다 태스크를 만들면 서비스가 든 동시 상한이 빌린 태스크와 반납하는 태스크가
-    달라져 터진다 — 하트비트를 끼우려고 전송 계층이 서비스의 실행 문맥을 쪼갠 대가다."""
+    조각마다 태스크를 만들면 서비스가 든 동시 상한이 반납 시점에 터진다."""
     try:
         async with aclosing(events) as stream:
             async for event in stream:

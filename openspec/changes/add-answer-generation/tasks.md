@@ -198,24 +198,38 @@
       → 5장이 설정 없이는 배선되지 않아 6.1·6.2를 함께 당겼다. `llm_environment()`도 여기 있다 — 환경을 읽는 곳이 `config.py` 뿐이라는 규약(`TID251`)이 목록의 위치까지 정한다
 - [x] 6.2 `main.py` — 세션 풀·생성기와 `QaService` 배선, `/qa` 라우터 등록. **부팅 경로에서 CLI를 건드리지 않는다** — 풀은 지연 기동이라 첫 요청까지 프로세스가 뜨지 않는다. 종료 시 풀의 세션을 회수한다
       → `_CodexLauncher`가 첫 호출까지 `SessionLaunch` 조립(빈 작업 디렉터리 생성 포함)도 미룬다. `create_app(generator=...)`로 테스트가 페이크를 꽂고, 그때는 풀 자체가 만들어지지 않는다. 회수는 lifespan `finally`
-- [ ] 6.3 `tests/test_config.py` 보강 — 새 설정이 기본값으로 로딩되고 환경변수로 덮이는가
-- [ ] 6.4 `tests/test_boot.py` 보강 — 자격증명이 **없는** 상태와 **판독 불가능한** 상태 양쪽에서 기동·`/health` 200이 유지되고, 기동 중 생성기가 호출되지 않는가
+- [x] 6.3 `tests/test_config.py` 보강 — 새 설정이 기본값으로 로딩되고 환경변수로 덮이는가
+      → 8개 항목의 기본값·환경변수 덮어쓰기·무효값 거부를 각각 덮는다. `llm_environment()`가 세 이름만 넘긴다는 것도 여기서 본다 — 어댑터가 아니라 설정이 정하는 값이다
+- [x] 6.4 `tests/test_boot.py` 보강 — 자격증명이 **없는** 상태와 **판독 불가능한** 상태 양쪽에서 기동·`/health` 200이 유지되고, 기동 중 생성기가 호출되지 않는가
+      → 대역 주입으로 "생성기 호출 0"을 보고, 그와 별개로 **기본 배선**에서 `AppServerSession.start` 자체를 금지한 채 기동시켜 지연 기동을 확인한다(대역만 보면 기본 경로가 미확인으로 남는다). 종료가 풀을 회수하는 것은 "닫힌 풀은 더 빌려주지 않는다"로 관측
 
 ## 7. 문서 정합
 
 > 문서-코드 불일치는 감점, 허위 기재는 불합격이다. 각 문서는 대응 구현이 끝난 직후에 고친다.
 
-- [ ] 7.1 `ARCHITECTURE.md` — 상단 "현재 구현 범위"에서 "답변 생성은 아직 없습니다"를 걷어내고, LLM SDK 칸의 "**아직 없음**"을 실제 사용처로 바꾼다
-- [ ] 7.2 `ARCHITECTURE.md` — 답변 생성 절 추가: 이벤트 시퀀스, 스트림 안/밖 실패 경계, 거절 두 갈래, 인용 검증, 재시도 정책, 세션 풀과 에이전트를 좁히는 조치들. **1장·1-B장의 실측 숫자를 함께 적는다**(1B.7에서 실측 절을 이미 고쳤다면 그와 어긋나지 않게)
-- [ ] 7.3 `README.md` — `/qa` 사용법(`curl -N` 예시와 실제 이벤트 출력), 인증 없는 환경에서 무엇이 되고 무엇이 안 되는지, 실물 CLI 테스트를 포함해 돌리는 명령
-- [ ] 7.4 `openspec/project.md` — 기술 스택 표와 외부 의존성 표가 아직 `claude-code-sdk`로 적혀 있다. Codex로 맞추고 **갈아탄 이유를 한 줄로 남긴다**(`ARCHITECTURE.md` 참조)
-- [ ] 7.5 `PROMPT_DESIGN.md`가 실제 프롬프트와 일치하는지 다시 확인한다 (2.8 이후 프롬프트를 손봤다면 반영)
-- [ ] 7.6 `docs/superpowers/specs/2026-08-03-codex-app-server-streaming-design.md`가 최종 구현과 어긋나지 않는지 확인한다 — 구현 중 설계를 바꿨다면 그 문서에도 남긴다
+- [x] 7.1 `ARCHITECTURE.md` — 상단 "현재 구현 범위"에서 "답변 생성은 아직 없습니다"를 걷어내고, LLM SDK 칸의 "**아직 없음**"을 실제 사용처로 바꾼다
+      → 함께 걷어낸 것 셋: LLM SDK 절의 "호출하는 경로는 아직 없습니다", "부팅 경로에서 CLI를 실행하지 않는 이유"의 미래형, 청킹 절의 "그 청크를 소비하는 답변 생성이 아직 없습니다"(부모-자식 청킹의 유예 근거였다 — 이제 붙일 자리가 열렸다고 고쳐 적었다)
+- [x] 7.2 `ARCHITECTURE.md` — 답변 생성 절 추가: 이벤트 시퀀스, 스트림 안/밖 실패 경계, 거절 두 갈래, 인용 검증, 재시도 정책, 세션 풀과 에이전트를 좁히는 조치들. **1장·1-B장의 실측 숫자를 함께 적는다**(1B.7에서 실측 절을 이미 고쳤다면 그와 어긋나지 않게)
+      → "검색 파이프라인" 뒤에 절 하나. 좁히는 조치는 이미 "어댑터를 세 부품으로 가른 이유"에 있어 중복하지 않고 참조만 걸었다. 5.4에서 실물이 잡은 함정(전송 계층이 서비스의 실행 문맥을 쪼개면 `CapacityLimiter`가 터진다)도 여기 남겼다. 배선·테스트 전략 절도 함께 갱신
+- [x] 7.3 `README.md` — `/qa` 사용법(`curl -N` 예시와 실제 이벤트 출력), 인증 없는 환경에서 무엇이 되고 무엇이 안 되는지, 실물 CLI 테스트를 포함해 돌리는 명령
+      → 이벤트 출력·`finish_reason` 세 갈래·인증 실패 모두 **실제로 받은 값**이다(8.3·8.4에서 캡처). 설정 표에 `qa_*` 8개 추가. **"실물 CLI 테스트를 돌리는 명령"을 적으려면 그 층이 있어야 해서** `tests/test_llm_live.py`(`llm` 마커, 기본 제외)를 함께 만들었다 — design 결정 14가 약속한 다섯 번째 겹인데 코드가 없었다
+- [x] 7.4 ~~`openspec/project.md`~~ → **`openspec/config.yaml`** — 기술 스택 표와 외부 의존성 표가 아직 `claude-code-sdk`로 적혀 있다. Codex로 맞추고 **갈아탄 이유를 한 줄로 남긴다**(`ARCHITECTURE.md` 참조)
+      → 이 설치본은 프로젝트 컨텍스트를 `project.md`가 아니라 `config.yaml`의 `context:` 블록에 둔다. 스택 표·의존성 표·런타임 전제·`rules` 안의 스택 나열까지 넷을 고쳤고, 갈아탄 이유(자격증명이 평문 파일이라 컨테이너가 읽는다)는 표 안에 한 줄로 남겼다
+- [x] 7.5 `PROMPT_DESIGN.md`가 실제 프롬프트와 일치하는지 다시 확인한다 (2.8 이후 프롬프트를 손봤다면 반영)
+      → 눈으로 보지 않고 **기계로 대조했다** — 문서의 첫 `text` 블록과 같은 인자로 부른 `build_prompt()` 출력을 컨테이너 안에서 diff. 일치. 문서에 적힌 실행 명령(`pytest tests/test_prompting.py`)도 실제로 돌려 확인(131 passed). 실물 회차 두 건(`stop`·`insufficient_evidence`)을 "실물에서 확인한 것" 절로 덧붙였다
+- [x] 7.6 `docs/superpowers/specs/2026-08-03-codex-app-server-streaming-design.md`가 최종 구현과 어긋나지 않는지 확인한다 — 구현 중 설계를 바꿨다면 그 문서에도 남긴다
+      → 결정 1~12는 그대로 섰다. "구현 후 대조" 절을 덧붙여 정정 하나(첫 `/qa`가 12초대 → 실측 7.4~9.8초)와 덧붙임 둘(전송 계층이 실행 문맥을 쪼개면 안 된다, 실물 층이 실제로 생겼다)을 남겼다
 
 ## 8. 마무리 검증
 
-- [ ] 8.1 `pytest` 한 줄이 **구독·네트워크 없이** 전부 통과하는지 확인한다. 실물 CLI 테스트가 기본 실행에서 빠지는지도 함께 확인
-- [ ] 8.2 `ruff` 통과. 특히 `core/`가 표준 라이브러리만 쓰는지, 계층 역전 import가 없는지
-- [ ] 8.3 `docker compose up` 후 `sample-docs/` 두 건을 올리고 `/qa`를 실제로 호출해 답변과 인용을 확인한다 — 실물 경로가 도는 것을 눈으로 본다
-- [ ] 8.4 자격증명을 치운 상태로 같은 절차를 반복해 기동·`/health`·`/documents`·`/search`가 정상이고 `/qa`만 `llm_unauthenticated`로 끝나는지 확인한다
-- [ ] 8.5 `openspec validate --strict`로 이 change의 산출물을 검증한다
+- [x] 8.1 `pytest` 한 줄이 **구독·네트워크 없이** 전부 통과하는지 확인한다. 실물 CLI 테스트가 기본 실행에서 빠지는지도 함께 확인
+      → `docker compose run --build --rm test` → **660 passed, 2 deselected**. deselect 되는 둘이 실물 층이고, `addopts = ["-m", "not llm"]` 가 그것을 기본에서 뺀다. 자격증명이 마운트된 컨테이너에서도 기본 실행은 CLI에 닿지 않는다
+- [x] 8.2 `ruff` 통과. 특히 `core/`가 표준 라이브러리만 쓰는지, 계층 역전 import가 없는지
+      → `ruff check .` 통과. 두 성질은 린트가 보증하지 않아 import 를 직접 훑었다 — `core/` 는 표준 라이브러리와 `app.core.*` 뿐이고, `core→상위`·`services→api`·`adapters→services/api`·`core/adapters→config` 넷 모두 0건
+- [x] 8.3 `docker compose up` 후 `sample-docs/` 두 건을 올리고 `/qa`를 실제로 호출해 답변과 인용을 확인한다 — 실물 경로가 도는 것을 눈으로 본다
+      → 돌았다. `answer` 이벤트 **26회**(토큰 단위 델타), `finish_reason: stop`, 인용 1건이 `sources` 첫 결과와 값이 같음, 7.4초. 무관한 질문에서는 `insufficient_evidence` + 모델이 쓴 사유, 근거 0건 질문에서는 `no_evidence` + 빈 답변 + 75ms(생성기 미호출). 출력은 `README.md`·`PROMPT_DESIGN.md`에 그대로 실었다.
+      **함정 하나** — `docker compose up` 은 `--build` 없이는 이전 이미지를 띄운다. 첫 시도에서 `/qa` 가 404 였고 원인이 그것이었다(`test` 서비스에만 해당하는 줄 알았던 함정이 `api` 에도 그대로 있다)
+- [x] 8.4 자격증명을 치운 상태로 같은 절차를 반복해 기동·`/health`·`/documents`·`/search`가 정상이고 `/qa`만 `llm_unauthenticated`로 끝나는지 확인한다
+      → `auth.json` 을 치우고 `docker compose restart api`(재기동해야 풀에 살아 있는 세션이 없다). `/health` 200 · `/documents` 3건 · `/search` 0.8609 전부 정상, `/qa` 만 `sources` 뒤 `error{code: llm_unauthenticated, attempts: 1}` 로 4.3초에 끝났다. 실물 층은 `2 skipped`(사유 포함)
+- [x] 8.5 `openspec validate --strict`로 이 change의 산출물을 검증한다
+      → `Change 'add-answer-generation' is valid`. 명령은 `openspec validate add-answer-generation --strict`(`--change` 플래그는 없다)
