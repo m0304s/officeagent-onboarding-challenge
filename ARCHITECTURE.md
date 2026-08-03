@@ -22,7 +22,9 @@
 
 ## LLM SDK 통합 방식
 
-> **현재 구현된 것은 실행 환경까지입니다.** CLI 설치와 자격증명 주입 경로는 동작하지만, **컨테이너 안에서 CLI가 실제로 답변을 생성하는지는 아직 호출해 본 적이 없습니다.** SDK를 호출하는 코드는 존재하지 않습니다.
+> **현재 구현된 것은 실행 환경과 실측까지입니다.** CLI 설치·자격증명 주입 경로가 동작하고, **컨테이너 안에서 실물 `codex exec --json`을 돌려** 이벤트 형식·스트리밍 입자도·인증 실패 형태·소요 시간을 측정했습니다(아래 "컨테이너 안에서의 실측"). 그 출력은 [`tests/fixtures/codex/`](./tests/fixtures/codex/)에 픽스처로 남아 있습니다.
+>
+> 다만 **애플리케이션 코드가 CLI를 호출하는 경로는 아직 없습니다.** 어댑터는 `add-answer-generation` change가 붙입니다.
 
 ### 왜 이 change에서 다루는가
 
@@ -48,16 +50,88 @@ Codex는 세 OS 모두 자격증명이 **평문 파일**입니다.
 
 파일이면 볼륨으로 붙습니다. 호스트 단계가 통째로 사라지고 세 OS가 `docker compose up` 하나로 수렴합니다. 이것이 갈아탄 유일한 이유이고, 실행 가능성이 SDK의 API 편의보다 앞선다고 판단했습니다 — 평가 기준에서 "명시된 방법으로 실행 불가"는 감점이 아니라 불합격입니다.
 
-대가는 정직하게 적습니다. **Codex에는 공식 파이썬 SDK가 없습니다.** 파이썬에서 쓰려면 `codex exec` 프로세스를 띄워 stdout을 파싱해야 하므로, 프로세스 수명 관리·타임아웃·재시도를 직접 구현해야 합니다. 실행 경로를 뚫으며 컨테이너 안에서 확인한 것은 다음과 같습니다.
+대가는 정직하게 적습니다. **Codex에는 공식 파이썬 SDK가 없습니다.** 파이썬에서 쓰려면 `codex exec` 프로세스를 띄워 stdout을 파싱해야 하므로, 프로세스 수명 관리·타임아웃·재시도를 직접 구현해야 합니다.
+
+### 컨테이너 안에서의 실측
+
+> 측정일 2026-08-03, `api` 이미지 안의 `codex-cli 0.146.0`. **런타임과 같은 이미지에서 잰 값**이고, 각 회차의 stdout 원본은 [`tests/fixtures/codex/`](./tests/fixtures/codex/)에 그대로 있습니다. CLI 버전이 오르면 이 표와 픽스처를 함께 다시 떠야 합니다.
+
+**호출 형태** — 아래가 어댑터가 쓸 형태이고, 각 인자가 실제로 먹히는지 한 번씩 확인했습니다.
+
+```sh
+env -i HOME=/home/app PATH=/usr/local/bin:/usr/bin:/bin CODEX_HOME=/home/app/.codex \
+  codex exec --json --skip-git-repo-check --cd <빈 임시 디렉터리> --sandbox read-only \
+    --ephemeral --ignore-user-config -c approval_policy=never - < prompt.txt
+```
+
+| 인자 | 무엇을 위한 것인가 | 실측 결과 |
+|------|-------------------|----------|
+| `-` + stdin | 프롬프트를 argv에 싣지 않는다 — 문서 본문이 프로세스 목록에 노출되고 argv 길이 상한이 문맥 크기의 숨은 천장이 된다 | 동작. `[PROMPT]` 자리에 `-`를 두면 stdin에서 읽습니다 |
+| `--cd <빈 디렉터리>` | 에이전트가 뒤질 대상 자체를 없앤다 | 동작 |
+| `--skip-git-repo-check` | — | **없으면 아예 못 돕니다.** 빈 임시 디렉터리는 git 리포가 아니라 `Not inside a trusted directory` 로 즉시 종료(코드 1)됩니다 |
+| `--sandbox read-only` | 쓰기 차단 | 인자는 받아들여집니다. 다만 **효과를 단독으로 확인할 수 없었습니다** — 아래 "bwrap" 참고 |
+| `-c approval_policy=never` | 승인 프롬프트를 기다리며 매달리는 것을 막는다 | 매달림 없음. 전 회차가 종료까지 갔습니다 |
+| `--ephemeral` | 세션 파일을 남기지 않는다 | 동작 |
+| `--ignore-user-config` | 마운트된 `config.toml`에 동작이 좌우되지 않게 한다. 인증은 그대로 `CODEX_HOME`을 씁니다 | 동작 |
+| `env -i` + 3개 | 컨테이너 환경변수(저장소 접속 정보 포함)를 에이전트에게 통째로 넘기지 않는다 | `HOME`·`PATH`·`CODEX_HOME`만으로 정상 동작 |
+
+**이벤트 형식과 스트리밍 입자도**
+
+정상 회차의 stdout은 JSONL 네 줄입니다 — `thread.started` → `turn.started` → `item.completed` → `turn.completed`.
 
 | 확인한 것 | 결과 |
 |---|---|
-| 마운트한 `auth.json`으로 인증 | `codex login status` → `Logged in using ChatGPT` |
-| 실제 추론 | `codex exec`로 한국어 응답 생성, 토큰 사용량 회수 |
-| 스트리밍 | `codex exec --json`이 JSONL 이벤트를 뱉음 — `thread.started` → `turn.started` → `item.completed` → `turn.completed`. **토큰 델타는 없고 메시지가 통째로 한 이벤트로 옵니다** |
-| 구조화 출력 | `codex exec --output-schema <JSON Schema 파일>` 옵션 존재 |
+| 토큰 델타 이벤트 | **없습니다.** 4,808자짜리 답변도 `item.completed` **한 이벤트**로 통째로 도착했습니다(장문을 강제해 확인) |
+| 답변 텍스트의 위치 | `item.completed` 중 **`item.type == "agent_message"`** 인 것의 `item.text` |
+| 한 턴의 `agent_message` 개수 | **1개가 아닐 수 있습니다.** 도구를 쓰는 회차에서 3건 관측(`tool_use.jsonl`). 그래서 `answer` 이벤트 계약이 "0회 이상"입니다 |
+| 섞여 들어오는 다른 아이템 | `command_execution`(`item.started`/`item.completed` 쌍). **`item.completed`만 보고 텍스트를 꺼내면 셸 명령 기록을 답변으로 착각합니다** |
+| `turn.completed`의 `usage` | 토큰 사용량이 실려 오지만 소비자가 없어 읽지 않습니다 |
+| 구조화 출력 | `codex exec --output-schema <JSON Schema 파일>` 옵션은 여전히 존재합니다(쓰지 않는 이유는 change design 결정 4) |
 
-스트리밍 입자도가 이벤트 단위라는 점은 SSE 설계에 그대로 영향을 줍니다. QA change에서 다룹니다.
+토큰 델타가 없다는 사실이 SSE 설계를 좌우합니다. **서버가 그 문자열을 잘게 쪼개 스트리밍을 흉내 내지 않습니다** — 첫 글자 도착 시각이 1밀리초도 앞당겨지지 않으면서 문서와 구현만 어긋납니다. 스트리밍이 실제로 앞당기는 것은 `sources` 이벤트이고 그 이득은 생성 지연 전체만큼입니다.
+
+**소요 시간** — RAG 모양(근거 2~3개, 짧은 한국어 답변)으로 6회.
+
+| 구간 | 관측 범위 |
+|------|----------|
+| 첫 이벤트(`thread.started`)까지 | 1.0 ~ 8.5초 |
+| 답변 이벤트(`item.completed`)까지 | 8.0 ~ 18.3초 |
+| 프로세스 종료까지 | 12.0 ~ 18.9초 |
+
+`qa_llm_timeout_seconds` 기본값 **60초를 유지합니다.** RAG 모양의 최악값(18.9초)이 상한의 3분의 1이라 정상 경로가 상한에 닿지 않고, 인증 실패조차 19.3초에 끝나(아래) 상한 안에서 판정됩니다.
+
+여유가 무한하다는 뜻은 아닙니다 — 근거 제약 없이 장문을 시킨 회차는 **85.4초**가 걸려 60초를 넘겼습니다. 우리 프롬프트는 답변을 근거 안으로 묶어 그 모양이 나오지 않지만, 문맥이나 지시가 바뀌면 상한이 먼저 걸리는 쪽이 될 수 있습니다.
+
+**인증 실패와 일반 실패의 구분**
+
+| 상황 | 종료 코드 | stdout | 판별 문구 |
+|------|----------|--------|----------|
+| 정상 | 0 | JSONL 4줄, `agent_message` 있음 | — |
+| **인증 없음** (`auth.json` 부재) | **1** | `error` 이벤트 10회 → **`turn.failed`**, `agent_message` **0건** | `401 Unauthorized` / `Missing bearer or basic authentication` |
+| 자격증명 판독 불가 (`auth.json` 깨짐) | **1** | **비어 있음** | stderr에 JSON 파싱 오류(`key must be a string ...`). 0.04초에 즉시 실패 |
+| 신뢰되지 않은 디렉터리 | 1 | 비어 있음 | stderr `Not inside a trusted directory` |
+| 잘못된 인자 | 2 | 비어 있음 | stderr clap usage 오류 |
+
+**종료 코드만으로는 인증 실패를 가려낼 수 없습니다** — 인증 없음·자격증명 깨짐·신뢰되지 않은 디렉터리가 모두 1입니다. 그래서 판정은 문구까지 봐야 하고, 다행히 **인증 실패 문구가 stdout JSONL 안에 있습니다**(`turn.failed`의 `error.message`). 어댑터가 이미 stdout을 줄 단위로 파싱하므로 stderr에 의존하지 않고 판정할 수 있습니다.
+
+자격증명이 **깨진** 경우는 그 문구가 없어 일반 실패로 분류됩니다. 의도한 타협입니다 — 결과가 "재시도 두 번 더 하고 `llm_unavailable`로 끝남"이지 잘못된 성공이 아니고, 즉시 실패라 재시도 3회를 합쳐도 0.2초 안에 끝납니다.
+
+인증 없는 회차가 19.3초 걸리는 이유는 **CLI가 자체적으로 10회 재연결을 시도**하기 때문입니다(WebSocket 5회 → HTTPS 폴백 5회). 우리 재시도 정책이 그 위에 얹히므로, 인증 부재를 재시도하지 않는 결정(change design 결정 9)이 없으면 한 요청이 최악 60초를 헛돌게 됩니다.
+
+**bwrap — 이 컨테이너에서는 에이전트가 도구를 아예 못 씁니다**
+
+도구를 쓰라고 대놓고 시키는 프롬프트를 넣어 좁히기가 먹히는지 시험했더니, 모든 셸 실행이 같은 오류로 실패했습니다:
+
+```
+bwrap: No permissions to create a new namespace, likely because the kernel does not
+allow non-privileged user namespaces.
+```
+
+Codex는 샌드박스를 bubblewrap으로 거는데, 비특권 사용자 네임스페이스가 막힌 컨테이너에서는 그 샌드박스를 **만들지 못해 명령 실행 자체가 실패**합니다. 에이전트는 `pwd`조차 돌리지 못했고 `echo hello > ./written-by-agent.txt`도 실패해 작업 디렉터리에 파일이 생기지 않았습니다.
+
+두 가지를 함께 적습니다. 이 환경에서는 "에이전트가 컨테이너 파일시스템을 뒤진다"는 위험이 사실상 닫혀 있습니다. 동시에 **그 차단은 우리 인자가 아니라 커널 설정에서 옵니다** — `--sandbox read-only`가 단독으로 무엇을 막는지는 여기서 관측되지 않았고, 커널이 비특권 네임스페이스를 허용하는 호스트로 옮기면 방어선은 다시 우리 인자와 프롬프트 지시로 돌아옵니다. 그래서 좁히는 인자를 하나도 빼지 않습니다.
+
+부수적으로 알게 된 것이 하나 더 있습니다. 에이전트가 요청하지도 않은 스킬 파일(`.codex/plugins/.../SKILL.md`)을 먼저 읽으려 했습니다. 프롬프트에 "제공된 근거 밖을 조회하지 말라"를 넣는 네 번째 방어선이 형식적인 문장이 아닌 이유입니다 — 실제 RAG 프롬프트를 넣은 회차에서는 도구 호출이 한 번도 없었습니다.
 
 ### 자격증명을 이미지에 굽지 않는 이유
 

@@ -13,7 +13,7 @@
 ## ~~S-2. 마운트한 자격증명을 컨테이너 안의 CLI가 인증에 쓰는가~~ (해소)
 
 - **결과**: **사실이었다.** 호스트의 `~/.codex/auth.json`을 리눅스 컨테이너에 마운트한 상태에서 `codex login status`가 `Logged in using ChatGPT`를 반환했고, 이어진 `codex exec` 호출이 인증 오류 없이 통과했다.
-- **남은 조각**: 위 확인은 `node:22-slim`에 `/root/.codex`로 붙여서 했다. 이 리포의 이미지에서 `app`(uid 1000)이 `/home/app/.codex`로 읽는 경로는 `docker compose up` 실행으로 함께 확인한다.
+- ~~**남은 조각**: 위 확인은 `node:22-slim`에 `/root/.codex`로 붙여서 했다. 이 리포의 이미지에서 `app`(uid 1000)이 `/home/app/.codex`로 읽는 경로는 `docker compose up` 실행으로 함께 확인한다.~~ → **확인됨**(2026-08-03, `add-answer-generation` 1장 실측). `docker compose up`으로 뜬 `api` 컨테이너 안에서 `uid=1000(app)`·`HOME=/home/app`인 채로 `codex login status`가 `Logged in using ChatGPT`를 반환했고, 이어진 `codex exec --json`이 실제 답변을 생성했다. 실측 전체는 `ARCHITECTURE.md`의 "컨테이너 안에서의 실측".
 
 ## S-3. refresh token이 회전해 호스트 CLI가 로그아웃되는가
 
