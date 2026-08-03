@@ -1,0 +1,9 @@
+# 셸 스크립트는 항상 LF 로 체크아웃한다.
+#
+# `scripts/sync-credentials-container.sh` 는 리눅스 컨테이너 안에서 `/bin/sh` 로 실행된다.
+# CRLF 로 체크아웃되면 shebang 뒤의 `\r` 때문에 인터프리터를 찾지 못하고, 살아남더라도
+# `set -eu` 같은 줄이 통째로 깨진다. 윈도우에서 편집·체크아웃해도 이 파일들만은 LF 다.
+*.sh text eol=lf
+
+# git hook 도 같은 이유로 LF 여야 한다 (확장자가 없어 위 규칙에 걸리지 않는다).
+.githooks/* text eol=lf

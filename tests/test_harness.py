@@ -6,6 +6,7 @@
 from pathlib import Path
 
 from app.adapters.protocols import DocumentRegistry, Embedder, VectorStore
+from tests.conftest import VECTOR_STORE_URL, make_settings
 
 
 def test_the_stub_adapters_satisfy_their_protocols(embedder, vector_store, registry):
@@ -32,6 +33,25 @@ def test_data_dir_is_isolated_and_empty(data_dir: Path):
 
 
 def test_settings_fixture_does_not_read_the_environment(settings, data_dir):
-    # 환경변수에 무엇이 있든 픽스처가 준 값이어야 한다.
-    assert settings.vector_store_url == "http://localhost:8001"
+    # 환경변수에 무엇이 있든 픽스처가 **명시적으로 준** 값이어야 한다.
+    assert settings.cache_url == "redis://unused:6379/0"
     assert settings.probe_timeout_seconds == 0.2
+    # 벡터 스토어 주소만은 하네스가 환경을 보고 고른다 — 컨테이너 안에서는 실물 서버가
+    # `localhost:8001` 이 아니다. 그래도 픽스처는 그 고른 값을 그대로 넘겨야 한다.
+    assert settings.vector_store_url == VECTOR_STORE_URL
+
+
+def test_환경변수는_픽스처가_정한_값을_뚫지_못한다(data_dir: Path, monkeypatch):
+    """`APP_*` 가 떠 있는 채로 테스트가 돌 수 있다.
+
+    `docker compose run --rm test` 는 컨테이너에 `APP_VECTOR_STORE_URL` 을 넣는다. 설정
+    로딩이 명시 인자보다 환경을 우선한다면 구조 층 테스트가 환경에 따라 다른 값을 보게
+    되고, 실패가 재현되지 않는다. 그 경계를 여기서 고정한다.
+    """
+    monkeypatch.setenv("APP_CACHE_URL", "redis://환경에서-샜다:6379/0")
+    monkeypatch.setenv("APP_PROBE_TIMEOUT_SECONDS", "99")
+
+    built = make_settings(data_dir)
+
+    assert built.cache_url == "redis://unused:6379/0"
+    assert built.probe_timeout_seconds == 0.2

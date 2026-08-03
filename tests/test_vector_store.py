@@ -13,7 +13,8 @@
 **실물 서버가 필요하다.** Chroma 를 서버 모드로 쓰므로 이 파일은 대역으로 대체할 수 없다 —
 대역으로 바꾸는 순간 확인하려는 것(우리 메타데이터·필터·id 규약이 *실제 Chroma* 에서
 성립하는가)이 사라진다. 서버가 없으면 파일 전체를 건너뛰고, 나머지 스위트는 그대로 돈다.
-서버를 띄우는 명령은 `make vector-store` 다.
+`docker compose run --build --rm test` 로 돌리면 서버가 함께 뜨므로 이 파일도 실행된다. 호스트에서
+직접 `pytest` 를 돌릴 때는 `docker compose up -d --wait vector-store` 로 먼저 띄운다.
 """
 
 import asyncio

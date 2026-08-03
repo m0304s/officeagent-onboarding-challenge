@@ -16,6 +16,7 @@
 `test_vector_store.py`·`test_registry.py` 가 덮는다.
 """
 
+import os
 import socket
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -41,10 +42,15 @@ def data_dir(tmp_path: Path) -> Path:
     return d
 
 
-#: 테스트가 실물 Chroma 를 볼 때 쓰는 주소. `docker compose up vector-store` 가 여는
-#: 포트이자 `Settings` 의 기본값이다. 환경변수로 읽지 않는 이유는 픽스처가 환경에 따라
-#: 다른 값을 주면 실패가 재현되지 않기 때문이다 — 서버가 그 자리에 없으면 **건너뛴다**.
-VECTOR_STORE_URL = "http://localhost:8001"
+#: 테스트가 실물 Chroma 를 볼 때 쓰는 주소. 기본값은 `docker compose up -d vector-store` 가
+#: 호스트에 여는 포트이자 `Settings` 의 기본값이다.
+#:
+#: **환경변수를 보는 이유**: 테스트가 `docker compose run --build --rm test` 로 컨테이너 안에서도
+#: 돈다. 거기서는 `localhost:8001` 이 벡터 스토어가 아니라 자기 자신이라, 주소를 고정하면
+#: 실물 Chroma 층이 컨테이너 안에서 영원히 건너뛰어진다 — 그 층을 실제로 돌리려고 만든
+#: 실행 경로에서 정작 안 도는 셈이 된다. 값을 주지 않으면 예전과 똑같이 동작하고,
+#: 서버가 그 자리에 없으면 **건너뛴다**.
+VECTOR_STORE_URL = os.environ.get("APP_VECTOR_STORE_URL") or "http://localhost:8001"
 
 
 def vector_store_is_reachable(url: str = VECTOR_STORE_URL) -> bool:
@@ -57,7 +63,10 @@ def vector_store_is_reachable(url: str = VECTOR_STORE_URL) -> bool:
 
 needs_vector_store = pytest.mark.skipif(
     not vector_store_is_reachable(),
-    reason=f"Chroma 서버({VECTOR_STORE_URL})가 떠 있지 않습니다 — `make vector-store` 로 띄웁니다",
+    reason=(
+        f"Chroma 서버({VECTOR_STORE_URL})가 떠 있지 않습니다 — "
+        "`docker compose run --build --rm test` 로 돌리면 함께 뜹니다"
+    ),
 )
 
 
@@ -85,9 +94,12 @@ needs_weights = pytest.mark.skipif(
 )
 
 
-@pytest.fixture
-def settings(data_dir: Path) -> Settings:
-    """환경과 무관하게 결정론적인 설정. 상한은 테스트가 오래 걸리지 않게 짧게 잡는다."""
+def make_settings(data_dir: Path) -> Settings:
+    """`settings` 픽스처가 만드는 것과 같은 설정.
+
+    픽스처 밖에서도 같은 객체를 만들 수 있어야 한다 — "환경변수가 이 값을 뚫지 못한다"를
+    확인하는 테스트가 환경을 조작한 뒤 같은 구성으로 다시 지어 봐야 하기 때문이다.
+    """
     return Settings(
         cache_url="redis://unused:6379/0",
         vector_store_url=VECTOR_STORE_URL,
@@ -95,6 +107,17 @@ def settings(data_dir: Path) -> Settings:
         probe_timeout_seconds=0.2,
         health_total_timeout_seconds=0.5,
     )
+
+
+@pytest.fixture
+def settings(data_dir: Path) -> Settings:
+    """환경과 무관하게 결정론적인 설정. 상한은 테스트가 오래 걸리지 않게 짧게 잡는다.
+
+    `vector_store_url` 만은 예외로 환경을 따른다 — 실물 Chroma 를 보는 테스트가 이 값으로
+    서버에 붙는데, 컨테이너 안에서는 그 주소가 `localhost:8001` 이 아니기 때문이다.
+    값을 고르는 것은 `VECTOR_STORE_URL` 이고, 여기서는 그것을 **명시적으로** 넘긴다.
+    """
+    return make_settings(data_dir)
 
 
 @pytest.fixture

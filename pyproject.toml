@@ -27,6 +27,9 @@ dev = [
     "pytest-asyncio>=0.24",
     "httpx>=0.28",
     "ruff>=0.8",
+    # 자격증명이 컨테이너에 붙는 경로는 파이썬이 아니라 docker-compose.yml 에만 적혀 있다.
+    # 그 계약을 테스트가 읽어 단언하려면 파서가 필요하다 (tests/test_boot.py).
+    "pyyaml>=6.0",
 ]
 
 [build-system]

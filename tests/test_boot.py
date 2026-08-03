@@ -13,7 +13,6 @@
 
 import json
 import logging
-import os
 import stat
 import subprocess
 import sys
@@ -33,15 +32,16 @@ from tests.stubs import FakeEmbedder
 def home_without_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """자격증명이 아예 없는 홈 디렉터리."""
     home = tmp_path / "home"
-    (home / ".claude").mkdir(parents=True)
+    (home / ".codex").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
     return home
 
 
 @pytest.fixture
 def home_with_corrupted_credentials(home_without_credentials: Path) -> Path:
     """자격증명이 존재하지만 판독 불가능한 홈 디렉터리."""
-    target = home_without_credentials / ".claude" / ".credentials.json"
+    target = home_without_credentials / ".codex" / "auth.json"
     target.write_text("{ 이건 JSON 이 아니다 \x00\xff", encoding="utf-8", errors="replace")
     return home_without_credentials
 
@@ -164,94 +164,139 @@ async def test_a_failing_warm_up_does_not_stop_startup(make_app):
     )
 
 
-SYNC_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "sync-credentials.sh"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SYNC_SCRIPT = REPO_ROOT / "scripts" / "sync-credentials.sh"
+COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
 
 SAMPLE_BLOB = json.dumps(
     {
-        "claudeAiOauth": {
-            "accessToken": "test-access",
-            "refreshToken": "test-refresh",
-            "expiresAt": 0,
-            "refreshTokenExpiresAt": 0,
-            "scopes": [],
-            "subscriptionType": "max",
-        }
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": None,
+        "tokens": {"id_token": "test-id", "access_token": "test-access", "account_id": "acct"},
     }
 )
 
+#: 스크립트가 컨테이너 안에서 보게 되는 경로. `docker-compose.yml` 의 `auth` 서비스가
+#: 거는 마운트와 같아야 한다 — 아래 계약 테스트가 그 일치를 지킨다.
+HOST_MOUNT = "/host-codex"
+SECRETS_MOUNT = "/secrets"
 
-def _run_sync(
-    secrets_dir: Path, home: Path, keychain_blob: str | None
-) -> subprocess.CompletedProcess:
-    """호스트의 진짜 자격증명을 건드리지 않고 동기화 스크립트를 실행한다.
+pytestmark_posix = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="동기화 스크립트는 리눅스 컨테이너에서 도는 sh 다 — 검증도 POSIX 셸에서 한다",
+)
 
-    macOS 는 Keychain 조회를, Linux 는 파일 읽기를 하므로 대역을 거는 지점이 다르다.
+
+def _run_sync(tmp_path: Path, host_auth: str | None, existing_copy: str | None):
+    """동기화 스크립트를 컨테이너와 같은 모양으로 돌린다.
+
+    스크립트는 `/host-codex`·`/secrets` 절대경로를 쓰므로 임시 디렉터리를 그대로 줄 수
+    없다. 두 상수만 임시 경로로 치환한 사본을 만들어 돌린다 — 로직은 손대지 않는다.
     """
-    env = dict(os.environ, SECRETS_DIR=str(secrets_dir), HOME=str(home))
-
-    if sys.platform == "darwin":
-        # `security` 를 PATH 앞쪽의 대역으로 가린다. 블롭이 없으면 실패하는 대역이다.
-        stub_dir = secrets_dir.parent / "bin"
-        stub_dir.mkdir(parents=True, exist_ok=True)
-        stub = stub_dir / "security"
-        if keychain_blob is None:
-            stub.write_text("#!/bin/sh\nexit 44\n", encoding="utf-8")
-        else:
-            stub.write_text(f"#!/bin/sh\nprintf '%s' '{keychain_blob}'\n", encoding="utf-8")
-        stub.chmod(0o755)
-        env["PATH"] = f"{stub_dir}:{env['PATH']}"
-    else:
-        source = home / ".claude" / ".credentials.json"
-        if keychain_blob is not None:
-            source.parent.mkdir(parents=True, exist_ok=True)
-            source.write_text(keychain_blob, encoding="utf-8")
-        env["CLAUDE_CREDENTIALS_PATH"] = str(source)
-
-    return subprocess.run(
-        ["bash", str(SYNC_SCRIPT)], env=env, capture_output=True, text=True, check=False
-    )
-
-
-def test_동기화는_호스트의_기존_자격증명을_꺼내온다(tmp_path: Path):
+    host_dir = tmp_path / "host-codex"
     secrets_dir = tmp_path / "secrets"
+    host_dir.mkdir()
 
-    result = _run_sync(secrets_dir, home=tmp_path / "home", keychain_blob=SAMPLE_BLOB)
+    if host_auth is not None:
+        (host_dir / "auth.json").write_text(host_auth, encoding="utf-8")
+    if existing_copy is not None:
+        secrets_dir.mkdir()
+        (secrets_dir / "auth.json").write_text(existing_copy, encoding="utf-8")
 
-    assert result.returncode == 0, result.stderr
-    target = secrets_dir / ".credentials.json"
-    assert json.loads(target.read_text(encoding="utf-8"))["claudeAiOauth"]["accessToken"]
+    body = SYNC_SCRIPT.read_text(encoding="utf-8")
+    body = body.replace(HOST_MOUNT, str(host_dir)).replace(SECRETS_MOUNT, str(secrets_dir))
+    script = tmp_path / "sync.sh"
+    script.write_text(body, encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh", str(script)], capture_output=True, text=True, check=False, cwd=tmp_path
+    )
+    return result, secrets_dir
+
+
+@pytestmark_posix
+def test_동기화는_호스트의_기존_자격증명을_꺼내온다(tmp_path: Path):
+    result, secrets_dir = _run_sync(tmp_path, host_auth=SAMPLE_BLOB, existing_copy=None)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    target = secrets_dir / "auth.json"
+    assert json.loads(target.read_text(encoding="utf-8"))["tokens"]["access_token"] == "test-access"
     # 자격증명 파일이므로 소유자 외에는 아무도 못 읽어야 한다.
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert stat.S_IMODE(secrets_dir.stat().st_mode) == 0o700
 
 
+@pytestmark_posix
 def test_동기화는_자격증명이_없어도_기동을_막지_않는다(tmp_path: Path):
     """인증 부재가 기동을 막으면 안 된다.
 
-    스크립트가 0이 아닌 코드로 끝나면 `make up` 이 컨테이너를 띄우기 전에 멈춘다.
-    자격증명이 없는 평가자 환경에서 서비스가 아예 뜨지 않게 되므로 실패로 끝내지 않는다.
+    `api` 가 `service_completed_successfully` 로 `auth` 에 의존한다. 스크립트가 0이 아닌
+    코드로 끝나면 자격증명이 없는 평가자 환경에서 **서비스가 아예 뜨지 않는다.**
     """
-    secrets_dir = tmp_path / "secrets"
+    result, secrets_dir = _run_sync(tmp_path, host_auth=None, existing_copy=None)
 
-    result = _run_sync(secrets_dir, home=tmp_path / "home", keychain_blob=None)
-
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
     # 마운트 지점은 자격증명이 없어도 있어야 한다. 없으면 도커가 root 소유로 만든다.
     assert secrets_dir.is_dir()
-    assert not (secrets_dir / ".credentials.json").exists()
+    assert not (secrets_dir / "auth.json").exists()
+
+
+@pytestmark_posix
+def test_동기화는_호스트에_파일이_없다고_기존_사본을_지우지_않는다(tmp_path: Path):
+    """호스트에서 로그아웃했거나 홈 경로가 안 잡힌 경우까지 인증을 잃으면 안 된다.
+
+    "없으면 지운다"로 짜기 쉬운 자리다. 한 번 성공한 뒤 호스트 상태가 바뀌었다는 이유로
+    돌던 서비스의 LLM 기능이 죽는 것은 회귀다.
+    """
+    result, secrets_dir = _run_sync(tmp_path, host_auth=None, existing_copy=SAMPLE_BLOB)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (secrets_dir / "auth.json").read_text(encoding="utf-8") == SAMPLE_BLOB
 
 
 def test_동기화는_새_토큰을_발급하지_않는다():
     """design 결정 5-1의 제약을 스크립트 본문에 고정한다.
 
-    `claude setup-token`·`claude login` 은 새 토큰을 발급하므로 "기존 자격증명 재사용"
-    제약을 어긴다. 편의를 위해 슬쩍 들어가기 쉬운 명령이라 회귀로 막아둔다.
+    `codex login` 은 새 토큰을 발급하므로 "기존 자격증명 재사용" 제약을 어긴다. 편의를
+    위해 슬쩍 들어가기 쉬운 명령이라 회귀로 막아둔다.
     """
     body = SYNC_SCRIPT.read_text(encoding="utf-8")
     executable_lines = [
         line for line in body.splitlines() if line.strip() and not line.strip().startswith("#")
     ]
 
-    assert not [
-        line for line in executable_lines if "setup-token" in line or "claude login" in line
-    ]
+    assert not [line for line in executable_lines if "codex login" in line]
+
+
+def _compose() -> dict:
+    import yaml
+
+    return yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))["services"]
+
+
+def test_compose_는_자격증명_경로를_api_까지_연결한다():
+    """자격증명이 붙는 경로는 파이썬 코드가 아니라 이 YAML 에만 적혀 있다.
+
+    `auth` 가 꺼내 둔 `.secrets/codex` 를 `api` 가 Codex CLI 의 홈으로 마운트하지 않으면,
+    동기화는 성공하는데 CLI 는 인증되지 않은 상태로 뜬다. 어느 파이썬 테스트도 그걸
+    알아채지 못하는 자리라 여기서 계약으로 고정한다.
+    """
+    services = _compose()
+
+    auth_mounts = services["auth"]["volumes"]
+    assert f"./.secrets/codex:{SECRETS_MOUNT}" in auth_mounts
+    assert any(mount.endswith(f":{HOST_MOUNT}:ro") for mount in auth_mounts), (
+        "호스트 ~/.codex 가 읽기 전용으로 붙지 않았다"
+    )
+    assert "./scripts/sync-credentials.sh:/sync.sh:ro" in auth_mounts
+
+    # `:ro` 로 붙이면 만료된 토큰을 CLI 가 갱신하지 못해 그 시점에 인증이 끊긴다.
+    assert "./.secrets/codex:/home/app/.codex" in services["api"]["volumes"]
+
+
+def test_compose_는_인증_준비가_끝난_뒤에_api_를_띄운다():
+    services = _compose()
+
+    assert services["api"]["depends_on"]["auth"] == {"condition": "service_completed_successfully"}
+    # 한 번 돌고 끝나야 하는 서비스다. 재시작이 붙으면 위 조건이 영원히 성립하지 않는다.
+    assert services["auth"]["restart"] == "no"
