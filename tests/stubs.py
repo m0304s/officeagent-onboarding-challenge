@@ -9,7 +9,8 @@ import asyncio
 import hashlib
 import math
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 
 from app.core.documents import (
     Chunk,
@@ -402,6 +403,86 @@ def _matches(
         and (revision is None or chunk.revision == revision)
         and (index_signature is None or chunk.index_signature == index_signature)
     )
+
+
+@dataclass(frozen=True)
+class GenerationTurn:
+    """생성 시도 **한 번**이 어떻게 흘러가는지 적은 대본.
+
+    시도마다 대본이 다를 수 있어야 하는 이유가 재시도 정책이다 — "첫 시도는 실패하고 두
+    번째는 성공한다"를 만들 수 없으면 스펙 시나리오의 절반이 표현되지 않는다.
+
+    - `chunks`: 내보낼 조각. **글자 그대로** 나간다. 판정 줄이 조각 경계에 걸치는 모양도
+      여기서 그대로 만든다.
+    - `raises`: 조각을 다 내보낸 **뒤에** 던진다. 비워 두면 정상 종료다. 조각 목록과 함께
+      주면 "조각을 내보낸 뒤 죽는" 경로가 되고, 조각 없이 주면 "조각이 나가기 전에 죽는"
+      경로가 된다 — 재시도 가부가 정확히 그 둘로 갈린다.
+    - `delay`: 조각 하나를 내보내기 **전**의 대기. 첫 조각까지의 지연도 이 값이라
+      "근거가 생성보다 먼저 도착한다"와 하트비트를 만드는 데 그대로 쓴다.
+
+    **매달리는 시도는 표현하지 않는다.** 한 시도의 시간 상한은 어댑터의 몫이라 서비스가
+    보는 것은 이미 `LlmTimeout` 으로 정규화된 실패뿐이다. 여기서 실제로 매달리게 하면
+    서비스 테스트가 어댑터의 책임을 다시 검증하면서 실행 시간만 늘어난다.
+    """
+
+    chunks: tuple[str, ...] = ()
+    raises: Exception | None = None
+    delay: float = 0.0
+
+
+@dataclass
+class ScriptedGenerator:
+    """대본대로 조각을 흘리고 **호출 횟수를 세는** 페이크 생성기.
+
+    이 대역이 이 change 테스트 하네스의 핵심이다. 스펙의 THEN 상당수가 "생성기 호출 횟수가
+    `2`", "한 번도 호출되지 않는다"처럼 **호출의 유무와 수**로 적혀 있는데, 그 사실은 응답
+    어디에도 드러나지 않아 카운터가 아니면 관측할 방법이 없다.
+
+    대본이 소진되면 **마지막 대본을 반복한다.** "모든 시도가 실패한다"를 대본 하나로 쓸 수
+    있게 하려는 것이고, 그 경우 실제 시도 수를 정하는 것은 대본 길이가 아니라 설정된 최대
+    시도 수여야 한다 — 대본으로 시도 수를 제한하면 정책이 아니라 대역을 재게 된다.
+    """
+
+    turns: tuple[GenerationTurn, ...] = (GenerationTurn(),)
+    #: 시도 횟수. `generate` 가 불린 시점에 오른다 — 순회 시작 시점에 세면 호출해 놓고
+    #: 읽지 않은 경로(있어서는 안 되는 경로)가 카운터에 잡히지 않는다.
+    calls: int = 0
+    #: 지금까지 내보낸 조각 수. 이벤트 하나가 **몇 번째 조각에서** 나왔는지를 재는 창이라,
+    #: "판정이 확정되기 전에는 이벤트가 나가지 않는다"를 시각이 아니라 순서로 단언한다.
+    emitted_chunks: int = 0
+    #: 아직 끝나지 않은 시도 수. 취소·타임아웃 뒤에 `0` 이 아니면 그 시도가 만든 자원이
+    #: 정리되지 않았다는 뜻이다 — 실물에서는 그 자리에 프로세스가 남는다.
+    open_turns: int = 0
+    #: 동시에 열려 있던 시도의 최대치. 동시 생성 상한은 **넘지 않았다는 사실**로만
+    #: 관측되는데, 상한에 걸린 요청이 실패가 아니라 대기라서 성패로는 드러나지 않는다.
+    peak_open_turns: int = 0
+    prompts: list[str] = field(default_factory=list)
+    #: 시도마다 받은 시간 상한. 서비스가 정책(횟수·백오프)만 들고 상한은 그대로 어댑터에
+    #: 넘기는지 확인하는 데 쓴다.
+    timeouts: list[float] = field(default_factory=list)
+
+    def generate(self, prompt: str, *, timeout_seconds: float) -> AsyncIterator[str]:
+        turn = self.turns[min(self.calls, len(self.turns) - 1)]
+        self.calls += 1
+        self.prompts.append(prompt)
+        self.timeouts.append(timeout_seconds)
+        return self._run(turn)
+
+    async def _run(self, turn: GenerationTurn) -> AsyncIterator[str]:
+        self.open_turns += 1
+        self.peak_open_turns = max(self.peak_open_turns, self.open_turns)
+        try:
+            for chunk in turn.chunks:
+                if turn.delay:
+                    await asyncio.sleep(turn.delay)
+                self.emitted_chunks += 1
+                yield chunk
+            if turn.raises is not None:
+                raise turn.raises
+        finally:
+            # 취소(순회 중단)도 여기를 지난다. 실물 어댑터가 `finally` 에서 턴을 중단하고
+            # 세션을 회수하는 자리와 같은 지점이라, 정리 누락이 같은 모양으로 드러난다.
+            self.open_turns -= 1
 
 
 class StubDocumentRegistry:
