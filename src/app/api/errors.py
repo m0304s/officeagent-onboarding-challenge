@@ -66,6 +66,12 @@ _CODE_TO_STATUS: dict[ErrorCode, int] = {
     ErrorCode.EMPTY_QUERY: HTTP_UNPROCESSABLE_ENTITY,
     ErrorCode.QUERY_TOO_LONG: HTTP_UNPROCESSABLE_ENTITY,
     ErrorCode.INVALID_TOP_K: HTTP_UNPROCESSABLE_ENTITY,
+    # 생성 실패. **오늘 이 매핑을 타는 경로는 없다** — 둘 다 스트림이 열린 뒤에 나므로
+    # SSE 의 `error` 이벤트로만 나간다. 그럼에도 등록해 두는 이유는 표에 없는 코드가
+    # `500` 이 되는 기본값 때문이다: 나중에 비스트리밍 경로가 생기면 아무도 이 표를
+    # 고칠 생각을 하지 않은 채 조용히 틀린 상태가 나간다.
+    ErrorCode.LLM_UNAVAILABLE: HTTP_SERVICE_UNAVAILABLE,
+    ErrorCode.LLM_UNAUTHENTICATED: HTTP_SERVICE_UNAVAILABLE,
 }
 
 

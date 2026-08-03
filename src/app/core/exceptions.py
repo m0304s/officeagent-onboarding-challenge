@@ -34,6 +34,18 @@ class ErrorCode(StrEnum):
     QUERY_TOO_LONG = "query_too_long"
     INVALID_TOP_K = "invalid_top_k"
 
+    # 답변 생성 (add-answer-generation)
+    #
+    # **둘을 나누는 이유는 소비자가 할 일이 다르기 때문이다.** 앞은 재시도나 상한 조정이고
+    # 뒤는 자격증명 주입 경로 확인이다. 뭉치면 평가자가 `.secrets/codex/auth.json` 을
+    # 들여다볼 이유를 찾지 못한다 — 인증 부재는 평가자 환경에서 가장 있을 법한 실패다.
+    #
+    # **타임아웃에는 코드를 주지 않는다.** 타임아웃은 그 자체로 스트림을 끝내지 않으므로
+    # 종료 코드가 될 자격이 없다. 스트림을 끝내는 사건은 "시도가 다 떨어졌다"이고, 마지막
+    # 실패가 시간 초과였다는 사실은 `error` 이벤트의 사유가 말한다.
+    LLM_UNAVAILABLE = "llm_unavailable"
+    LLM_UNAUTHENTICATED = "llm_unauthenticated"
+
 
 class AppError(Exception):
     """모든 도메인 예외의 기반.
@@ -156,6 +168,45 @@ class InvalidTopK(AppError):
     """
 
     code = ErrorCode.INVALID_TOP_K
+
+
+class LlmTimeout(AppError):
+    """생성 한 시도가 시간 상한을 넘겼다.
+
+    **이 예외가 곧 스트림의 끝은 아니다.** 서비스가 남은 시도로 다시 부를 수 있고, 소진된
+    뒤에야 `LLM_UNAVAILABLE` 로 끝난다 — 그래서 코드가 `LlmGenerationFailed` 와 같다.
+    구분이 필요한 자리는 `error` 이벤트의 사유이지 오류 코드가 아니다.
+
+    어댑터는 이것을 던지기 전에 그 시도가 만든 자원을 정리한다. 무엇을 정리하는지는 표면이
+    아는 일이라 정의가 여기 있지 않다.
+    """
+
+    code = ErrorCode.LLM_UNAVAILABLE
+
+
+class LlmGenerationFailed(AppError):
+    """생성이 실패했다 — 시간 초과와 인증 부재를 **뺀** 나머지 전부.
+
+    세션 사망, 핸드셰이크 실패, 출력 파싱 실패가 전부 여기로 정규화된다. 셋을 더 잘게
+    나누지 않는 이유는 **서비스의 처분이 같기 때문이다** — 전부 재시도 대상이다. 원인을
+    가르는 일은 로그가 하고, 오류 코드는 소비자의 분기 수만큼만 있으면 된다.
+    """
+
+    code = ErrorCode.LLM_UNAVAILABLE
+
+
+class LlmUnauthenticated(AppError):
+    """생성기가 인증되지 않았다 — 자격증명이 없거나 만료됐다.
+
+    **재시도 대상이 아니다.** 백오프를 몇 번 돌아도 자격증명이 생기지 않는다. 같은 논리가
+    CLI 자체의 재시도에도 적용되므로, 어댑터는 그것이 "재시도하겠다"고 알려 와도 기다리지
+    않고 즉시 끊는다.
+
+    기동 조건도 아니다. 인증 부재는 질문이 들어온 시점에만 드러나야 하고, 기동과 헬스는
+    그것과 무관하게 성립한다(`tests/test_boot.py`).
+    """
+
+    code = ErrorCode.LLM_UNAUTHENTICATED
 
 
 class StorageUnavailable(AppError):

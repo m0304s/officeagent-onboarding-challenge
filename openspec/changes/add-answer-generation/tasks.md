@@ -63,25 +63,44 @@
 
 > 부품이 셋이다(design 결정 9). `session.py`가 프로세스 하나와 JSON-RPC를, `pool.py`가 여러 세션의 수명을, `codex.py`가 턴 하나를 맡는다. **`AnswerGenerator` 계약은 바뀌지 않는다** — `services/`도 `specs/`도 손대지 않는 것이 이 장의 합격 조건이다.
 
-- [ ] 3.1 `adapters/protocols.py`에 `AnswerGenerator` 추가 — `generate(prompt, *, timeout_seconds) -> AsyncIterator[str]`. 기존 프로토콜은 건드리지 않는다
-- [ ] 3.2 `core/exceptions.py`에 `ErrorCode.LLM_UNAVAILABLE`·`LLM_UNAUTHENTICATED`와 `LlmTimeout`·`LlmUnauthenticated`·`LlmGenerationFailed` 추가 (기존 값 불변)
-- [ ] 3.3 `api/errors.py`의 `_CODE_TO_STATUS`에 두 코드를 `503`으로 등록한다 (오늘 타는 경로는 없다 — 이유는 design 결정 12)
-- [ ] 3.4 `adapters/llm/session.py` — 프로세스 기동과 핸드셰이크. `codex app-server`를 띄우고 `initialize` → `initialized`. **환경은 상속하지 않고 `HOME`·`PATH`·`CODEX_HOME`만** 넘긴다. 기동+핸드셰이크 상한을 건다
-- [ ] 3.5 `session.py` — JSON-RPC 송수신. stdout을 **줄 단위로** 읽는 백그라운드 태스크가 `id` 있는 메시지는 대기 중인 응답에 꽂고, `method` 있는 메시지는 **`params.threadId`로 갈라** 큐에 넣는다
-- [ ] 3.6 `session.py` — 생존 판정과 회수. stdout EOF·프로세스 종료를 사망으로 본다. 회수는 `terminate()` → 유예 → `kill()` → **반드시 `wait()`**
-- [ ] 3.7 `session.py` — stderr를 별도로 소비해 로그에만 남긴다(응답에 싣지 않는다). **세션이 오래 살아 버퍼가 쌓이므로 읽지 않으면 어느 순간 조용히 멎는다**
-- [ ] 3.8 `adapters/llm/pool.py` — 지연 기동 풀. 상한은 `qa_concurrency`. 상한에 걸리면 **실패가 아니라 대기**. 빌려줄 때와 반납할 때 **양쪽에서 생존을 확인**하고, 죽었으면 폐기 후 새로 기동한다
-- [ ] 3.9 `adapters/llm/codex.py` — 턴 하나. 세션을 빌려 `thread/start`(빈 임시 `cwd`·`sandbox: read-only`·`approvalPolicy: never`·`ephemeral: true`) → `turn/start`(프롬프트는 `input`, argv 아님) → 델타 yield
-- [ ] 3.10 `codex.py` — 델타를 **글자 그대로** yield 한다. `item.completed`의 완성본은 출력에 쓰지 않되, **그 아이템에 델타가 0건일 때만** 한 번 yield 한다(델타 회귀 시 빈 답변이 아니라 exec 시절 동작으로 degrade)
-- [ ] 3.11 `codex.py` — 타임아웃. 상한 초과 시 `turn/interrupt` → 유예 안에 `turn/completed`가 오면 세션 반납, 아니면 폐기. 어느 쪽이든 `LlmTimeout`. **`finally`에 두어 취소(순회 중단)에도 같은 정리가 돈다**
-- [ ] 3.12 `codex.py` — 인증 판정. `error` 알림의 `codexErrorInfo...httpStatusCode == 401`이면 **`willRetry`와 무관하게 즉시** `turn/interrupt` + `LlmUnauthenticated`. `willRetry`는 401이 **아닌** 오류에만 적용해 로그로만 남긴다
-- [ ] 3.13 `codex.py` — 종료 판정. `turn/failed`는 **없다**. `turn/completed`의 `turn.status`를 보고 실패면 `LlmGenerationFailed`
-- [ ] 3.14 반납 불변식 — `turn/completed`를 받았을 때만 반납하고 **그 외에는 전부 폐기**. 애매한 세션을 반납하면 다음 요청이 이전 턴의 델타를 받는다
-- [ ] 3.15 지연 초기화 확인 — 어댑터·풀 **생성**이 CLI를 건드리지 않는다. 기존 `tests/test_boot.py`가 계속 통과하는 것이 합격 조건
-- [ ] 3.16 `tests/fake_app_server.py` — 같은 줄 단위 JSON-RPC를 말하는 가짜 서버. 인자로 망가지는 방식을 지시받는다: `--no-handshake`·`--die-mid-turn`·`--hang`·`--ignore-interrupt`·`--auth-401`·`--slow-deltas N`
-- [ ] 3.17 `tests/test_llm_session.py` — 1B.5의 저장된 알림 샘플로 파싱 검증: 델타에서 답변 텍스트가 나오는가, 401 샘플이 `LlmUnauthenticated`가 되는가, **깨진 JSON 줄이 파서를 죽이지 않는가**
-- [ ] 3.18 `tests/test_llm_pool.py` — 가짜 서버로 수명 검증: 핸드셰이크 실패, 턴 도중 사망, 타임아웃 시 자식이 남지 않는가, `--ignore-interrupt`에서 세션이 폐기되는가, 순회를 중간에 멈추면 정리되는가, 상한에 걸린 요청이 **실패하지 않고 대기**하는가
-- [ ] 3.19 `tests/test_llm_pool.py` — 재사용: 두 번째 요청이 새 프로세스를 띄우지 않는가(기동 횟수 카운터), 죽은 세션이 **빌려지지 않는가**
+- [x] 3.1 `adapters/protocols.py`에 `AnswerGenerator` 추가 — `generate(prompt, *, timeout_seconds) -> AsyncIterator[str]`. 기존 프로토콜은 건드리지 않는다
+      → 계약 한 줄이 그대로 들어갔다. docstring에 "쪼개지도 합치지도 않는다"와 "취소는 순회 종료"를 못 박았다 — 계약을 열어 둔 값을 이미 회수했다는 사실(exec → app-server 전환에 이 줄이 안 바뀜)도 함께 적었다
+- [x] 3.2 `core/exceptions.py`에 `ErrorCode.LLM_UNAVAILABLE`·`LLM_UNAUTHENTICATED`와 `LlmTimeout`·`LlmUnauthenticated`·`LlmGenerationFailed` 추가 (기존 값 불변)
+      → `LlmTimeout`과 `LlmGenerationFailed`가 **같은 코드**를 쓴다(`llm_unavailable`). 타임아웃은 그 자체로 스트림을 끝내지 않아 종료 코드가 될 자격이 없고, 구분이 필요한 자리는 `error` 이벤트의 사유다
+- [x] 3.3 `api/errors.py`의 `_CODE_TO_STATUS`에 두 코드를 `503`으로 등록한다 (오늘 타는 경로는 없다 — 이유는 design 결정 12)
+      → 표에 "오늘 이 매핑을 타는 경로는 없다"는 사실과 등록하는 이유(표에 없는 코드는 `500`)를 주석으로 남겼다
+- [x] 3.4 `adapters/llm/session.py` — 프로세스 기동과 핸드셰이크. `codex app-server`를 띄우고 `initialize` → `initialized`. **환경은 상속하지 않고 `HOME`·`PATH`·`CODEX_HOME`만** 넘긴다. 기동+핸드셰이크 상한을 건다
+      → `SessionLaunch.env`에 **기본값을 두지 않아** 상속 금지를 구조로 만들었다(값을 고르는 일은 6.2 배선의 몫 — `core/`·어댑터가 환경을 직접 읽는 것은 린트로도 막혀 있다). 설계에 없던 것 하나: `limit=4MiB`. 기본 64 KiB로는 app-server가 **되돌려 주는 `userMessage`**(우리 프롬프트 전문, 최악 30 KB대)에서 `readline`이 죽는데, 그 실패는 큰 문맥에서만 난다
+- [x] 3.5 `session.py` — JSON-RPC 송수신. stdout을 **줄 단위로** 읽는 백그라운드 태스크가 `id` 있는 메시지는 대기 중인 응답에 꽂고, `method` 있는 메시지는 **`params.threadId`로 갈라** 큐에 넣는다
+      → 1B.5가 경고한 대로 **`threadId` 없는 알림은 큐에 넣지 않고 로그로만** 남긴다. 넣으면 턴 하나가 남의 알림을 읽는다. 요청 상한을 `request`가 아니라 **호출자**가 걸게 했다 — `thread/start`와 `turn/start`가 한 시도의 예산 하나를 나눠 쓰므로, 요청마다 상한을 주면 합이 예산을 넘는다
+- [x] 3.6 `session.py` — 생존 판정과 회수. stdout EOF·프로세스 종료를 사망으로 본다. 회수는 `terminate()` → 유예 → `kill()` → **반드시 `wait()`**
+      → 사망을 **기다리는 모두에게** 알린다(대기 중인 응답 + 열려 있는 큐에 `None` 센티널). 안 그러면 즉시 알 수 있는 사실이 각자의 타임아웃으로 둔갑해 재시도가 잘못된 사유로 돈다. `wait()` 누락은 3.18의 PID 단언이 잡는다 — 좀비는 신호 0에 여전히 응답한다
+- [x] 3.7 `session.py` — stderr를 별도로 소비해 로그에만 남긴다(응답에 싣지 않는다). **세션이 오래 살아 버퍼가 쌓이므로 읽지 않으면 어느 순간 조용히 멎는다**
+      → 마지막 20줄만 들고 있다(무한정 들고 있으면 오래 사는 세션에서 그 자체가 누수다). 폐기 시 마지막 한 줄만 디버그 로그로 남긴다
+- [x] 3.8 `adapters/llm/pool.py` — 지연 기동 풀. 상한은 `qa_concurrency`. 상한에 걸리면 **실패가 아니라 대기**. 빌려줄 때와 반납할 때 **양쪽에서 생존을 확인**하고, 죽었으면 폐기 후 새로 기동한다
+      → 자리 반납을 `discard`의 `finally`에 두었다. 프로세스 하나를 못 죽인 대가가 "그 뒤로 동시 생성이 하나 줄어든 서비스"가 되면 안 된다 — 상한이 조용히 0으로 수렴하는 경로를 닫았다
+- [x] 3.9 `adapters/llm/codex.py` — 턴 하나. 세션을 빌려 `thread/start`(빈 임시 `cwd`·`sandbox: read-only`·`approvalPolicy: never`·`ephemeral: true`) → `turn/start`(프롬프트는 `input`, argv 아님) → 델타 yield
+      → **구독이 `turn/start`보다 먼저**여야 한다(뒤로 가면 그 사이 델타가 주인 없는 알림으로 버려진다 — 첫 글자가 사라지는 형태로만 드러난다). 빈 작업 디렉터리는 **첫 호출에** 만든다: 배선이 어댑터를 만드는 것만으로 파일시스템을 건드리면 3.15가 깨진다
+- [x] 3.10 `codex.py` — 델타를 **글자 그대로** yield 한다. `item.completed`의 완성본은 출력에 쓰지 않되, **그 아이템에 델타가 0건일 때만** 한 번 yield 한다(델타 회귀 시 빈 답변이 아니라 exec 시절 동작으로 degrade)
+      → 판정 전부를 `TurnReader`라는 **순수 상태 기계**에 모았다(`VerdictSplitter`와 같은 배치). 프로세스도 큐도 모르므로 3.17이 저장된 실물 알림을 그대로 먹여 회귀를 고정한다. `item.type != "agentMessage"` 필터가 없으면 우리 프롬프트가 답변 자리에 앉는다
+- [x] 3.11 `codex.py` — 타임아웃. 상한 초과 시 `turn/interrupt` → 유예 안에 `turn/completed`가 오면 세션 반납, 아니면 폐기. 어느 쪽이든 `LlmTimeout`. **`finally`에 두어 취소(순회 중단)에도 같은 정리가 돈다**
+      → 취소 경로에 함정이 하나 있었다 — 취소된 요청의 `finally`에서 그냥 `await`하면 그 대기도 즉시 취소되어 **중단 요청을 보내기도 전에** 정리가 끝난다. `shield`로 감쌌다(취소는 받아들이되 정리는 끝까지 돈다). `turn/interrupt`는 응답을 기다리지 않는다 — 중단의 성공은 뒤따라오는 `turn/completed`로 관측되므로 기다리면 같은 유예를 두 번 쓴다
+- [x] 3.12 `codex.py` — 인증 판정. `error` 알림의 `codexErrorInfo...httpStatusCode == 401`이면 **`willRetry`와 무관하게 즉시** `turn/interrupt` + `LlmUnauthenticated`. `willRetry`는 401이 **아닌** 오류에만 적용해 로그로만 남긴다
+      → 변형 이름(`responseStreamDisconnected`)을 상수로 박지 않고 한 겹 안의 값들을 훑는다 — 실험 단계 표면에서 가장 먼저 바뀔 부분이고, 우리가 아는 사실은 "상태 코드가 한 겹 안에 있다"까지다. `codexErrorInfo`가 문자열 `"other"`로 오는 회차를 3.17이 직접 덮는다
+- [x] 3.13 `codex.py` — 종료 판정. `turn/failed`는 **없다**. `turn/completed`의 `turn.status`를 보고 실패면 `LlmGenerationFailed`
+      → 실패한 턴도 `completed = True`로 표시한다. 반납의 조건은 성패가 아니라 **확실히 끝났는가**이기 때문이다(3.14)
+- [x] 3.14 반납 불변식 — `turn/completed`를 받았을 때만 반납하고 **그 외에는 전부 폐기**. 애매한 세션을 반납하면 다음 요청이 이전 턴의 델타를 받는다
+      → `_settle` 한 곳에 가뒀다 — 정상 종료·타임아웃·취소·인증 실패가 전부 같은 함수를 지난다. 경로마다 판정을 복사하면 그중 하나만 관대해져도 답변이 섞인다
+- [x] 3.15 지연 초기화 확인 — 어댑터·풀 **생성**이 CLI를 건드리지 않는다. 기존 `tests/test_boot.py`가 계속 통과하는 것이 합격 조건
+      → `test_boot.py` 통과(전체 578 passed). 여기에 더해 "풀과 생성기를 만들어도 기동 횟수가 0"을 3.18의 카운터로 직접 단언했다 — 배선은 6.2가 붙이므로, 그때 이 성질이 깨지면 이 테스트가 먼저 깨진다
+- [x] 3.16 `tests/fake_app_server.py` — 같은 줄 단위 JSON-RPC를 말하는 가짜 서버. 인자로 망가지는 방식을 지시받는다: `--no-handshake`·`--die-mid-turn`·`--hang`·`--ignore-interrupt`·`--auth-401`·`--slow-deltas N`
+      → 목록 전부 + `--pidfile`. 핸드셰이크에 실패한 회차는 **파이썬 쪽에 세션 객체가 남지 않아** 자식 회수를 확인할 통로가 그것뿐이다. 실물처럼 `threadId` 없는 `thread/started`를 함께 보내 3.5의 라우팅 규칙을 실제로 태운다
+- [x] 3.17 `tests/test_llm_session.py` — 1B.5의 저장된 알림 샘플로 파싱 검증: 델타에서 답변 텍스트가 나오는가, 401 샘플이 `LlmUnauthenticated`가 되는가, **깨진 JSON 줄이 파서를 죽이지 않는가**
+      → 목록 전부 + 1B.5가 경고한 함정 셋(프롬프트가 `userMessage`로 되돌아옴 / `codexErrorInfo`가 문자열 / `turn/failed`는 없음)을 각각 한 테스트로. **401을 몇 번째 알림에서 알 수 있었는가**를 단언한다 — 초를 재면 기계 속도에 묶이지만 순서는 프로토콜의 성질이라, "CLI에 맡기면 19초, 첫 401을 보면 2초"가 회귀로 고정된다
+- [x] 3.18 `tests/test_llm_pool.py` — 가짜 서버로 수명 검증: 핸드셰이크 실패, 턴 도중 사망, 타임아웃 시 자식이 남지 않는가, `--ignore-interrupt`에서 세션이 폐기되는가, 순회를 중간에 멈추면 정리되는가, 상한에 걸린 요청이 **실패하지 않고 대기**하는가
+      → 목록 전부 + "환경을 상속하지 않는다"(가짜 서버가 `initialize` 응답에 자기 환경을 되비쳐 주고, 부모에 심어 둔 센티널이 거기 없음을 단언). 타임아웃 회차는 **프로세스가 살아 있어야** 통과한다 — 상한이 세션을 죽이지 않는다는 결정이 테스트로 고정됐다. 29건 전부 구독·네트워크 없이 3.5초
+- [x] 3.19 `tests/test_llm_pool.py` — 재사용: 두 번째 요청이 새 프로세스를 띄우지 않는가(기동 횟수 카운터), 죽은 세션이 **빌려지지 않는가**
+      → 기동 횟수가 재사용을 관측하는 **유일한** 창이다(두 번째가 빨랐다는 것만으로는 프로세스를 다시 띄웠는지 알 수 없다). 상한 대기 테스트도 같은 카운터로 판정한다 — 상한 1에 두 요청이 모두 성공하고 기동이 1회면 차례로 썼다는 뜻이다
 
 ## 4. QA 서비스 — 오케스트레이션과 정책
 

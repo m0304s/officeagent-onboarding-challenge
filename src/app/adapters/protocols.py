@@ -10,7 +10,7 @@
 하면 계층이 역전된다.
 """
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Protocol, runtime_checkable
 
 from app.core.documents import (
@@ -206,6 +206,36 @@ class VectorStore(Protocol):
         `versions` 가 비면 저장소를 건드리지 않고 빈 목록을 돌려준다.
         """
         ...
+
+
+@runtime_checkable
+class AnswerGenerator(Protocol):
+    """프롬프트 문자열 하나를 받아 답변 조각을 흘려보낸다.
+
+    **문자열 하나를 받는다 — 문맥 목록이 아니라.** 프롬프트를 조립하는 규칙은 도메인
+    지식이고 `core/prompting.py` 에 있다. 어댑터가 청크를 받아 조립하면 프롬프트가 생성기
+    구현마다 하나씩 생기고, 프롬프트 회귀 테스트가 어느 어댑터의 것인지 정해야 한다.
+
+    **조각을 yield 한다 — 완성본을 반환하지 않는다.** 계약이 "0개 이상"이라 표면이 토큰
+    델타를 주든 메시지를 통째로 주든 상위 계층이 바뀌지 않는다. 실제로 그 값을 회수했다:
+    구현을 `codex exec` 에서 `codex app-server` 로 바꿀 때 이 줄은 그대로였다.
+
+    **조각을 인위적으로 쪼개거나 합치지 않는다.** 쪼개면 없는 진행을 만들어 내는 연출이고,
+    합치면 실제로 앞당겨진 도착을 되돌리는 일이다.
+
+    **취소는 순회 종료로 표현된다.** 소비자가 `aclose` 하면 구현체가 `finally` 에서 그
+    시도가 만든 자원을 정리한다. 별도의 `cancel()` 을 두지 않는 이유는 그 메서드는 호출을
+    잊을 수 있지만 순회 종료는 잊을 수 없기 때문이다.
+
+    `timeout_seconds` 는 **한 시도의 상한**이다. 시도 횟수와 백오프는 정책이라 서비스가
+    들고 있고, 여기 있는 것은 "이 시도를 언제 끊는가"뿐이다.
+
+    구현체는 실패를 자기 경계에서 도메인 예외 셋으로 정규화한다 — `LlmTimeout`·
+    `LlmUnauthenticated`·`LlmGenerationFailed`. `asyncio.TimeoutError` 나 프로세스 관련
+    예외가 서비스까지 새면 계층 경계가 무의미해지고, 재시도 정책이 어댑터의 사정을 알게 된다.
+    """
+
+    def generate(self, prompt: str, *, timeout_seconds: float) -> AsyncIterator[str]: ...
 
 
 @runtime_checkable
