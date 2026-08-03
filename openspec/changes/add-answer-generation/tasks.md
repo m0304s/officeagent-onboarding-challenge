@@ -173,21 +173,31 @@
 
 ## 5. API — SSE 엔드포인트
 
-- [ ] 5.1 `api/sse.py` — `QaEvent` → SSE 프레임(`event:`/`data:`/빈 줄) 직렬화와 하트비트 주석(`: keep-alive`) 생성기
-- [ ] 5.2 `api/routes/qa.py` — 요청 모델(`question`, `top_k`). 검증은 `/search`와 **같은 코드·같은 형식**을 쓴다 (`empty_query`·`query_too_long`·`invalid_top_k`·`validation_error`)
-- [ ] 5.3 `POST /qa` — `prepare`를 await 한 뒤 `StreamingResponse`를 만든다. 검증·저장소 실패가 스트림 **밖에서** 상태 코드로 끝나는 것이 이 태스크의 합격 조건
-- [ ] 5.4 하트비트 배선 — 이벤트 사이 간격이 설정값을 넘으면 주석을 내보낸다. 이벤트로 해석되지 않아야 한다
-- [ ] 5.5 클라이언트 연결 종료 시 생성이 중단되고 자식 프로세스가 정리되는지 확인한다
-- [ ] 5.6 `tests/qa_harness.py` — SSE 응답을 이벤트 목록으로 파싱하는 헬퍼(주석은 별도로 센다). 시퀀스 단언이 전부 이 헬퍼 위에 선다
-- [ ] 5.7 `tests/test_qa_api.py` — 성공 경로: `200`, `text/event-stream`, 이벤트 이름 순서, `sources`가 검색 응답과 같은 모양
-- [ ] 5.8 `tests/test_qa_api.py` — 스트림 밖 실패: 빈 질문·상한 초과 질문·상한 초과 `top_k`·저장소 실패가 각각 `422`/`422`/`422`/`503`이고 콘텐츠 타입이 `text/event-stream`이 **아니며**, 생성기가 호출되지 않는다
-- [ ] 5.9 `tests/test_qa_api.py` — `sources`가 생성보다 먼저 도착하는가(생성 지연을 페이크로 만들고 시각 차로 관측), 하트비트가 수신되지만 이벤트 목록에는 없는가
-- [ ] 5.10 `tests/test_concurrency_api.py` 보강 — 생성이 진행 중일 때 `/health`가 생성 완료 전에 응답하는가
+- [x] 5.1 `api/sse.py` — `QaEvent` → SSE 프레임(`event:`/`data:`/빈 줄) 직렬화와 하트비트 주석(`: keep-alive`) 생성기
+      → 이벤트별 pydantic 페이로드(`SourcesPayload`·`AnswerPayload`·`DonePayload`·`ErrorPayload`)로 직렬화한다. 구조를 모델이 아니라 서버가 보증한다는 design 결정 4가 여기서 코드가 됐다
+- [x] 5.2 `api/routes/qa.py` — 요청 모델(`question`, `top_k`). 검증은 `/search`와 **같은 코드·같은 형식**을 쓴다 (`empty_query`·`query_too_long`·`invalid_top_k`·`validation_error`)
+      → "같은 코드"를 문자 그대로 만들려고 상한 판정과 근거 뷰를 `api/queries.py`로 옮겼다. `/search`도 같은 `enforce_query_limits`·`SearchResultView`를 부른다 — 두 벌이면 한쪽만 고쳐지는 날이 온다
+- [x] 5.3 `POST /qa` — `prepare`를 await 한 뒤 `StreamingResponse`를 만든다. 검증·저장소 실패가 스트림 **밖에서** 상태 코드로 끝나는 것이 이 태스크의 합격 조건
+- [x] 5.4 하트비트 배선 — 이벤트 사이 간격이 설정값을 넘으면 주석을 내보낸다. 이벤트로 해석되지 않아야 한다
+      → **설계 함정 하나를 실물이 잡았다.** 하트비트를 끼우려고 `__anext__`마다 태스크를 만들었더니 서비스의 `anyio.CapacityLimiter`가 터졌다(빌린 태스크와 반납하는 태스크가 다르다 — `this borrower isn't holding any of this CapacityLimiter's tokens`). 전송 계층이 서비스의 실행 문맥을 쪼갠 대가라, 서비스 스트림 전체를 **한 태스크**에서 돌려 큐로 옮기는 펌프로 고쳤다
+- [x] 5.5 클라이언트 연결 종료 시 생성이 중단되고 자식 프로세스가 정리되는지 확인한다
+      → `AsgiStream`으로 `http.disconnect`를 실제로 보내 확인. 관측 지점은 `ScriptedGenerator.open_turns == 0` — 실물 어댑터가 그 자리(`finally`)에서 턴을 끊고 세션을 회수하는 것은 `test_llm_pool.py`가 이미 덮는다
+- [x] 5.6 `tests/qa_harness.py` — SSE 응답을 이벤트 목록으로 파싱하는 헬퍼(주석은 별도로 센다). 시퀀스 단언이 전부 이 헬퍼 위에 선다
+      → `parse_sse` → `SseStream(events, comments)`. 여기에 `AsgiStream`도 함께 뒀다 — `httpx.ASGITransport`는 앱이 끝난 뒤에야 응답을 돌려줘서 도착 순서와 연결 종료가 **둘 다 관측되지 않는다**
+- [x] 5.7 `tests/test_qa_api.py` — 성공 경로: `200`, `text/event-stream`, 이벤트 이름 순서, `sources`가 검색 응답과 같은 모양
+      → `sources.results == /search.results` 를 같은 질문으로 직접 대조한다. 조각 이어 붙이기 = `done.answer` 불변식도 전송 형식을 지나 다시 확인
+- [x] 5.8 `tests/test_qa_api.py` — 스트림 밖 실패: 빈 질문·상한 초과 질문·상한 초과 `top_k`·저장소 실패가 각각 `422`/`422`/`422`/`503`이고 콘텐츠 타입이 `text/event-stream`이 **아니며**, 생성기가 호출되지 않는다
+      → 여섯 경로(임베딩 입력 창 초과와 `top_k < 1`을 더했다). 전부 `generator.calls == 0`·`embedder.queries == []`까지 본다
+- [x] 5.9 `tests/test_qa_api.py` — `sources`가 생성보다 먼저 도착하는가(생성 지연을 페이크로 만들고 시각 차로 관측), 하트비트가 수신되지만 이벤트 목록에는 없는가
+      → 시각 차가 아니라 **순서**로 관측한다 — 첫 조각이 `event: sources`로 시작하는 시점에 `generator.emitted_chunks == 0`. 벽시계 단언은 느린 CI에서 흔들린다는 하네스의 기존 규율 그대로다
+- [x] 5.10 `tests/test_concurrency_api.py` 보강 — 생성이 진행 중일 때 `/health`가 생성 완료 전에 응답하는가
 
 ## 6. 배선과 설정
 
-- [ ] 6.1 `config.py` — `qa_llm_timeout_seconds`·`qa_llm_max_attempts`·`qa_llm_retry_backoff_seconds`·`qa_sse_heartbeat_seconds`·`qa_concurrency`·`qa_llm_model`·`qa_llm_interrupt_grace_seconds`·`qa_llm_session_startup_timeout_seconds` 추가. 전부 기본값 있음
-- [ ] 6.2 `main.py` — 세션 풀·생성기와 `QaService` 배선, `/qa` 라우터 등록. **부팅 경로에서 CLI를 건드리지 않는다** — 풀은 지연 기동이라 첫 요청까지 프로세스가 뜨지 않는다. 종료 시 풀의 세션을 회수한다
+- [x] 6.1 `config.py` — `qa_llm_timeout_seconds`·`qa_llm_max_attempts`·`qa_llm_retry_backoff_seconds`·`qa_sse_heartbeat_seconds`·`qa_concurrency`·`qa_llm_model`·`qa_llm_interrupt_grace_seconds`·`qa_llm_session_startup_timeout_seconds` 추가. 전부 기본값 있음
+      → 5장이 설정 없이는 배선되지 않아 6.1·6.2를 함께 당겼다. `llm_environment()`도 여기 있다 — 환경을 읽는 곳이 `config.py` 뿐이라는 규약(`TID251`)이 목록의 위치까지 정한다
+- [x] 6.2 `main.py` — 세션 풀·생성기와 `QaService` 배선, `/qa` 라우터 등록. **부팅 경로에서 CLI를 건드리지 않는다** — 풀은 지연 기동이라 첫 요청까지 프로세스가 뜨지 않는다. 종료 시 풀의 세션을 회수한다
+      → `_CodexLauncher`가 첫 호출까지 `SessionLaunch` 조립(빈 작업 디렉터리 생성 포함)도 미룬다. `create_app(generator=...)`로 테스트가 페이크를 꽂고, 그때는 풀 자체가 만들어지지 않는다. 회수는 lifespan `finally`
 - [ ] 6.3 `tests/test_config.py` 보강 — 새 설정이 기본값으로 로딩되고 환경변수로 덮이는가
 - [ ] 6.4 `tests/test_boot.py` 보강 — 자격증명이 **없는** 상태와 **판독 불가능한** 상태 양쪽에서 기동·`/health` 200이 유지되고, 기동 중 생성기가 호출되지 않는가
 

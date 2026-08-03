@@ -10,9 +10,13 @@
 흔들리는 테스트는 결국 꺼진다.
 """
 
+import asyncio
+import json
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
+from fastapi import FastAPI
 
 from app.core.answers import Citation
 from app.services.qa import (
@@ -138,3 +142,166 @@ def _only(events: list[QaEvent], kind: type) -> QaEvent:
     matched = [event for event in events if isinstance(event, kind)]
     assert len(matched) == 1, f"{kind.__name__} 이 {len(matched)}개다: {names(events)}"
     return matched[0]
+
+
+# ── SSE 응답을 읽는 창 ───────────────────────────────────────────────────
+#
+# 시퀀스 단언이 전부 이 위에 선다. 주석을 **따로 세는 것**이 요점이다 — 하트비트가
+# 이벤트로 해석되면 계약(이벤트 넷, 종료 하나)이 조용히 깨지는데, 파서가 그것을 이벤트로
+# 세어 버리면 그 사고가 테스트를 통과한다.
+
+
+@dataclass(frozen=True)
+class SseEvent:
+    """SSE 프레임 하나 — 이름과 JSON 데이터."""
+
+    name: str
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SseStream:
+    """파싱된 응답 하나. 주석은 이벤트가 아니라 개수로만 남는다."""
+
+    events: tuple[SseEvent, ...]
+    comments: int
+
+    @property
+    def names(self) -> list[str]:
+        return [event.name for event in self.events]
+
+    def only(self, name: str) -> dict[str, Any]:
+        matched = [event.data for event in self.events if event.name == name]
+        assert len(matched) == 1, f"{name} 이 {len(matched)}개다: {self.names}"
+        return matched[0]
+
+    def all_of(self, name: str) -> list[dict[str, Any]]:
+        return [event.data for event in self.events if event.name == name]
+
+
+def parse_sse(payload: str) -> SseStream:
+    """`event:`/`data:`/빈 줄로 나뉜 응답 본문을 이벤트 목록으로.
+
+    `:` 로 시작하는 줄은 주석이라 이벤트가 아니다 — 세기만 하고 목록에 넣지 않는다."""
+    events: list[SseEvent] = []
+    comments = 0
+    name: str | None = None
+    data: list[str] = []
+
+    for line in payload.split("\n"):
+        if line.startswith(":"):
+            comments += 1
+            continue
+        if not line:
+            if name is not None:
+                events.append(SseEvent(name=name, data=json.loads("\n".join(data))))
+            name, data = None, []
+            continue
+        field_name, _, value = line.partition(":")
+        value = value[1:] if value.startswith(" ") else value
+        if field_name == "event":
+            name = value
+        elif field_name == "data":
+            data.append(value)
+
+    assert name is None, f"종료되지 않은 프레임이 남았다: {name}"
+    return SseStream(tuple(events), comments)
+
+
+# ── 스트림을 조각 단위로 받는 창 ─────────────────────────────────────────
+
+
+class AsgiStream:
+    """ASGI 앱을 직접 몰아 응답 조각을 도착 순서대로 받는다.
+
+    `httpx.ASGITransport` 를 쓰지 않는 이유가 이 클래스의 존재 이유다 — 그쪽은 앱이 **끝난
+    뒤에** 응답을 돌려주므로 "근거가 생성보다 먼저 도착한다"와 "클라이언트가 끊으면 생성이
+    멈춘다"가 둘 다 관측되지 않는다. 전자는 순서가 사라져서, 후자는 끊을 수가 없어서다.
+    """
+
+    def __init__(self, app: FastAPI, path: str, payload: dict[str, Any]) -> None:
+        self._app = app
+        self._body = json.dumps(payload).encode()
+        self._scope = _http_scope(path, len(self._body))
+        self._messages: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._disconnected = asyncio.Event()
+        self._request_sent = False
+        self._done = False
+        self._task: asyncio.Task[None] | None = None
+        #: `http.response.start` 의 상태 코드와 헤더. `start()` 가 채운다.
+        self.status_code: int | None = None
+        self.headers: dict[str, str] = {}
+
+    async def __aenter__(self) -> "AsgiStream":
+        self._task = asyncio.create_task(self._app(self._scope, self._receive, self._send))
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.disconnect()
+
+    async def start(self) -> None:
+        """응답 헤더가 나올 때까지 기다린다."""
+        message = await asyncio.wait_for(self._messages.get(), timeout=5.0)
+        assert message["type"] == "http.response.start", message
+        self.status_code = message["status"]
+        self.headers = {
+            key.decode().lower(): value.decode() for key, value in message.get("headers", ())
+        }
+
+    async def next_chunk(self) -> str | None:
+        """비어 있지 않은 다음 조각 하나. 스트림이 끝났으면 `None`."""
+        while not self._done:
+            message = await asyncio.wait_for(self._messages.get(), timeout=5.0)
+            assert message["type"] == "http.response.body", message
+            body = message.get("body", b"")
+            self._done = not message.get("more_body", False)
+            if body:
+                return body.decode()
+        return None
+
+    async def rest(self) -> str:
+        """남은 조각을 전부 모은 본문."""
+        parts: list[str] = []
+        while (chunk := await self.next_chunk()) is not None:
+            parts.append(chunk)
+        return "".join(parts)
+
+    async def disconnect(self) -> None:
+        """연결을 끊고 앱이 정리를 마칠 때까지 기다린다.
+
+        기다리지 않으면 "자원이 남지 않았다"는 단언이 정리보다 먼저 돈다."""
+        self._disconnected.set()
+        if self._task is not None:
+            await asyncio.wait({self._task}, timeout=5.0)
+            self._task.cancel()
+
+    async def _receive(self) -> dict[str, Any]:
+        if not self._request_sent:
+            self._request_sent = True
+            return {"type": "http.request", "body": self._body, "more_body": False}
+        await self._disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def _send(self, message: dict[str, Any]) -> None:
+        await self._messages.put(message)
+
+
+def _http_scope(path: str, content_length: int) -> dict[str, Any]:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(content_length).encode()),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("test", 80),
+    }

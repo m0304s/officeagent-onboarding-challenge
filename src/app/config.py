@@ -4,6 +4,7 @@
 막아 둔다.
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -70,6 +71,25 @@ class Settings(BaseSettings):
     # 임베더가 선언한 입력 창이 막는다 — 문자 수로 막으면 상한이 101자가 된다.
     retrieval_max_query_chars: int = Field(default=1000, gt=0)
 
+    # ── 답변 생성 ──────────────────────────────────────────────────────
+    # 한 시도의 상한. 실측 최악값(18.9초)이 이 값의 1/3 이라 정상 경로가 닿지 않는다.
+    qa_llm_timeout_seconds: float = Field(default=60.0, gt=0)
+    # 1 은 재시도가 아니고, 4 이상이면 최악 지연이 상한×4 + 백오프라 인내를 넘는다.
+    qa_llm_max_attempts: int = Field(default=3, ge=1)
+    # 대기가 1초·2초. 상한 대비 무시할 만하면서 즉시 재시도는 아닌 값이다.
+    qa_llm_retry_backoff_seconds: float = Field(default=1.0, gt=0)
+    # 흔한 프록시 유휴 상한(60초)의 1/4.
+    qa_sse_heartbeat_seconds: float = Field(default=15.0, gt=0)
+    # 생성 하나가 프로세스 하나다 — 없으면 메모리가 동시 요청 수에 비례한다. 세션 풀의
+    # 상한이 같은 값이라 두 곳이 같은 수를 두 번 세지 않는다.
+    qa_concurrency: int = Field(default=2, gt=0)
+    # 비면 CLI 기본값을 쓴다. 다음 change 의 캐시 키에 들어갈 값이라 설정으로 노출해 둔다.
+    qa_llm_model: str = ""
+    # `turn/interrupt` 뒤 `turn/completed` 를 기다리는 유예. 넘기면 세션을 폐기한다.
+    qa_llm_interrupt_grace_seconds: float = Field(default=2.0, gt=0)
+    # 프로세스 기동 + 핸드셰이크 상한. 실측 8.5초의 세 배 이상이다.
+    qa_llm_session_startup_timeout_seconds: float = Field(default=30.0, gt=0)
+
     @model_validator(mode="after")
     def _overlap_must_be_smaller_than_chunk(self) -> "Settings":
         """겹침이 청크 크기 이상이면 분할이 진행되지 않는다 — 무한 루프가 된다."""
@@ -89,6 +109,18 @@ class Settings(BaseSettings):
                 f"retrieval_max_top_k({self.retrieval_max_top_k}) 이하여야 합니다"
             )
         return self
+
+
+#: 생성기 프로세스에 넘기는 환경변수. 상속하지 않는 것이 결정이라 목록이 명시적이고,
+#: 환경을 읽는 곳이 이 파일뿐이라는 규약(`TID251`) 때문에 목록도 여기 있다.
+LLM_ENV_PASSTHROUGH = ("HOME", "PATH", "CODEX_HOME")
+
+
+def llm_environment() -> dict[str, str]:
+    """생성기에게 넘길 최소 환경.
+
+    컨테이너 환경변수에 저장소 접속 정보가 있어 통째로 넘기지 않는다."""
+    return {name: os.environ[name] for name in LLM_ENV_PASSTHROUGH if name in os.environ}
 
 
 @lru_cache

@@ -5,15 +5,19 @@
 """
 
 import logging
+import tempfile
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
 from app.adapters.cache.probe import CacheProbe
 from app.adapters.embedding import SentenceTransformerEmbedder
+from app.adapters.llm import AppServerSession, CodexAnswerGenerator, SessionLaunch, SessionPool
 from app.adapters.parsers import ParserRegistry, default_parsers
 from app.adapters.protocols import (
+    AnswerGenerator,
     DocumentParser,
     DocumentRegistry,
     Embedder,
@@ -24,12 +28,13 @@ from app.adapters.registry import SqliteDocumentRegistry
 from app.adapters.vector_store import ChromaVectorStore, VectorStoreProbe, collection_for
 from app.api.errors import register_error_handlers
 from app.api.logging import RequestLoggingMiddleware, configure_logging
-from app.api.routes import documents, health, search
-from app.config import Settings, get_settings
+from app.api.routes import documents, health, qa, search
+from app.config import Settings, get_settings, llm_environment
 from app.core.chunking import CHUNK_STRATEGY_VERSION
 from app.core.documents import derive_index_signature
 from app.services.health import HealthService
 from app.services.ingestion import IngestionService
+from app.services.qa import QaService
 from app.services.retrieval import RetrievalService
 
 logger = logging.getLogger(__name__)
@@ -45,11 +50,32 @@ def default_probes(settings: Settings) -> tuple[HealthProbe, ...]:
     )
 
 
+class _CodexLauncher:
+    """세션 하나를 띄우는 팩토리. 첫 호출 전까지 CLI 도 파일시스템도 건드리지 않는다.
+
+    지연이 계약이다 — 기동 경로가 자격증명을 요구하면 인증 없는 환경에서 서비스가 죽는다."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._launch: SessionLaunch | None = None
+
+    async def __call__(self) -> AppServerSession:
+        if self._launch is None:
+            self._launch = SessionLaunch(
+                # 상속하지 않는다 — 컨테이너 환경변수에 저장소 접속 정보가 들어 있다.
+                env=llm_environment(),
+                # 에이전트가 파일을 뒤질 대상 자체를 없앤다.
+                cwd=Path(tempfile.mkdtemp(prefix="qa-codex-home-")),
+                startup_timeout_seconds=self._settings.qa_llm_session_startup_timeout_seconds,
+            )
+        return await AppServerSession.start(self._launch)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """기동 시 임베딩 선로딩과 벡터 스토어 정리를 한다.
+    """기동 시 임베딩 선로딩과 벡터 스토어 정리를 하고, 종료 시 세션을 회수한다.
 
-    둘 다 기동 조건이 아니다 — 실패해도 뜨고 로그만 남는다. 오래 걸리는 쪽이 앞이다."""
+    앞의 둘은 기동 조건이 아니다 — 실패해도 뜨고 로그만 남는다. 오래 걸리는 쪽이 앞이다."""
     await _warm_up_embedder(app)
 
     report = await app.state.ingestion_service.reconcile_storage()
@@ -61,7 +87,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "removed_chunks": report.removed_chunks,
             },
         )
-    yield
+    try:
+        yield
+    finally:
+        # 회수하지 않으면 컨테이너에 자식 프로세스가 남는다. 풀이 없는 배선(테스트가
+        # 생성기를 주입한 경우)에서는 회수할 것도 없다.
+        pool: SessionPool | None = app.state.session_pool
+        if pool is not None:
+            await pool.aclose()
 
 
 async def _warm_up_embedder(app: FastAPI) -> None:
@@ -85,6 +118,7 @@ def create_app(
     embedder: Embedder | None = None,
     vector_store: VectorStore | None = None,
     registry: DocumentRegistry | None = None,
+    generator: AnswerGenerator | None = None,
 ) -> FastAPI:
     """앱을 만든다.
 
@@ -150,7 +184,28 @@ def create_app(
         top_k=settings.retrieval_top_k,
         min_score=settings.retrieval_min_score,
     )
+    # 풀은 지연 기동이라 여기서 프로세스가 뜨지 않는다 — 첫 `/qa` 요청이 띄운다.
+    app.state.session_pool = None
+    if generator is None:
+        pool = SessionPool(_CodexLauncher(settings), size=settings.qa_concurrency)
+        app.state.session_pool = pool
+        generator = CodexAnswerGenerator(
+            pool,
+            model=settings.qa_llm_model,
+            interrupt_grace_seconds=settings.qa_llm_interrupt_grace_seconds,
+        )
+    app.state.qa_service = QaService(
+        app.state.retrieval_service,
+        generator,
+        timeout_seconds=settings.qa_llm_timeout_seconds,
+        max_attempts=settings.qa_llm_max_attempts,
+        retry_backoff_seconds=settings.qa_llm_retry_backoff_seconds,
+        # 세션 풀과 같은 값이라 두 곳이 같은 수를 두 번 세지 않는다.
+        concurrency=settings.qa_concurrency,
+    )
+
     app.include_router(health.router)
     app.include_router(documents.router)
     app.include_router(search.router)
+    app.include_router(qa.router)
     return app
