@@ -104,11 +104,16 @@ curl -s -X POST http://127.0.0.1:8000/documents -F "file=@sample-docs/company-po
 `.txt` · `.md` · `.pdf`를 받습니다. 응답에 청크 본문은 싣지 않습니다 — 청크는 벡터 스토어에 저장되며, 여기서는 그 결과만 보고합니다.
 
 ```json
-{"document_id":"b166d4ad-...","filename":"company-policy.txt","format":"txt",
- "revision":"2ccbdc60...","index_signature":"e78999af0e98a7d4","index_status":"indexed",
- "chunk_count":3,"byte_size":1708,"ingested_at":"2026-08-02T04:11:52.913Z",
+{"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt","format":"txt",
+ "revision":"2ccbdc608106...","index_signature":"e78999af0e98a7d4","index_status":"indexed",
+ "chunk_count":1,"byte_size":1172,"ingested_at":"2026-08-03T11:36:21.140245Z",
  "status":"created","previous_revision":null}
 ```
+
+> 이 문서의 응답 예시는 **실제로 실행해 받은 값**입니다 — `sample-docs/` 두 건을 올리고
+> 아래 검색을 그대로 호출한 한 번의 실행에서 나왔습니다. `document_id`는 파일명에서,
+> `revision`은 내용에서 유도되므로 같은 파일을 올리면 같은 값이 나옵니다.
+> `score`는 임베딩 실수 연산이라 플랫폼에 따라 끝자리가 다를 수 있습니다.
 
 #### `status` — 이번 요청이 무엇을 했는가
 
@@ -163,11 +168,13 @@ curl -s -X POST http://127.0.0.1:8000/search \
 
 ```json
 {"query":"교육비는 얼마까지 지원되나요?","top_k":3,"count":1,
- "results":[{"document_id":"b166d4ad-...","filename":"company-policy.txt","format":"txt",
-             "revision":"2ccbdc60...","chunk_index":1,
-             "text":"교육비는 연 200만원까지 지원합니다. ...",
-             "score":0.8734,"char_start":142,"char_end":538,"page":null}]}
+ "results":[{"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt","format":"txt",
+             "revision":"2ccbdc608106...","chunk_index":0,
+             "text":"[사내 복리후생 안내]\n\n1. 교육비 지원\n임직원은 연간 최대 200만원까지 직무 관련 교육비를 지원받을 수 있습니다.\n신청은 매월 15일까지 HR팀에 신청서를 제출해야 하며, 승인 후 비용이 환급됩니다. ...",
+             "score":0.8609192999999999,"char_start":0,"char_end":527,"page":null}]}
 ```
+
+문서 둘을 올렸는데 결과가 하나인 것은 오류가 아닙니다. 기본 청크 크기(600자)에서 `company-policy.txt`는 청크 하나가 되고, `development-guide.md`의 청크 둘은 이 질의에서 **유사도 하한에 걸려 떨어집니다.** 검색이 하는 판정이 바로 이것입니다.
 
 **검색은 답변을 만들지 않습니다.** 응답에 답변 필드도 거절 문구도 없습니다 — "이 근거로 답할 수 있는가"는 본문을 읽어야 하는 판정이라 답변 생성(다음 change)의 몫이고, 검색이 하는 판정은 "이 청크를 다음 단계에 보여줄 가치가 있는가"(유사도 하한)까지입니다. 그래서 이 엔드포인트는 `/qa`가 생긴 뒤에도 남습니다. **답이 이상할 때 원인이 검색인지 생성인지 가르는 관측 지점**이 이것입니다 — 근거가 애초에 안 잡혔는지, 잡혔는데 답이 틀렸는지가 여기서 갈립니다.
 
@@ -206,7 +213,7 @@ curl -s -X POST http://127.0.0.1:8000/search \
 검색 로그도 한 줄입니다. **질의 문자열과 청크 본문은 싣지 않습니다.**
 
 ```json
-{"level":"INFO","logger":"app.api.routes.search","message":"검색 요청을 처리했습니다","request_id":"9f2c...","top_k":5,"result_count":3,"top_score":0.8734,"target_documents":2}
+{"level":"INFO","logger":"app.api.routes.search","message":"검색 요청을 처리했습니다","request_id":"0cb02e2d63e6...","top_k":5,"result_count":1,"top_score":0.8609192999999999,"target_documents":2}
 ```
 
 `target_documents`가 있어야 빈 결과의 이유가 갈립니다 — `0`이면 올린 문서가 없거나 전부 `stale`인 것이고, 대상이 있는데 결과가 `0`이면 유사도 하한에 걸린 것입니다.

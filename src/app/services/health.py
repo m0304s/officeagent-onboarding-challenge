@@ -46,11 +46,8 @@ class HealthService:
         return HealthReport(dependencies=tuple(results))
 
     async def _run(self, probe: HealthProbe) -> ProbeResult:
-        """프로브 하나를 상한 안에서 실행한다. 어떤 예외도 이 함수를 벗어나지 않는다.
-
-        프로브 하나의 버그가 헬스 엔드포인트 전체를 500으로 만들면, 정작 진단해야 할 때
-        아무것도 못 본다.
-        """
+        """예외를 밖으로 내보내지 않는다 — 프로브 하나의 버그로 헬스가 500이 되면
+        정작 진단해야 할 때 아무것도 못 본다."""
         try:
             return await asyncio.wait_for(probe.check(), timeout=self._probe_timeout)
         except TimeoutError:

@@ -1,20 +1,7 @@
 """app-server 세션 하나 — 프로세스 수명과 stdio 위의 줄 단위 JSON-RPC.
 
-이 모듈이 아는 것은 **메시지를 누구에게 주는가**까지다. 델타가 무슨 뜻인지, 401 이 어떤
-예외가 되는지는 위층(`codex.py`)의 일이다. 그래서 여기에는 `AnswerGenerator` 도 프롬프트도
-없고, 대신 두 개의 비동기 흐름을 가르는 라우팅이 있다.
-
-    우리가 보내는 것 → id 를 붙인 요청 → 응답이 오면 그 id 의 future 에 꽂는다
-    흘러드는 것     → method 가 붙은 알림 → `params.threadId` 로 갈라 큐에 넣는다
-
-**`threadId` 가 없는 알림은 큐에 넣지 않는다.** 실측에서 `configWarning`·
-`remoteControl/status/changed`·`thread/started`·`account/rateLimits/updated` 넷이 그렇게
-온다(픽스처 README). 그것들을 아무 큐에나 넣으면 턴 하나가 자기 것이 아닌 알림을 읽고,
-빈 큐를 기다리던 쪽은 영원히 기다린다. 세션 수준 알림은 로그로만 남긴다.
-
-**stderr 는 삼키지 않고 반드시 읽는다.** 일회성 프로세스라면 버퍼가 차봐야 그 요청만
-멈추지만, 살아 있는 세션은 계속 쌓여 **어느 순간 조용히 멎는다.** app-server 는 401 마다
-stderr 에 한 줄씩 쓴다. 읽되 응답에는 싣지 않는다 — 내부 메시지 노출 금지.
+아는 것은 메시지를 누구에게 주는가까지다. 응답은 id 로, 알림은 `params.threadId` 로
+가른다. `threadId` 없는 알림과 stderr 처리 근거는 `ARCHITECTURE.md` 에 있다.
 """
 
 import asyncio
@@ -32,10 +19,8 @@ from app.core.exceptions import LlmGenerationFailed
 
 logger = logging.getLogger(__name__)
 
-#: JSON-RPC 한 줄의 허용 크기. 기본값(64 KiB)으로는 부족하다 — app-server 는 우리가 보낸
-#: 프롬프트를 `userMessage` 아이템으로 **되돌려 준다**. `top_k` 상한 50 × 청크 600자면
-#: 프롬프트가 30 KB 대이고, JSON 이스케이프까지 붙으면 기본 상한 근처에서 `readline` 이
-#: 예외로 죽는다. 그 실패는 큰 문맥에서만 나므로 평소에 보이지 않는다.
+#: 기본값(64 KiB)으로는 부족하다 — app-server 가 우리 프롬프트를 되돌려 주는데, 그것이
+#: 30 KB 대라 기본 상한 근처에서 `readline` 이 죽는다. 큰 문맥에서만 나는 실패다.
 _LINE_LIMIT = 4 * 1024 * 1024
 
 #: 실패 시 로그에 남길 stderr 마지막 줄 수. 무한정 들고 있으면 오래 사는 세션에서 그
@@ -48,16 +33,9 @@ _CLIENT_VERSION = "0.1.0"
 
 @dataclass(frozen=True)
 class SessionLaunch:
-    """프로세스를 **어떻게** 띄우는가.
+    """프로세스를 어떻게 띄우는가.
 
-    `env` 에 기본값을 두지 않는 것이 이 값 객체의 요점이다. 환경을 상속하지 않는다는 결정
-    (design 결정 9)을 구조로 만든 것이다 — 컨테이너 환경변수에는 저장소 접속 정보가 들어
-    있고, 그것을 도구 실행이 가능한 에이전트에게 통째로 넘길 이유가 없다. 넘기는 것은
-    `HOME`·`PATH`·`CODEX_HOME` 뿐이고, 그 값을 고르는 일은 배선의 몫이라 여기서 읽지 않는다.
-
-    `cwd` 는 **빈 임시 디렉터리**여야 한다. 에이전트가 파일을 뒤질 대상 자체를 없앤다 —
-    리포 루트에서 돌면 소스 코드를 읽고 답할 여지가 생긴다.
-    """
+    `env` 에 기본값을 두지 않아 환경 비상속을 구조로 만들고, `cwd` 는 빈 임시 디렉터리다."""
 
     env: Mapping[str, str]
     cwd: Path
@@ -71,10 +49,7 @@ class SessionLaunch:
 def parse_message(line: str) -> dict[str, Any] | None:
     """JSON-RPC 한 줄을 읽는다. 읽을 수 없으면 `None`.
 
-    **깨진 줄이 파서를 죽이면 안 된다.** 실험 단계 표면이라 우리가 모르는 줄이 섞일 수
-    있고, 그 한 줄 때문에 세션 전체가 사망으로 판정되면 정상 요청이 실패한다. 한 줄을
-    버리는 대가는 그 줄이 나르던 정보뿐이다.
-    """
+    깨진 줄에 세션 전체가 죽으면 정상 요청이 실패한다 — 한 줄만 버린다."""
     stripped = line.strip()
     if not stripped:
         return None
@@ -91,12 +66,9 @@ def parse_message(line: str) -> dict[str, Any] | None:
 
 @dataclass
 class _Turn:
-    """한 thread 에 흘러드는 알림을 받는 자리.
+    """한 thread 에 흘러드는 알림을 받는 자리. `None` 은 세션 사망 신호다.
 
-    큐에 들어가는 값은 `(method, params)` 이고, **`None` 은 세션이 죽었다는 신호**다.
-    사망을 큐로 알리지 않으면 알림을 기다리던 쪽이 상한까지 매달린 뒤에야 실패한다 —
-    즉시 알 수 있는 사실을 타임아웃으로 알아내는 셈이 된다.
-    """
+    사망을 큐로 알리지 않으면 즉시 알 수 있는 사실이 타임아웃으로 둔갑한다."""
 
     queue: asyncio.Queue[tuple[str, dict[str, Any]] | None] = field(default_factory=asyncio.Queue)
 
@@ -104,10 +76,7 @@ class _Turn:
 class AppServerSession:
     """`codex app-server` 프로세스 하나와 그 위의 JSON-RPC 대화.
 
-    **세션당 활성 턴은 하나**다. 풀 상한이 동시 생성 상한과 같아 자연히 그렇게 되지만
-    명시적 규칙으로 둔다 — 한 세션에서 턴 둘을 돌리면 `turnId` 가 없는 알림의 주인이
-    모호해지고, 동시 턴을 이 표면이 감당하는지 확인할 필요까지 생긴다.
-    """
+    세션당 활성 턴은 하나다 — 둘이면 `turnId` 없는 알림의 주인이 모호해진다."""
 
     def __init__(self, process: asyncio.subprocess.Process, *, grace_seconds: float) -> None:
         self._process = process
@@ -124,12 +93,9 @@ class AppServerSession:
 
     @classmethod
     async def start(cls, launch: SessionLaunch) -> "AppServerSession":
-        """프로세스를 띄우고 `initialize` → `initialized` 까지 끝낸 세션을 돌려준다.
+        """프로세스를 띄우고 핸드셰이크까지 끝낸 세션을 돌려준다.
 
-        핸드셰이크가 상한 안에 끝나지 않으면 프로세스를 회수하고 `LlmGenerationFailed` 다.
-        기동 실패를 재시도 가능한 생성 실패로 정규화하는 이유는 서비스의 처분이 같기
-        때문이다 — 다음 시도가 새 프로세스로 다시 해 보면 된다.
-        """
+        기동 실패를 생성 실패로 정규화하는 것은 서비스의 처분이 같기 때문이다."""
         try:
             process = await asyncio.create_subprocess_exec(
                 *launch.command,
@@ -168,10 +134,7 @@ class AppServerSession:
     def alive(self) -> bool:
         """빌려줘도 되는 상태인가.
 
-        stdout EOF 와 프로세스 종료를 **둘 다** 사망으로 본다. 종료 코드만 보면 파이프가
-        닫혔는데 프로세스가 남아 있는 상태를 살아 있다고 판정해, 다음 요청이 응답 없는
-        세션을 빌린다.
-        """
+        EOF 와 프로세스 종료를 둘 다 본다 — 종료 코드만 보면 응답 없는 세션을 빌려준다."""
         return self._alive and self._process.returncode is None
 
     @property
@@ -187,22 +150,17 @@ class AppServerSession:
     # ── 송신 ────────────────────────────────────────────────────────────
 
     async def request(self, method: str, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        """요청을 보내고 응답을 기다린다. 상한은 **호출자**가 건다.
+        """요청을 보내고 응답을 기다린다. 상한은 호출자가 건다.
 
-        여기서 상한을 걸지 않는 이유는 한 시도의 예산이 여러 요청에 걸쳐 있기 때문이다 —
-        `thread/start` 와 `turn/start` 가 같은 예산을 나눠 쓴다. 요청마다 각자 상한을 두면
-        합이 예산을 넘는다.
-        """
+        한 시도의 예산을 여러 요청이 나눠 써, 요청마다 상한을 두면 합이 예산을 넘는다."""
         return await await_response(await self.send(method, params))
 
     async def send(
         self, method: str, params: Mapping[str, Any] | None = None
     ) -> asyncio.Future[dict[str, Any]]:
-        """요청을 보내고 **기다리지 않는다.** 응답 자리만 걸어 둔다.
+        """요청을 보내고 기다리지 않는다. 응답 자리만 걸어 둔다.
 
-        `turn/interrupt` 가 이 형태를 쓴다 — 중단의 성공은 응답이 아니라 뒤따라오는
-        `turn/completed` 로 관측되므로, 응답을 기다리면 같은 유예를 두 번 쓰게 된다.
-        """
+        중단의 성공은 뒤따라오는 `turn/completed` 로 관측되어 기다릴 이유가 없다."""
         identifier = next(self._ids)
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[identifier] = future
@@ -236,9 +194,7 @@ class AppServerSession:
     def subscribe(self, thread_id: str) -> asyncio.Queue[tuple[str, dict[str, Any]] | None]:
         """이 thread 로 오는 알림을 받을 큐를 연다.
 
-        **`turn/start` 를 보내기 전에 열어야 한다.** 뒤에 열면 그 사이에 도착한 알림이
-        주인 없는 것으로 버려진다 — 첫 델타가 사라지는 형태로만 드러나는 종류의 버그다.
-        """
+        `turn/start` 보다 먼저 열어야 한다 — 뒤면 첫 델타가 주인 없이 버려진다."""
         turn = self._turns.get(thread_id)
         if turn is None:
             turn = _Turn()
@@ -276,7 +232,7 @@ class AppServerSession:
             self._mark_dead("생성기가 출력을 닫았습니다")
 
     async def _read_stderr(self) -> None:
-        """읽되 응답에는 싣지 않는다. **읽는 것 자체가 목적**이다 — 아래 주석 참조."""
+        """읽되 응답에는 싣지 않는다 — 안 읽으면 버퍼가 차서 세션이 조용히 멎는다."""
         stderr = self._process.stderr
         assert stderr is not None
         with contextlib.suppress(asyncio.CancelledError):
@@ -330,12 +286,9 @@ class AppServerSession:
         future.set_result(result if isinstance(result, dict) else {})
 
     def _mark_dead(self, reason: str) -> None:
-        """사망을 **기다리는 모두에게** 알린다.
+        """사망을 기다리는 모두에게 알린다.
 
-        대기 중인 응답과 열려 있는 큐 양쪽에 알리지 않으면, 죽은 세션을 기다리던 요청이
-        각자의 상한까지 매달린다. 즉시 알 수 있는 사실이 타임아웃으로 둔갑하면 재시도
-        정책이 잘못된 사유(시간 초과)로 돌아간다.
-        """
+        안 알리면 즉시 알 수 있는 사실이 타임아웃으로 둔갑해 재시도가 잘못된 사유로 돈다."""
         if not self._alive:
             return
         self._alive = False
@@ -350,12 +303,9 @@ class AppServerSession:
     # ── 회수 ────────────────────────────────────────────────────────────
 
     async def close(self) -> None:
-        """프로세스를 회수한다 — `terminate()` → 유예 → `kill()` → **반드시 `wait()`**.
+        """프로세스를 회수한다 — `terminate()` → 유예 → `kill()` → `wait()`.
 
-        마지막 `wait()` 가 생략되면 좀비가 남는다. 요청마다 프로세스를 띄우던 시절에는
-        컨테이너 수명 안에서 티가 나지 않았지만, 세션을 갈아 끼우는 지금은 폐기할 때마다
-        하나씩 쌓인다.
-        """
+        마지막 `wait()` 가 빠지면 세션을 갈아 끼울 때마다 좀비가 하나씩 쌓인다."""
         self._mark_dead("세션을 회수했습니다")
 
         stdin = self._process.stdin

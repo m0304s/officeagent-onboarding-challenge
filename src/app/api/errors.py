@@ -1,20 +1,7 @@
 """오류 응답 형식과 예외 → HTTP 변환.
 
-**변환은 이 계층에서만 한다.** 어댑터가 던지는 라이브러리 예외가 라우터까지 그대로 새지
-않도록, 각 어댑터는 자기 경계에서 도메인 예외로 바꿔 던지고 여기서 HTTP 로 옮긴다.
-
-모든 오류가 같은 봉투를 쓴다.
-
-    {"error": {"code": "...", "message": "...", ...부가 항목}}
-
-부가 항목은 **평평하게** 들어간다. 중첩 객체를 새로 만들지 않는 이유는 봉투 안에 형식이
-둘이면 소비자가 파서를 둘 들어야 하기 때문이다.
-
-프레임워크가 기본 제공하는 오류 응답(경로 없음·메서드 불허·요청 검증 실패)도 이 봉투로
-덮어쓴다. 기본값을 그대로 두면 형식이 두 가지가 되어, 소비자가 파서를 둘 들고 있어야 한다.
-
-**헬스 엔드포인트는 이 변환의 대상이 아니다.** 헬스는 라우트가 응답을 직접 반환하므로
-예외 핸들러를 타지 않는다. 상태 보고와 오류 통지는 다른 일이다.
+`{"error": {"code", "message", ...부가 항목}}` 하나로 통일한다. 부가 항목이 평평한 것도
+프레임워크 기본 응답을 덮어쓰는 것도 같은 이유다 — 소비자가 파서를 둘 들지 않게.
 """
 
 import logging
@@ -40,19 +27,12 @@ HTTP_SERVICE_UNAVAILABLE = 503
 _STATUS_TO_CODE = {
     HTTP_NOT_FOUND: ErrorCode.NOT_FOUND,
     HTTP_METHOD_NOT_ALLOWED: ErrorCode.METHOD_NOT_ALLOWED,
-    # 라우터가 `HTTPException(422, ...)` 로 요청 형식 문제를 알릴 때 쓰인다. 프레임워크의
-    # 검증 오류(`handle_validation_error`)와 같은 코드를 써야 소비자가 한 갈래로 다룬다.
+    # 프레임워크 검증 오류와 같은 코드를 써야 소비자가 한 갈래로 다룬다.
     HTTP_UNPROCESSABLE_ENTITY: ErrorCode.VALIDATION_ERROR,
 }
 
-# 도메인 오류 코드 → HTTP 상태.
-#
-# **표가 API 계층에 있는 이유**는 "도메인 예외의 HTTP 변환은 이 계층에서만"이라는 규약
-# 그대로다. `AppError` 에는 상태 코드 개념이 없고 `code` 만 있다 — 도메인이 HTTP 를 알면
-# 같은 예외를 CLI 나 배치에서 재사용할 때 의미 없는 숫자를 들고 다니게 된다.
-#
-# **표에 없는 코드는 500이다.** 새 도메인 예외가 상태를 정하지 않은 채 들어와도 봉투는
-# 그대로이고, 기존 예외의 동작도 바뀌지 않는다.
+# 표가 여기 있는 이유는 도메인이 HTTP 를 알면 같은 예외를 CLI 나 배치에서 재사용할 때
+# 의미 없는 숫자를 들고 다니기 때문이다. 표에 없는 코드는 500 이다.
 _CODE_TO_STATUS: dict[ErrorCode, int] = {
     ErrorCode.UNSUPPORTED_DOCUMENT_FORMAT: HTTP_UNSUPPORTED_MEDIA_TYPE,
     ErrorCode.DOCUMENT_TOO_LARGE: HTTP_PAYLOAD_TOO_LARGE,
@@ -61,15 +41,12 @@ _CODE_TO_STATUS: dict[ErrorCode, int] = {
     ErrorCode.DOCUMENT_PARSE_ERROR: HTTP_UNPROCESSABLE_ENTITY,
     ErrorCode.NOT_FOUND: HTTP_NOT_FOUND,
     ErrorCode.STORAGE_UNAVAILABLE: HTTP_SERVICE_UNAVAILABLE,
-    # 검색 요청 거부. 셋 다 422 다 — 요청 자체는 문법상 올바르고 값이 처리할 수 없는
-    # 것이라, 프레임워크의 요청 검증 실패(`validation_error`)와 같은 상태를 쓴다.
+    # 셋 다 422 — 문법은 맞고 값이 처리 불가라 프레임워크 검증 실패와 같은 상태다.
     ErrorCode.EMPTY_QUERY: HTTP_UNPROCESSABLE_ENTITY,
     ErrorCode.QUERY_TOO_LONG: HTTP_UNPROCESSABLE_ENTITY,
     ErrorCode.INVALID_TOP_K: HTTP_UNPROCESSABLE_ENTITY,
-    # 생성 실패. **오늘 이 매핑을 타는 경로는 없다** — 둘 다 스트림이 열린 뒤에 나므로
-    # SSE 의 `error` 이벤트로만 나간다. 그럼에도 등록해 두는 이유는 표에 없는 코드가
-    # `500` 이 되는 기본값 때문이다: 나중에 비스트리밍 경로가 생기면 아무도 이 표를
-    # 고칠 생각을 하지 않은 채 조용히 틀린 상태가 나간다.
+    # 오늘 이 매핑을 타는 경로는 없다(둘 다 SSE `error` 로 나간다). 그래도 등록하는 것은
+    # 비스트리밍 경로가 생겼을 때 표에 없는 코드가 조용히 500 이 되는 것을 막기 위해서다.
     ErrorCode.LLM_UNAVAILABLE: HTTP_SERVICE_UNAVAILABLE,
     ErrorCode.LLM_UNAUTHENTICATED: HTTP_SERVICE_UNAVAILABLE,
 }
@@ -88,18 +65,14 @@ def error_response(
 
 
 async def handle_app_error(_: Request, exc: Exception) -> JSONResponse:
-    """도메인 예외 → HTTP. 메시지는 도메인이 스스로 정한 것이라 그대로 내보낸다.
+    """도메인 예외 → HTTP. 메시지는 도메인이 정한 것이라 그대로 내보낸다.
 
-    `exc.extra` 는 봉투에 **평평하게** 실린다. 지원 포맷 목록·적용된 크기 상한처럼
-    소비자가 메시지 문자열을 파싱하지 않고 읽어야 하는 값이 여기로 온다. 중첩
-    `details` 객체를 새로 만들지 않는 이유는 검증 오류의 `fields` 가 이미 평면이기
-    때문이다 — 같은 봉투에 형식이 둘이면 소비자가 파서를 둘 들어야 한다.
-    """
+    `exc.extra` 를 평평하게 싣는다 — 검증 오류의 `fields` 가 이미 평면이라 형식을 맞춘다."""
     assert isinstance(exc, AppError)
     message = exc.message or "요청을 처리할 수 없습니다"
     status = _CODE_TO_STATUS.get(exc.code, HTTP_INTERNAL_SERVER_ERROR)
     if status >= HTTP_INTERNAL_SERVER_ERROR:
-        # 5xx 는 우리 잘못이다. 응답에는 남기지 않는 원인을 로그에는 남겨야 진단이 된다.
+        # 5xx 는 우리 잘못이라, 응답에 안 남기는 원인을 로그에는 남겨야 진단이 된다.
         logger.warning("도메인 오류를 %d 로 변환했습니다: %s", status, exc.code, exc_info=exc)
     return error_response(status, exc.code, message, **exc.extra)
 
@@ -112,11 +85,9 @@ async def handle_http_exception(_: Request, exc: Exception) -> JSONResponse:
 
 
 async def handle_validation_error(_: Request, exc: Exception) -> JSONResponse:
-    """요청 검증 실패.
+    """요청 검증 실패 — 위치와 사유를 싣는다.
 
-    어떤 입력이 문제인지 식별할 수 있어야 하므로 위치와 사유를 함께 싣는다.
-    다만 **입력 값 자체는 싣지 않는다** — 자격증명이 본문에 실려 온 경우 그대로 되비친다.
-    """
+    입력 값 자체는 싣지 않는다 — 자격증명이 본문에 실려 왔으면 그대로 되비친다."""
     assert isinstance(exc, RequestValidationError)
     fields = [
         {
@@ -136,9 +107,7 @@ async def handle_validation_error(_: Request, exc: Exception) -> JSONResponse:
 async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     """최종 방어선.
 
-    내부 정보(스택 트레이스·내부 식별자·접속 문자열)를 응답에서 지운다. 원인 추적에 필요한
-    정보는 로그에만 남긴다 — 그래야 진단은 가능하면서 외부로는 새지 않는다.
-    """
+    내부 정보를 응답에서 지우고 로그에만 남긴다 — 진단은 되고 밖으로는 안 샌다."""
     logger.exception("처리되지 않은 오류: %s %s", request.method, request.url.path, exc_info=exc)
     return error_response(
         HTTP_INTERNAL_SERVER_ERROR,

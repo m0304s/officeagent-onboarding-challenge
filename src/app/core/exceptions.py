@@ -1,7 +1,7 @@
 """도메인 예외.
 
-API 계층만이 이 예외들을 HTTP 응답으로 변환한다. 어댑터가 던지는 라이브러리 예외가
-라우터까지 그대로 새지 않도록, 각 어댑터는 자기 경계에서 이 예외로 바꿔 던진다.
+API 계층만 이것을 HTTP 응답으로 옮긴다. 어댑터는 자기 경계에서 라이브러리 예외를
+이것으로 바꿔 던진다 — 라우터까지 새면 내부 메시지가 응답에 노출된다.
 """
 
 from enum import StrEnum
@@ -11,9 +11,7 @@ from typing import Any
 class ErrorCode(StrEnum):
     """오류 응답에 실리는 안정적인 식별자.
 
-    소비자가 문자열 메시지를 파싱하지 않고 분기할 수 있게 하는 것이 목적이므로, 값은
-    한 번 정하면 바꾸지 않는다. 이후 change 는 여기에 항목을 **추가**하는 식으로 확장한다.
-    """
+    값은 한 번 정하면 바꾸지 않는다 — 소비자가 메시지를 파싱하지 않고 분기한다."""
 
     INTERNAL_ERROR = "internal_error"
     CONFIGURATION_ERROR = "configuration_error"
@@ -34,15 +32,8 @@ class ErrorCode(StrEnum):
     QUERY_TOO_LONG = "query_too_long"
     INVALID_TOP_K = "invalid_top_k"
 
-    # 답변 생성 (add-answer-generation)
-    #
-    # **둘을 나누는 이유는 소비자가 할 일이 다르기 때문이다.** 앞은 재시도나 상한 조정이고
-    # 뒤는 자격증명 주입 경로 확인이다. 뭉치면 평가자가 `.secrets/codex/auth.json` 을
-    # 들여다볼 이유를 찾지 못한다 — 인증 부재는 평가자 환경에서 가장 있을 법한 실패다.
-    #
-    # **타임아웃에는 코드를 주지 않는다.** 타임아웃은 그 자체로 스트림을 끝내지 않으므로
-    # 종료 코드가 될 자격이 없다. 스트림을 끝내는 사건은 "시도가 다 떨어졌다"이고, 마지막
-    # 실패가 시간 초과였다는 사실은 `error` 이벤트의 사유가 말한다.
+    # 답변 생성 — 둘을 가르는 이유는 소비자가 할 일이 다르기 때문이다(재시도 / 자격증명
+    # 주입 경로 확인). 타임아웃은 스트림을 끝내지 않아 자기 코드를 갖지 않는다.
     LLM_UNAVAILABLE = "llm_unavailable"
     LLM_UNAUTHENTICATED = "llm_unauthenticated"
 
@@ -50,17 +41,7 @@ class ErrorCode(StrEnum):
 class AppError(Exception):
     """모든 도메인 예외의 기반.
 
-    `code`는 응답 본문에 실리는 안정적인 식별자다. 이후 change가 하위 클래스를 추가하며
-    확장한다. 메시지에 내부 구현 세부 정보를 담지 않는다.
-
-    `extra`는 구조화된 사실을 오류 응답까지 나르기 위한 통로다 — 지원 포맷 목록,
-    적용된 크기 상한처럼 소비자가 메시지 문자열을 파싱하지 않고 읽어야 하는 값.
-    담기는 값은 도메인 사실뿐이라 `core/`가 HTTP 를 알게 되는 것은 아니다.
-
-    `api/errors.py`의 `handle_app_error`가 이 값을 오류 봉투에 평평하게 옮긴다. 어느
-    코드가 몇 번 상태가 되는지는 그쪽의 `ErrorCode → HTTP 상태` 표가 정한다 — 여기서
-    상태 코드를 들고 있으면 도메인이 HTTP 를 알게 된다.
-    """
+    `extra` 로 구조화된 사실을 응답까지 나른다. 상태는 `api/errors.py` 의 표가 정한다."""
 
     code: ErrorCode = ErrorCode.INTERNAL_ERROR
 
@@ -71,27 +52,21 @@ class AppError(Exception):
 
 
 class ConfigurationError(AppError):
-    """설정 값이 없거나 형식이 맞지 않아 서비스를 기동할 수 없다.
-
-    잘못된 설정으로 조용히 기동되는 것보다 기동에 실패하는 편이 낫다.
-    """
+    """설정이 없거나 형식이 틀려 기동할 수 없다. 조용히 기동되는 것보다 낫다."""
 
     code = ErrorCode.CONFIGURATION_ERROR
 
 
 class UnsupportedDocumentFormat(AppError):
-    """지원 목록에 없는 포맷이다. `extra`에 지원 포맷 목록을 싣는다."""
+    """지원 목록에 없는 포맷이다. `extra` 에 지원 포맷 목록을 싣는다."""
 
     code = ErrorCode.UNSUPPORTED_DOCUMENT_FORMAT
 
 
 class DocumentTooLarge(AppError):
-    """업로드 크기 상한을 넘었다. `extra`에 적용된 상한을 싣는다.
+    """업로드 크기 상한을 넘었다. `extra` 에 적용된 상한을 싣는다.
 
-    이 상한이 막는 것은 메모리가 아니라 시간이다 — 메모리는 배치 처리가 이미 문서
-    크기와 무관하게 만들었다. 상한이 남는 이유는 수집이 요청 안에서 동기적으로
-    끝나기 때문이며, 상한을 없애려면 배치가 아니라 작업 큐가 필요하다.
-    """
+    막는 것은 메모리가 아니라 시간이다 — 수집이 요청 안에서 동기적으로 끝난다."""
 
     code = ErrorCode.DOCUMENT_TOO_LARGE
 
@@ -105,28 +80,19 @@ class EmptyDocument(AppError):
 class NoExtractableText(AppError):
     """쪽은 있으나 텍스트 레이어가 없다 (스캔본 등).
 
-    `EmptyDocument`와 **구분해야 한다.** 뭉개면 클라이언트가 "파일이 잘못됐다"와
-    "OCR 이 필요하다"를 구분할 수 없다. 이 서비스는 OCR 을 하지 않는다.
-    """
+    `EmptyDocument` 와 가른다 — 뭉개면 파일 손상과 OCR 필요가 같은 사건이 된다."""
 
     code = ErrorCode.NO_EXTRACTABLE_TEXT
 
 
 class DocumentParseError(AppError):
-    """파서가 내용을 읽지 못했다.
-
-    각 파서 어댑터가 자기 경계에서 라이브러리 예외를 이것으로 바꿔 던진다. 라우터까지
-    라이브러리 예외가 새면 계층 경계가 무의미해지고, 내부 예외 메시지가 응답에 노출된다.
-    """
+    """파서가 내용을 읽지 못했다. 어댑터가 라이브러리 예외를 이것으로 바꿔 던진다."""
 
     code = ErrorCode.DOCUMENT_PARSE_ERROR
 
 
 class DocumentNotFound(AppError):
-    """해당 `document_id`로 수집된 문서가 없다.
-
-    새 코드를 만들지 않고 기존 `NOT_FOUND`를 재사용한다 — 소비자에게는 같은 사건이다.
-    """
+    """수집된 문서가 없다. `NOT_FOUND` 를 재사용한다 — 소비자에게는 같은 사건이다."""
 
     code = ErrorCode.NOT_FOUND
 
@@ -134,11 +100,7 @@ class DocumentNotFound(AppError):
 class EmptyQuery(AppError):
     """질의가 비었거나 공백 문자뿐이다.
 
-    프레임워크의 길이 검증에 맡기지 않는 이유는 두 가지다. 공백만 있는 질의는 길이가
-    0 이 아니라 그쪽으로 잡히지 않고, 무엇보다 수집이 같은 종류의 사건을
-    `EmptyDocument`로 이미 구분해 두었다 — 한쪽은 도메인 코드, 한쪽은 프레임워크
-    코드로 알리면 소비자가 분기를 둘 들어야 한다.
-    """
+    프레임워크 검증에 안 맡긴다 — 공백 질의는 길이가 0 이 아니고, 수집도 도메인 코드로 알린다."""
 
     code = ErrorCode.EMPTY_QUERY
 
@@ -146,26 +108,15 @@ class EmptyQuery(AppError):
 class QueryTooLong(AppError):
     """질의가 문자 수 상한이나 임베딩 입력 창을 넘었다.
 
-    `extra`에 **두 상한을 함께** 싣는다. 어느 쪽에 걸렸든 응답 모양이 같아야 소비자가
-    파서를 하나만 든다. 둘 다 클라이언트가 미리 알 수 없는 값이다 — 문자 상한은 배포
-    설정이고, 토큰 상한은 임베딩 모델이 선언한 입력 창이다.
-
-    자르지 않고 거부하는 이유: 질문을 반으로 잘라 각각 검색하면 그건 다른 질문이고,
-    조용히 자르면 잘린 뒷부분이 검색에 반영되지 않는데 사용자는 전부 반영됐다고 믿는다.
-    """
+    두 상한을 함께 싣고 자르지 않는다 — 조용한 절단은 사용자가 눈치채지 못한다."""
 
     code = ErrorCode.QUERY_TOO_LONG
 
 
 class InvalidTopK(AppError):
-    """요청한 `top_k`가 설정된 상한을 넘었다. `extra`에 적용된 상한을 싣는다.
+    """`top_k` 가 설정된 상한을 넘었다. `extra` 에 적용된 상한을 싣는다.
 
-    **상한 초과에만 쓴다.** `top_k >= 1`은 어느 배포에서나 같은 사실이라 요청 모델의
-    정적 검증이 `validation_error`로 끝낸다 — 스키마에 두면 OpenAPI 문서에 그대로
-    드러나 소비자가 요청을 보내기 전에 안다. 반면 상한은 기동 시점에야 정해지는 배포
-    설정이라 스키마에 넣을 수 없고, 응답이 알려 주지 않으면 클라이언트는 이분 탐색으로
-    알아내는 수밖에 없다. 검증 위치가 사실의 성격을 따라가고, 코드가 검증 위치를 따라간다.
-    """
+    상한 초과에만 쓴다 — `>= 1` 은 배포와 무관한 사실이라 요청 스키마가 판정한다."""
 
     code = ErrorCode.INVALID_TOP_K
 
@@ -173,24 +124,15 @@ class InvalidTopK(AppError):
 class LlmTimeout(AppError):
     """생성 한 시도가 시간 상한을 넘겼다.
 
-    **이 예외가 곧 스트림의 끝은 아니다.** 서비스가 남은 시도로 다시 부를 수 있고, 소진된
-    뒤에야 `LLM_UNAVAILABLE` 로 끝난다 — 그래서 코드가 `LlmGenerationFailed` 와 같다.
-    구분이 필요한 자리는 `error` 이벤트의 사유이지 오류 코드가 아니다.
-
-    어댑터는 이것을 던지기 전에 그 시도가 만든 자원을 정리한다. 무엇을 정리하는지는 표면이
-    아는 일이라 정의가 여기 있지 않다.
-    """
+    이것이 스트림의 끝은 아니라 `LlmGenerationFailed` 와 코드가 같다 — 구분은 사유가 한다."""
 
     code = ErrorCode.LLM_UNAVAILABLE
 
 
 class LlmGenerationFailed(AppError):
-    """생성이 실패했다 — 시간 초과와 인증 부재를 **뺀** 나머지 전부.
+    """시간 초과와 인증 부재를 뺀 생성 실패 전부.
 
-    세션 사망, 핸드셰이크 실패, 출력 파싱 실패가 전부 여기로 정규화된다. 셋을 더 잘게
-    나누지 않는 이유는 **서비스의 처분이 같기 때문이다** — 전부 재시도 대상이다. 원인을
-    가르는 일은 로그가 하고, 오류 코드는 소비자의 분기 수만큼만 있으면 된다.
-    """
+    더 잘게 가르지 않는 이유는 서비스의 처분이 같기 때문이다 — 전부 재시도 대상이다."""
 
     code = ErrorCode.LLM_UNAVAILABLE
 
@@ -198,13 +140,7 @@ class LlmGenerationFailed(AppError):
 class LlmUnauthenticated(AppError):
     """생성기가 인증되지 않았다 — 자격증명이 없거나 만료됐다.
 
-    **재시도 대상이 아니다.** 백오프를 몇 번 돌아도 자격증명이 생기지 않는다. 같은 논리가
-    CLI 자체의 재시도에도 적용되므로, 어댑터는 그것이 "재시도하겠다"고 알려 와도 기다리지
-    않고 즉시 끊는다.
-
-    기동 조건도 아니다. 인증 부재는 질문이 들어온 시점에만 드러나야 하고, 기동과 헬스는
-    그것과 무관하게 성립한다(`tests/test_boot.py`).
-    """
+    재시도 대상이 아니다 — 백오프를 돌아도 자격증명이 생기지 않는다. 기동 조건도 아니다."""
 
     code = ErrorCode.LLM_UNAUTHENTICATED
 
@@ -212,8 +148,6 @@ class LlmUnauthenticated(AppError):
 class StorageUnavailable(AppError):
     """벡터 스토어나 레지스트리 쓰기가 실패했다.
 
-    리비전 교체 도중 발생하면 서비스가 같은 요청 안에서 새 리비전 청크를 되돌리고
-    이것으로 끝낸다. 이전 리비전은 그대로 남는다.
-    """
+    교체 도중이면 새 리비전 청크를 되돌리고 이전 리비전은 그대로 남는다."""
 
     code = ErrorCode.STORAGE_UNAVAILABLE

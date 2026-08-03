@@ -1,16 +1,7 @@
 """앱 팩토리와 의존성 배선.
 
-배선은 여기서 한 번만 한다. 모듈 전역 싱글턴을 두지 않으므로 테스트가 어댑터를 대역으로
-갈아끼울 수 있고, 구현 교체가 이 파일 한 곳으로 국한된다.
-
-**부팅 경로에서 LLM 제공자를 호출하지 않는다.** 인증 정보가 없거나 손상되어 있어도 기동과
-헬스 보고는 성립해야 한다. LLM 어댑터는 이 change에 존재하지 않으며, 도입될 때에도 지연
-초기화로 붙인다.
-
-임베딩 모델은 반대로 **기동 훅에서 미리 올린다.** 차이는 실패의 성격이다 — LLM 인증은
-평가자 환경마다 다르고 없는 것이 정상이지만, 임베딩 모델은 이미지에 함께 굽는 우리
-자산이라 없으면 그 자체가 이상 신호다. 다만 **선로딩도 기동 조건은 아니다**: 실패하면
-경고만 남기고 뜨며, 첫 임베딩 호출의 지연 로딩이 백스톱으로 남는다.
+전역 싱글턴을 두지 않아 테스트가 어댑터를 갈아끼울 수 있고 교체가 이 파일로 국한된다.
+부팅 경로는 LLM 을 건드리지 않고 임베딩만 선로딩한다 (`ARCHITECTURE.md` 의존성 배선).
 """
 
 import logging
@@ -56,15 +47,9 @@ def default_probes(settings: Settings) -> tuple[HealthProbe, ...]:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """기동 시 두 가지를 미리 한다 — 임베딩 모델 선로딩, 벡터 스토어 정리.
+    """기동 시 임베딩 선로딩과 벡터 스토어 정리를 한다.
 
-    **둘 다 기동 조건이 아니다.** 실패해도 서비스는 뜨고, 무엇이 준비되지 않았는지만
-    로그로 남는다. "설정을 전혀 제공하지 않아도 기동에 성공한다"는 요구사항이 여전히
-    유효하고, 평가자가 처음 실행하는 한 줄이 부수 작업 하나 때문에 실패하면 안 된다.
-
-    선로딩이 먼저인 이유는 순서 의존이 아니라 관측성이다 — 오래 걸리는 쪽을 먼저 두어야
-    기동 로그가 무엇을 기다리는 중인지 순서대로 말한다.
-    """
+    둘 다 기동 조건이 아니다 — 실패해도 뜨고 로그만 남는다. 오래 걸리는 쪽이 앞이다."""
     await _warm_up_embedder(app)
 
     report = await app.state.ingestion_service.reconcile_storage()
@@ -82,13 +67,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 async def _warm_up_embedder(app: FastAPI) -> None:
     """임베딩 모델을 미리 올린다. 실패는 경고로 끝낸다.
 
-    미리 하지 않으면 비용이 사라지는 게 아니라 **첫 업로드에게 청구된다.** 평가자가
-    처음 눌러 보는 요청이 정확히 그 요청이고, 가중치 부재나 차원 선언 불일치 같은
-    문제도 그때서야 500으로 드러난다.
-
-    실패해도 계속 뜨는 것이 안전한 이유는 **지연 로딩이 백스톱으로 남아 있기**
-    때문이다 — 첫 임베딩 호출이 다시 시도하므로 일시적 실패는 스스로 회복된다.
-    """
+    미리 안 하면 비용이 첫 업로드에 청구된다. 실패해도 뜨는 것은 지연 로딩이 백스톱이라서다."""
     embedder = app.state.embedder
     try:
         await embedder.warm_up()
@@ -109,11 +88,7 @@ def create_app(
 ) -> FastAPI:
     """앱을 만든다.
 
-    어댑터를 전부 주입할 수 있는 이유는 두 가지다. 테스트가 의존성 상태를 결정론적으로
-    구성해야 하고(실제 컨테이너를 죽여가며 상태를 만들면 느리고 불안정하다), 이 인자들이
-    곧 **교체 지점**이기 때문이다 — PDF 파서든 임베딩 런타임이든 벡터 스토어든, 갈아끼울
-    때 바뀌는 곳은 여기 한 줄이다.
-    """
+    어댑터를 전부 주입받는 이유는 테스트의 결정론과 교체 지점이 같은 자리이기 때문이다."""
     settings = settings or get_settings()
     configure_logging(settings.log_level)
     probes = default_probes(settings) if probes is None else tuple(probes)
@@ -127,23 +102,19 @@ def create_app(
         probe_timeout_seconds=settings.probe_timeout_seconds,
         total_timeout_seconds=settings.health_total_timeout_seconds,
     )
-    # 임베더 **생성**은 모델을 올리지 않는다. 모양(차원·입력 창)은 어댑터가 선언하고,
-    # 가중치는 기동 훅의 선로딩이 올린다(`_warm_up_embedder`). 팩토리가 동기 함수라
-    # 여기서 올릴 수도 없고, 올리면 `create_app` 자체가 실패할 수 있다.
+    # 생성은 모델을 올리지 않는다 — 팩토리가 동기라 올릴 수도 없고, 올리면
+    # `create_app` 자체가 실패할 수 있다.
     if embedder is None:
         embedder = SentenceTransformerEmbedder(settings.embedding_model)
     if vector_store is None:
-        # 컬렉션 이름에 차원이 들어간다. Chroma 가 컬렉션당 차원 하나만 허용하고 그
-        # 차원이 컬렉션을 비운 뒤에도 남기 때문이다 — 이 배선이 아니면 차원이 다른
-        # 모델로 바꿨을 때 재업로드가 영구히 실패한다 (`collection_for` 참조).
+        # 컬렉션 이름에 차원이 든다 — 없으면 차원이 다른 모델로 바꿨을 때 재업로드가
+        # 영구히 실패한다 (`collection_for`).
         vector_store = ChromaVectorStore(
             settings.vector_store_url, collection_name=collection_for(embedder.dimension)
         )
 
-    # **색인 서명은 여기서 한 번만 유도한다.** 수집은 이 값으로 청크를 찍고 검색은
-    # 이 값으로 필터하는데, 두 서비스가 각자 유도하면 재료 목록이 두 곳에 생긴다.
-    # 한쪽만 고쳐진 순간 방금 올린 문서가 검색되지 않으면서 어디에도 오류가 남지
-    # 않는다 — 두 값이 각자 자기 기준으로는 옳기 때문이다.
+    # 한 번만 유도한다 — 두 서비스가 각자 유도하면 한쪽만 고쳐진 순간 방금 올린 문서가
+    # 오류 없이 검색되지 않는다.
     index_signature = derive_index_signature(
         embedder_signature=embedder.signature,
         chunk_strategy=settings.chunk_strategy.value,
@@ -152,14 +123,11 @@ def create_app(
         chunk_overlap=settings.chunk_overlap,
     )
 
-    # **두 서비스가 같은 레지스트리 인스턴스를 본다.** 검색의 대상 집합은 수집이 방금
-    # 커밋한 값을 읽어야 하므로, 여기서 하나로 묶어 두지 않으면 업로드 직후의 문서가
-    # 검색되지 않는다.
+    # 두 서비스가 같은 인스턴스를 본다 — 아니면 업로드 직후 문서가 검색되지 않는다.
     if registry is None:
         registry = SqliteDocumentRegistry(settings.registry_path)
 
-    # 기동 훅이 선로딩을 부르려면 임베더에 닿아야 한다. 수집 서비스 안에서 꺼내지
-    # 않는 이유는 그게 서비스의 내부 구성이기 때문이다 — 배선이 배선한 것을 들고 있는다.
+    # 서비스 안에서 꺼내지 않는다 — 배선이 배선한 것을 들고 있는다.
     app.state.embedder = embedder
     app.state.ingestion_service = IngestionService(
         ParserRegistry(default_parsers() if parsers is None else parsers),
@@ -177,8 +145,7 @@ def create_app(
         embedder,
         vector_store,
         registry,
-        # 수집이 청크를 찍은 것과 **같은 서명**이다. 이 한 줄이 두 서비스를 같은 색인
-        # 세대에 묶는다.
+        # 수집이 청크를 찍은 것과 같은 서명이라 두 서비스가 같은 색인 세대에 묶인다.
         index_signature=index_signature,
         top_k=settings.retrieval_top_k,
         min_score=settings.retrieval_min_score,
