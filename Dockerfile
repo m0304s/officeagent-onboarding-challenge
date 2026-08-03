@@ -1,20 +1,39 @@
+# ── Codex CLI ───────────────────────────────────────────────────────────
+#
+# Codex SDK 는 HTTP 클라이언트가 아니라 로컬 CLI 를 실행한다. 컨테이너 안에서 답변을
+# 생성하려면 파이썬만으로는 부족하고 Node 런타임과 CLI 바이너리가 이미지에 있어야 한다
+# (design 결정 5). QA change 에서 베이스 이미지를 다시 짜지 않으려고 지금 넣어둔다 —
+# **이 change 는 CLI 를 호출하지 않는다.**
+#
+# 공식 node 이미지에서 설치하고 결과만 가져온다. 데비안의 `npm` 패키지를 쓰지 않는
+# 이유는 그것이 `node-*` 의존성 395개(약 50MB)를 끌고 오기 때문이다 — 실제로 그중 두
+# 개가 미러에서 400 을 받아 빌드가 통째로 깨졌다. 평가자 환경에서 같은 식으로 깨지면
+# "실행 불가"가 되므로, 미러 상태에 걸린 표면을 아예 없앤다.
+FROM node:22-slim AS codex-cli
+RUN npm install -g @openai/codex && npm cache clean --force
+
 FROM python:3.11-slim AS runtime
 
-# `claude-code-sdk` 는 HTTP 클라이언트가 아니라 로컬 CLI 를 실행한다. 컨테이너 안에서
-# 답변을 생성하려면 파이썬만으로는 부족하고 Node 런타임과 CLI 바이너리가 이미지에
-# 있어야 한다 (design 결정 5). QA change 에서 베이스 이미지를 다시 짜지 않으려고 지금
-# 넣어둔다 — **이 change 는 CLI 를 호출하지 않는다.**
+# curl 은 compose 헬스체크가 쓴다. `ca-certificates` 는 선택이 아니다 — 빠뜨리면 codex 가
+# 인증까지 통과하고도 모든 호출이 `invalid peer certificate: UnknownIssuer` 로 죽는다.
+# 실측으로 확인한 실패 형태이고, 인증 문제로 오인하기 딱 좋은 증상이다.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code \
-    && npm cache clean --force
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# `codex` 는 네이티브 바이너리를 고르는 node 셤이라 런타임이 함께 있어야 한다.
+# 심볼릭 링크는 npm 이 만들던 것과 같은 모양이다.
+COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
+RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
+    && codex --version
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 # 자격증명은 이미지에 굽지 않는다. 이미지에 넣으면 리포에 남고, 평가자 환경마다 인증
-# 주체가 다르다. 호스트의 기존 것을 실행 시점에 홈 디렉터리로 마운트한다 (결정 5-1).
+# 주체가 다르다. 호스트의 기존 것(`~/.codex/auth.json`)을 실행 시점에 홈 디렉터리로
+# 마운트한다 (결정 5-1). 옮기는 일은 compose 의 `auth` 서비스가 한다.
 RUN useradd --create-home --uid 1000 app
 
 # ── 임베딩 런타임 (무거운 레이어 — 코드보다 먼저 굳힌다) ────────────────
@@ -77,10 +96,14 @@ FROM runtime AS test
 USER root
 COPY tests ./tests
 COPY sample-docs ./sample-docs
-# 자격증명 동기화 스크립트는 서비스가 쓰는 것이 아니라 `make up` 이 쓰는 것이라 런타임
+# 자격증명 동기화 스크립트는 api 가 아니라 compose 의 `auth` 서비스가 쓰는 것이라 런타임
 # 이미지에 없다. 그래도 여기 넣는 이유는 그 **본문을 읽어 제약을 고정하는** 테스트가
 # 있어서다 — 없으면 컨테이너 실행만 그 회귀 방어를 잃는다.
 COPY scripts ./scripts
+# compose 파일 자체를 읽어 마운트·의존 계약을 단언하는 테스트가 있다. 자격증명이 붙는
+# 경로는 파이썬 코드가 아니라 이 YAML 에만 적혀 있어서, 여기가 조용히 바뀌면 다른 어떤
+# 테스트도 알아채지 못한다.
+COPY docker-compose.yml ./
 RUN pip install --no-cache-dir ".[dev]"
 USER app
 

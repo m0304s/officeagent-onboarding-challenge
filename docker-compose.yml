@@ -1,4 +1,13 @@
 services:
+  auth:
+    image: alpine:3.21
+    volumes:
+      - ${CODEX_HOME:-${USERPROFILE:-${HOME:-/nonexistent}}/.codex}:/host-codex:ro
+      - ./.secrets/codex:/secrets
+      - ./scripts/sync-credentials.sh:/sync.sh:ro
+    entrypoint: ["/bin/sh", "/sync.sh"]
+    restart: "no"
+
   cache:
     image: redis:7-alpine
     healthcheck:
@@ -66,8 +75,10 @@ services:
       # 프로젝트 루트의 ./data/registry를
       # 컨테이너 내부 /data에 연결한다.
       - ./data/registry:/data
-      - ./.secrets/claude:/home/app/.claude
+      - ./.secrets/codex:/home/app/.codex
     depends_on:
+      auth:
+        condition: service_completed_successfully
       cache:
         condition: service_healthy
       vector-store:
@@ -79,3 +90,16 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
+  test:
+    # 기본 기동(`docker compose up`)에 딸려 오지 않게 프로필 뒤에 둔다.
+    # `docker compose run` 은 프로필과 무관하게 이 서비스를 집어낸다.
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    environment:
+      # 컨테이너 안에서 `localhost:8001` 은 벡터 스토어가 아니다. 서비스 이름으로 만난다.
+      APP_VECTOR_STORE_URL: http://vector-store:8000
+    depends_on:
+      vector-store:
+        condition: service_healthy
