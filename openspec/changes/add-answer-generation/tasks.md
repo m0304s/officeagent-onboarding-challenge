@@ -42,14 +42,22 @@
 
 ## 2. 도메인 값 객체와 프롬프트
 
-- [ ] 2.1 `core/answers.py` — `FinishReason`(`stop`·`no_evidence`·`insufficient_evidence`), `Citation`, 조립된 답변 값 객체. 표준 라이브러리만
-- [ ] 2.2 `core/prompting.py` — `PROMPT_VERSION` 상수와 `build_prompt(question, sources)`. 문맥 블록은 `[n] 파일명 (위치)` + 본문, 지시문에 "제공된 근거 밖을 조회하지 말라"와 출력 형식(`VERDICT:` 첫 줄, 근거 문장 끝 `[n]`)을 명시
-- [ ] 2.3 `core/prompting.py` — `parse_answer(raw, source_count)`. 판정 줄 파싱(누락 시 `ANSWERABLE` + 경고), 마커 추출(등장 순서·중복 제거·범위 밖 폐기), 버려진 마커 수 반환
-- [ ] 2.4 `core/prompting.py` — `VerdictSplitter`. 스트리밍용 판정 줄 분리 상태 기계(design 결정 10). 개행이 오면 첫 줄을 파싱하고, 누적 문자열이 두 후보의 접두사가 아니게 되면 **즉시 전량 방출**한다. 버퍼 상한 21자
-- [ ] 2.5 `tests/test_prompting.py` — 프롬프트 조립 회귀: 문맥에 모든 근거가 번호와 함께 들어가는가, 파일명·위치가 실리는가, 질문이 들어가는가, 출력 형식 지시가 있는가. **LLM 없이 문자열 단언으로만**
-- [ ] 2.6 `tests/test_prompting.py` — 파서 경계: 판정 두 값, 판정 줄 누락, 마커 없음, 중복 마커, 범위 밖 마커, 빈 본문. design 결정 4의 표를 그대로 덮는다
-- [ ] 2.7 `tests/test_prompting.py` — `VerdictSplitter` 경계. **비동기도 페이크도 없이 표 하나로 덮는다**: 판정 줄과 본문이 한 조각 / 실측 모양(`VER`·`DICT`·`: ANSW`·`ERABLE`·`\n`·본문) / 판정 줄 없는 출력이 **즉시** 나가고 첫 글자가 안 잘림 / `INSUFFICIENT` / 판정 줄만 오고 끝남(본문 없음) / 접두사 이탈
-- [ ] 2.8 `PROMPT_DESIGN.md` 작성 — **PRD §4 필수 산출물**. 프롬프트의 각 구성 요소가 무엇을 막으려는 것인지, 환각 억제 전략(근거 밖 조회 금지·판정 줄·마커 강제), 거절 두 갈래의 분담, `PROMPT_VERSION`을 두는 이유. 실제 프롬프트 문자열을 그대로 인용한다
+- [x] 2.1 `core/answers.py` — `FinishReason`(`stop`·`no_evidence`·`insufficient_evidence`), `Citation`, 조립된 답변 값 객체. 표준 라이브러리만
+      → `Answer.__post_init__`가 스펙의 두 규칙("빈 답변은 `no_evidence`뿐", "거절에 인용 없음")을 **불변식으로** 지킨다 — 조립을 잘못하면 응답이 나가기 전에 터진다. `elapsed_ms`는 답변이 아니라 요청의 측정값이라 넣지 않았다(`done` 조립 때 서비스가 합친다). 마커→근거 대응(1-base ↔ 0-base)은 `build_citations` 한 곳에 가뒀다
+- [x] 2.2 `core/prompting.py` — `PROMPT_VERSION` 상수와 `build_prompt(question, sources)`. 문맥 블록은 `[n] 파일명 (위치)` + 본문, 지시문에 "제공된 근거 밖을 조회하지 말라"와 출력 형식(`VERDICT:` 첫 줄, 근거 문장 끝 `[n]`)을 명시
+      → `PROMPT_VERSION = "qa-ko-1"`. 위치 표기는 PDF `(3쪽)` · 그 외 `(문자 120–540)` — PDF 의 문자 오프셋은 쪽 안의 값이라 적으면 오해를 부른다. **근거 0건이면 `ValueError`** 로 막아 결정 6("근거 없으면 부르지 않는다")을 구조로 만들었다
+- [x] 2.3 `core/prompting.py` — `parse_answer(raw, source_count)`. 판정 줄 파싱(누락 시 `ANSWERABLE` + 경고), 마커 추출(등장 순서·중복 제거·범위 밖 폐기), 버려진 마커 수 반환
+      → 경고는 `core/`가 띄우지 않고 `verdict_line_present` 플래그로 넘긴다(로깅 규약은 서비스가 안다). **중복 제거가 범위 검증보다 먼저** — 없는 번호를 세 번 쓴 답변의 `dropped`는 3이 아니라 1이어야 그 수가 프롬프트 열화의 신호로 쓸 수 있다
+- [x] 2.4 `core/prompting.py` — `VerdictSplitter`. 스트리밍용 판정 줄 분리 상태 기계(design 결정 10). 개행이 오면 첫 줄을 파싱하고, 누적 문자열이 두 후보의 접두사가 아니게 되면 **즉시 전량 방출**한다. 버퍼 상한 21자
+      → 상한을 `MAX_VERDICT_LINE_CHARS`로 유도해 상수를 손으로 적지 않았다. 설계에 없던 `finish()`를 더했다 — 개행 없이 끝나는 출력(판정 줄만 낸 회차, 짧은 한 줄 답변)이 `feed`만으로는 버퍼에 갇힌다. `parse_answer`와 **판정 줄 인식 규칙(`_VERDICT_LINES`)·앞쪽 공백 처리(`lstrip`)를 공유**해 두 경로의 본문이 일치한다 — 2.7이 임의 분할로 그 일치를 단언한다
+- [x] 2.5 `tests/test_prompting.py` — 프롬프트 조립 회귀: 문맥에 모든 근거가 번호와 함께 들어가는가, 파일명·위치가 실리는가, 질문이 들어가는가, 출력 형식 지시가 있는가. **LLM 없이 문자열 단언으로만**
+      → 목록에 없던 것을 하나 더했고 그게 이 묶음에서 제일 중요하다 — **프롬프트가 지시한 판정 줄을 파서가 실제로 인식하는가**를 프롬프트에서 정규식으로 뽑아 `parse_answer`에 먹여 확인한다. 둘이 갈리면 모델은 시킨 대로 쓰는데 서버가 못 알아듣고, 그 증상은 오류가 아니라 "판정 줄 없음" 경로로 흡수돼 `INSUFFICIENT`가 영원히 안 나오는 형태로만 드러난다
+- [x] 2.6 `tests/test_prompting.py` — 파서 경계: 판정 두 값, 판정 줄 누락, 마커 없음, 중복 마커, 범위 밖 마커, 빈 본문. design 결정 4의 표를 그대로 덮는다
+      → 표 네 행 + 마커 다섯 경우. 엄격한 판정 줄 인식(대소문자·공백·콜론 뒤 공백)을 `parametrize` 여섯 건으로 고정했다 — 관대하게 받으면 분리기가 버퍼 상한을 가질 수 없다는 것이 그 대가의 근거다
+- [x] 2.7 `tests/test_prompting.py` — `VerdictSplitter` 경계. **비동기도 페이크도 없이 표 하나로 덮는다**: 판정 줄과 본문이 한 조각 / 실측 모양(`VER`·`DICT`·`: ANSW`·`ERABLE`·`\n`·본문) / 판정 줄 없는 출력이 **즉시** 나가고 첫 글자가 안 잘림 / `INSUFFICIENT` / 판정 줄만 오고 끝남(본문 없음) / 접두사 이탈
+      → 목록 전부 + 버퍼 상한(한 글자씩 먹이며 붙들린 길이가 `MAX_VERDICT_LINE_CHARS`를 넘지 않음)과 **분리기 ↔ 파서 동치**: 출력 12종 × 1·2·3조각 모든 분할에서 이어 붙인 본문이 `parse_answer(...).body`와 같다. 이것이 "조각을 이어 붙인 것 = `done.answer`" 스펙 불변식의 근거다. 컨테이너에서 **131 passed in 0.14s**, `ruff check`·`format --check` 통과
+- [x] 2.8 `PROMPT_DESIGN.md` 작성 — **PRD §4 필수 산출물**. 프롬프트의 각 구성 요소가 무엇을 막으려는 것인지, 환각 억제 전략(근거 밖 조회 금지·판정 줄·마커 강제), 거절 두 갈래의 분담, `PROMPT_VERSION`을 두는 이유. 실제 프롬프트 문자열을 그대로 인용한다
+      → 프롬프트 전문은 `build_prompt`를 **실제로 실행해 받은 문자열**을 그대로 붙였다 — 손으로 옮기면 그 순간 문서-코드가 갈린다. 상단에 범위 노트를 달아 "재시도 정책·이벤트 시퀀스·인용 조립은 3~6장의 동작이고 지금 확인 가능한 것은 프롬프트와 파서까지"를 명시했다(허위 기재가 불합격 기준이라 없는 코드를 있다고 적을 자리를 먼저 닫았다). `--output-schema`를 안 쓰는 이유와 형식 위반 표도 함께 옮겼다. `README.md`에서의 링크는 7.3이 붙인다
 
 ## 3. LLM 어댑터 — Codex app-server
 
