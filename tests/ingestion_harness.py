@@ -9,12 +9,21 @@
 그리고 그 실패는 주입할 수 있어야 만들어진다.
 """
 
+from app.adapters.cache.null import NullResponseCache
 from app.adapters.parsers import ParserRegistry, default_parsers
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import derive_index_signature
 from app.core.lexical import DEFAULT_TOKENIZER
+from app.core.prompting import PROMPT_VERSION
+from app.services.cache import CacheService
 from app.services.ingestion import IngestionService
-from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubLexicalIndex, StubVectorStore
+from tests.stubs import (
+    FakeEmbedder,
+    StubDocumentRegistry,
+    StubLexicalIndex,
+    StubResponseCache,
+    StubVectorStore,
+)
 
 LONG_KOREAN = (
     "사내 복리후생 안내\n\n" + "교육비는 연 200만원까지 지원합니다. 신청은 인사팀에 합니다. " * 30
@@ -28,6 +37,7 @@ def make_service(
     vector_store=None,
     lexical_index=None,
     registry=None,
+    cache: StubResponseCache | None = None,
     tokenizer=DEFAULT_TOKENIZER,
     size: int = 200,
     overlap: int = 40,
@@ -42,12 +52,16 @@ def make_service(
     **같은 재료로** 유도해야 한다.
     """
     embedder = embedder or FakeEmbedder()
+    registry = registry or StubDocumentRegistry()
     return IngestionService(
         ParserRegistry(default_parsers() if parsers is None else parsers),
         embedder,
         vector_store or StubVectorStore(),
         lexical_index or StubLexicalIndex(),
-        registry or StubDocumentRegistry(),
+        registry,
+        # 무효화가 수집의 계약이 되었으므로 하네스도 캐시 계층을 든다. 기본값이 꺼진
+        # 캐시인 것은 수집 테스트가 재는 것이 저장 결과의 모양이기 때문이다.
+        make_cache_service(cache, registry, embedder),
         index_signature=derive_index_signature(
             embedder_signature=embedder.signature,
             chunk_strategy=ChunkStrategy.RECURSIVE.value,
@@ -61,4 +75,24 @@ def make_service(
         chunk_overlap=overlap,
         embedding_batch_size=batch_size,
         concurrency=concurrency,
+    )
+
+
+def make_cache_service(
+    cache: StubResponseCache | None,
+    registry: StubDocumentRegistry,
+    embedder,
+) -> CacheService:
+    """배선(`create_app`)이 세우는 것과 같은 캐시 계층. 대역을 주지 않으면 꺼진 캐시다."""
+    return CacheService(
+        cache or NullResponseCache(),
+        registry,
+        embedder,
+        prompt_version=PROMPT_VERSION,
+        model="fake-model",
+        semantic_threshold=0.93,
+        semantic_candidates=200,
+        operation_timeout_seconds=0.2,
+        breaker_failures=3,
+        breaker_cooldown_seconds=30.0,
     )

@@ -21,15 +21,24 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from app.adapters.cache.null import NullResponseCache
 from app.adapters.parsers import ParserRegistry, default_parsers
 from app.adapters.protocols import Embedder, LexicalIndex
 from app.adapters.retrievers import RetrieverDependencies, build_retriever
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import Document, derive_index_signature
 from app.core.lexical import DEFAULT_TOKENIZER
+from app.core.prompting import PROMPT_VERSION
+from app.services.cache import CacheService
 from app.services.ingestion import IngestionService
 from app.services.retrieval import RetrievalService, RetrieverBinding
-from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubLexicalIndex, StubVectorStore
+from tests.stubs import (
+    FakeEmbedder,
+    StubDocumentRegistry,
+    StubLexicalIndex,
+    StubResponseCache,
+    StubVectorStore,
+)
 
 #: 후보 깊이. `Settings` 기본값과 같은 값이라 하네스가 배포 구성과 같은 깊이로 돈다.
 CANDIDATE_DEPTH = 50
@@ -72,6 +81,10 @@ class Harness:
     store: StubVectorStore
     lexical: LexicalIndex
     registry: StubDocumentRegistry
+    #: 수집과 답변이 함께 보는 캐시 계층. 무효화가 두 서비스에 걸친 계약이라 하나여야 한다.
+    cache_service: CacheService
+    #: 캐시 저장소 대역. 캐시를 끈 하네스에서는 `None` 이다.
+    cache: StubResponseCache | None
     index_signature: str
     _top_k: int
     _min_score: float
@@ -124,6 +137,12 @@ def make_harness(
     vector_store: StubVectorStore | None = None,
     lexical_index: LexicalIndex | None = None,
     registry: StubDocumentRegistry | None = None,
+    cache: StubResponseCache | None = None,
+    semantic_threshold: float = 0.93,
+    operation_timeout_seconds: float = 0.2,
+    breaker_failures: int = 3,
+    breaker_cooldown_seconds: float = 30.0,
+    clock=None,
     size: int = 200,
     overlap: int = 40,
     top_k: int = 5,
@@ -146,6 +165,20 @@ def make_harness(
         chunk_overlap=overlap,
         tokenizer_signature=DEFAULT_TOKENIZER.signature_material,
     )
+    # 배선(`create_app`)과 같다 — 수집과 답변이 같은 캐시 계층 인스턴스를 본다.
+    cache_service = CacheService(
+        cache or NullResponseCache(),
+        registry,
+        embedder,
+        prompt_version=PROMPT_VERSION,
+        model="fake-model",
+        semantic_threshold=semantic_threshold,
+        semantic_candidates=200,
+        operation_timeout_seconds=operation_timeout_seconds,
+        breaker_failures=breaker_failures,
+        breaker_cooldown_seconds=breaker_cooldown_seconds,
+        **({"clock": clock} if clock else {}),
+    )
     return Harness(
         ingestion=IngestionService(
             ParserRegistry(default_parsers()),
@@ -153,6 +186,7 @@ def make_harness(
             store,
             lexical,
             registry,
+            cache_service,
             index_signature=signature,
             chunk_strategy=ChunkStrategy.RECURSIVE,
             chunk_size=size,
@@ -176,6 +210,8 @@ def make_harness(
         store=store,
         lexical=lexical,
         registry=registry,
+        cache_service=cache_service,
+        cache=cache,
         index_signature=signature,
         _top_k=top_k,
         _min_score=min_score,

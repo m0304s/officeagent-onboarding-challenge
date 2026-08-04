@@ -258,12 +258,16 @@ def create_app(
 
     # 서비스 안에서 꺼내지 않는다 — 배선이 배선한 것을 들고 있는다.
     app.state.embedder = embedder
+    # 수집과 답변이 같은 인스턴스를 본다. 나누면 차단기 상태와 연결이 둘이 되고,
+    # 무효화가 어느 쪽 상태를 보는지가 갈린다.
+    cache_service = _build_cache_service(settings, app, embedder, registry)
     app.state.ingestion_service = IngestionService(
         ParserRegistry(default_parsers() if parsers is None else parsers),
         embedder,
         vector_store,
         lexical_index,
         registry,
+        cache_service,
         index_signature=index_signature,
         chunk_strategy=settings.chunk_strategy,
         chunk_size=settings.chunk_size,
@@ -292,7 +296,7 @@ def create_app(
     app.state.qa_service = QaService(
         app.state.retrieval_service,
         generator,
-        _build_cache_service(settings, app, embedder, registry),
+        cache_service,
         timeout_seconds=settings.qa_llm_timeout_seconds,
         max_attempts=settings.qa_llm_max_attempts,
         retry_backoff_seconds=settings.qa_llm_retry_backoff_seconds,

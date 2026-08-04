@@ -19,11 +19,8 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 
-from app.adapters.cache.null import NullResponseCache
 from app.adapters.protocols import Embedder
 from app.core.answers import Citation
-from app.core.prompting import PROMPT_VERSION
-from app.services.cache import CacheService
 from app.services.qa import (
     AnswerEvent,
     DoneEvent,
@@ -112,30 +109,28 @@ def make_qa_harness(
     """
     # 저장소를 그대로 두고 설정만 바꾼 서비스를 세울 수 있어야 한다 — `retrieval_top_k`
     # 변경이 캐시 항목을 어떻게 가르는지는 같은 저장소 위에서만 재진다.
-    storage = retrieval or make_harness(top_k=top_k, min_score=min_score, embedder=embedder)
+    storage = retrieval or make_harness(
+        top_k=top_k,
+        min_score=min_score,
+        embedder=embedder,
+        cache=cache or (StubResponseCache(clock=clock) if cached else None),
+        semantic_threshold=semantic_threshold,
+        operation_timeout_seconds=operation_timeout_seconds,
+        breaker_failures=breaker_failures,
+        breaker_cooldown_seconds=breaker_cooldown_seconds,
+        clock=clock,
+    )
     searching = storage.searching_with(top_k=top_k) if retrieval else storage.retrieval
     generator = ScriptedGenerator(turns=turns or (GenerationTurn(),))
-    store = cache or (StubResponseCache(clock=clock) if cached else None)
     harness = QaHarness(
         retrieval=storage,
         generator=generator,
-        cache=store,
+        cache=storage.cache,
         service=QaService(
             searching,
             generator,
-            CacheService(
-                store or NullResponseCache(),
-                storage.registry,
-                storage.embedder,
-                prompt_version=PROMPT_VERSION,
-                model="fake-model",
-                semantic_threshold=semantic_threshold,
-                semantic_candidates=200,
-                operation_timeout_seconds=operation_timeout_seconds,
-                breaker_failures=breaker_failures,
-                breaker_cooldown_seconds=breaker_cooldown_seconds,
-                **({"clock": clock} if clock else {}),
-            ),
+            # 수집이 무효화에 쓰는 것과 같은 인스턴스다 — 나누면 무효화가 다른 캐시를 지운다.
+            storage.cache_service,
             timeout_seconds=timeout_seconds,
             max_attempts=max_attempts,
             retry_backoff_seconds=retry_backoff_seconds,
