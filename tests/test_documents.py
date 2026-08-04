@@ -188,10 +188,9 @@ def test_settings_that_do_not_change_vectors_are_not_materials():
 
 
 def test_search_time_settings_are_not_materials():
-    """retriever 목록·가중치·후보 깊이·하한·융합 상수·캐시 크기는 저장물을 바꾸지 않는다.
+    """retriever 목록·가중치·후보 깊이·하한·융합 상수는 저장물을 바꾸지 않는다.
 
     재료로 삼으면 가중치를 조정할 때마다 전면 재색인이 돌아 아무도 조정하지 않게 된다.
-    그 값들은 검색 결과 캐시의 키가 책임진다.
     """
     parameters = set(inspect.signature(derive_index_signature).parameters)
 
@@ -202,7 +201,6 @@ def test_search_time_settings_are_not_materials():
         "rrf_k",
         "retrieval_min_score",
         "lexical_min_token_rarity",
-        "retrieval_cache_size",
     }
 
 

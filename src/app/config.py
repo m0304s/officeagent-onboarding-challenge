@@ -100,8 +100,6 @@ class Settings(BaseSettings):
     retrievers: list[RetrieverSettings] = Field(default_factory=_default_retrievers)
     # RRF 원 논문(Cormack et al., 2009)이 실험으로 고른 값이자 업계 관례다.
     retrieval_rrf_k: int = Field(default=DEFAULT_RRF_K, gt=0)
-    # 융합 결과 캐시의 항목 수 상한. `0` 은 캐시를 끈다 — 꺼도 결과는 같아야 한다.
-    retrieval_cache_size: int = Field(default=256, ge=0)
     # 막는 것은 절단이 아니라 임의 길이 입력이 토크나이저에 들어가는 것이다. 절단은
     # 임베더가 선언한 입력 창이 막는다 — 문자 수로 막으면 상한이 101자가 된다.
     retrieval_max_query_chars: int = Field(default=1000, gt=0)

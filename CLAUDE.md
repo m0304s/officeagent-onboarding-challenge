@@ -47,6 +47,15 @@ OfficeAgent BE 채용 과제 — Document Q&A API. 문서를 업로드하면 내
   **직전 이미지의 코드를 검사**하므로, 방금 고친 결함을 그대로 다시 보고합니다.
   **수정 직후의 재검증이 몇 초 만에 같은 결과로 돌아왔다면 `--build`를 빠뜨린 것입니다.**
 
+- **일부 테스트만 돌릴 때는 `pytest`를 직접 적습니다.** `Dockerfile`의 `test` 스테이지는
+  `ENTRYPOINT`가 아니라 `CMD ["pytest", "-q"]`라, `docker compose run`에 넘긴 인자가
+  명령을 통째로 갈아치웁니다.
+
+  ```bash
+  docker compose run --build --rm test pytest tests/test_config.py -q   # 이렇게
+  docker compose run --build --rm test tests/test_config.py             # exec format error
+  ```
+
 - **`api` 서비스도 같습니다 — `docker compose up`에도 `--build`를 붙입니다.**
 
   ```bash

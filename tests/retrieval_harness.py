@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.adapters.parsers import ParserRegistry, default_parsers
-from app.adapters.protocols import Embedder
+from app.adapters.protocols import Embedder, LexicalIndex
 from app.adapters.retrievers import RetrieverDependencies, build_retriever
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import Document, derive_index_signature
@@ -70,7 +70,7 @@ class Harness:
     retrieval: RetrievalService
     embedder: Embedder
     store: StubVectorStore
-    lexical: StubLexicalIndex
+    lexical: LexicalIndex
     registry: StubDocumentRegistry
     index_signature: str
     _top_k: int
@@ -122,7 +122,7 @@ def make_harness(
     *,
     embedder: Embedder | None = None,
     vector_store: StubVectorStore | None = None,
-    lexical_index: StubLexicalIndex | None = None,
+    lexical_index: LexicalIndex | None = None,
     registry: StubDocumentRegistry | None = None,
     size: int = 200,
     overlap: int = 40,
@@ -188,7 +188,7 @@ def make_harness(
 def _service(
     embedder: Embedder,
     store: StubVectorStore,
-    lexical: StubLexicalIndex,
+    lexical: LexicalIndex,
     registry: StubDocumentRegistry,
     *,
     signature: str,

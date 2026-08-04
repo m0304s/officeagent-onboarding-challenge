@@ -197,7 +197,6 @@ def test_the_shipped_retriever_defaults_are_dense_required_plus_lexical_optional
     assert all(item.weight > 0 for item in settings.retrievers)
     assert all(item.candidate_depth >= settings.retrieval_max_top_k for item in settings.retrievers)
     assert settings.retrieval_rrf_k > 0
-    assert settings.retrieval_cache_size >= 0
 
 
 def test_an_empty_retriever_list_fails_startup(monkeypatch, tmp_path):

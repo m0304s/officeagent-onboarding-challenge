@@ -43,7 +43,7 @@
 - [x] 5.5 `adapters/retrievers/registry.py` — 이름 → 팩토리 표. 알 수 없는 이름은 `ConfigurationError`
 - [x] 5.6 `config.py` 에 `retrievers` JSON 설정(이름·가중치·후보 깊이·필수 여부)과 융합 상수 `RRF_K`·IDF 커버리지 하한을 더한다(캐시 크기는 5.8 에서 뺀다). 빈 목록·미등록 이름·비양수 가중치·`top_k` 상한보다 작은 후보 깊이는 기동을 막는다
 - [x] 5.7 `tests/test_config.py` 확장 — 기동을 막는 네 경우를 각각 검증한다. 후보 깊이는 기본값이 아니라 **`top_k` 상한**과 비교되는지까지 본다
-- [ ] 5.8 `config.py` 에서 `retrieval_cache_size` 를 뺀다 — 검색 결과 캐시를 만들지 않기로 했으므로(design 결정 7) 아무도 읽지 않는 환경변수다. 5.6 에서 이미 커밋된 값이라 지우는 것이 남은 일이고, `tests/test_config.py` 에 그 항목을 보는 단언이 있으면 함께 지운다
+- [x] 5.8 `config.py` 에서 `retrieval_cache_size` 를 뺀다 — 검색 결과 캐시를 만들지 않기로 했으므로(design 결정 7) 아무도 읽지 않는 환경변수다. 5.6 에서 이미 커밋된 값이라 지우는 것이 남은 일이고, `tests/test_config.py` 에 그 항목을 보는 단언이 있으면 함께 지운다
 
 ## 6. 검색 서비스 팬아웃
 
@@ -63,11 +63,11 @@
 
 ## 8. 계측·회귀·마무리
 
-- [ ] 8.1 `tests/test_retrieval_quality.py` 를 회귀 기준으로 유지한다 — `sample-docs/` 네 질의가 하이브리드 구성에서도 1위를 맞히는지, 무관 질의가 빈 결과인지
-- [ ] 8.2 하이브리드가 구제하는 질의(문서에 그대로 적힌 식별자를 문맥 없이 묻기)를 밀집 단독 구성과 비교하는 테스트를 더한다
-- [ ] 8.3 네 회귀 질의와 식별자 질의로 가중치·IDF 커버리지 하한을 실측하고, 조정이 필요하면 설정 기본값만 바꾼다
-- [ ] 8.4 실측 절차와 값의 근거를 `ARCHITECTURE.md` 검색 파이프라인 절에 적는다 — 점수 의미 변경(유사도 → 융합 점수)과 하한 적용 지점 이동의 이력을 함께 남긴다. 검색 결과 캐시를 넣지 않은 이유(결과가 아니라 지연만 다룬다)도 한 줄 남긴다 — 적지 않으면 다음 사람이 빠진 것으로 읽고 다시 설계한다
-- [ ] 8.5 `docker compose run --build --rm test` 로 전체 스위트를 돌린다. `--build` 없이 돌린 결과는 직전 이미지의 코드다
-- [ ] 8.6 `docker compose run --build --rm test ruff check .` 와 `python3 scripts/check_comments.py` 를 통과시킨다
-- [ ] 8.7 `docker compose up -d --build --wait` 후 `./data` 를 비우고 `sample-docs/` 두 건을 올려 `/search`·`/qa` 를 눈으로 확인한다 — 기여 내역과 기여 retriever 목록이 실제로 실려 나오는지
-- [ ] 8.8 `openspec validate add-rrf-algorithm-spec --strict` 와 문서-코드 일치(`README.md`·`ARCHITECTURE.md` 에 적은 것이 전부 존재하는지)를 확인한다
+- [x] 8.1 `tests/test_retrieval_quality.py` 를 회귀 기준으로 유지한다 — `sample-docs/` 네 질의가 하이브리드 구성에서도 1위를 맞히는지, 무관 질의가 빈 결과인지
+- [x] 8.2 하이브리드가 구제하는 질의(문서에 그대로 적힌 식별자를 문맥 없이 묻기)를 밀집 단독 구성과 비교하는 테스트를 더한다
+- [x] 8.3 네 회귀 질의와 식별자 질의로 가중치·IDF 커버리지 하한을 실측하고, 조정이 필요하면 설정 기본값만 바꾼다
+- [x] 8.4 실측 절차와 값의 근거를 `ARCHITECTURE.md` 검색 파이프라인 절에 적는다 — 점수 의미 변경(유사도 → 융합 점수)과 하한 적용 지점 이동의 이력을 함께 남긴다. 검색 결과 캐시를 넣지 않은 이유(결과가 아니라 지연만 다룬다)도 한 줄 남긴다 — 적지 않으면 다음 사람이 빠진 것으로 읽고 다시 설계한다
+- [x] 8.5 `docker compose run --build --rm test` 로 전체 스위트를 돌린다. `--build` 없이 돌린 결과는 직전 이미지의 코드다
+- [x] 8.6 `docker compose run --build --rm test ruff check .` 와 `python3 scripts/check_comments.py` 를 통과시킨다
+- [x] 8.7 `docker compose up -d --build --wait` 후 `./data` 를 비우고 `sample-docs/` 두 건을 올려 `/search`·`/qa` 를 눈으로 확인한다 — 기여 내역과 기여 retriever 목록이 실제로 실려 나오는지
+- [x] 8.8 `openspec validate add-rrf-algorithm-spec --strict` 와 문서-코드 일치(`README.md`·`ARCHITECTURE.md` 에 적은 것이 전부 존재하는지)를 확인한다
