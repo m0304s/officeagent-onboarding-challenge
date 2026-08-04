@@ -25,7 +25,7 @@
 
 ## 4. 색인 서명과 수집 통합
 
-- [x] 4.1 `derive_index_signature` 재료에 토큰화 구성을 더한다. 검색 시점 설정(가중치·깊이·하한·융합 상수·캐시)은 **넣지 않는다**
+- [x] 4.1 `derive_index_signature` 재료에 토큰화 구성을 더한다. 검색 시점 설정(가중치·깊이·하한·융합 상수)은 **넣지 않는다**
 - [x] 4.2 `services/ingestion.py` 의 쓰기 순서에 어휘 색인을 끼운다 — 벡터 쓰기 → 어휘 쓰기 → 레지스트리 커밋 → 이전 세대 정리(양쪽)
 - [x] 4.3 되돌리기가 양쪽을 모두 지우게 한다. 어느 한쪽 쓰기가 실패해도 응답 시점에 양쪽에 그 리비전의 청크가 0개여야 한다
 - [x] 4.4 삭제와 기동 정리(잔여 청크 제거·`stale` 표시)에 어휘 색인을 포함한다
@@ -41,8 +41,9 @@
 - [x] 5.3 `adapters/retrievers/dense.py` — 기존 임베딩 + 벡터 스토어 질의를 프로토콜 뒤로 옮긴다. 코사인 하한을 이 안에서 적용한다
 - [x] 5.4 `adapters/retrievers/lexical.py` — 어휘 색인을 프로토콜 뒤로 감싼다
 - [x] 5.5 `adapters/retrievers/registry.py` — 이름 → 팩토리 표. 알 수 없는 이름은 `ConfigurationError`
-- [x] 5.6 `config.py` 에 `retrievers` JSON 설정(이름·가중치·후보 깊이·필수 여부)과 융합 상수 `RRF_K`·IDF 커버리지 하한·캐시 크기를 더한다. 빈 목록·미등록 이름·비양수 가중치·`top_k` 상한보다 작은 후보 깊이는 기동을 막는다
+- [x] 5.6 `config.py` 에 `retrievers` JSON 설정(이름·가중치·후보 깊이·필수 여부)과 융합 상수 `RRF_K`·IDF 커버리지 하한을 더한다(캐시 크기는 5.8 에서 뺀다). 빈 목록·미등록 이름·비양수 가중치·`top_k` 상한보다 작은 후보 깊이는 기동을 막는다
 - [x] 5.7 `tests/test_config.py` 확장 — 기동을 막는 네 경우를 각각 검증한다. 후보 깊이는 기본값이 아니라 **`top_k` 상한**과 비교되는지까지 본다
+- [ ] 5.8 `config.py` 에서 `retrieval_cache_size` 를 뺀다 — 검색 결과 캐시를 만들지 않기로 했으므로(design 결정 7) 아무도 읽지 않는 환경변수다. 5.6 에서 이미 커밋된 값이라 지우는 것이 남은 일이고, `tests/test_config.py` 에 그 항목을 보는 단언이 있으면 함께 지운다
 
 ## 6. 검색 서비스 팬아웃
 
@@ -60,22 +61,13 @@
 - [x] 7.4 `demo-ui` 의 점수 표기를 "유사도"에서 융합 점수로 고친다
 - [x] 7.5 `README.md` 에 retriever 설정 방법(`APP_RETRIEVERS` 예시)과 응답 필드 설명을 적는다
 
-## 8. 검색 결과 캐시
+## 8. 계측·회귀·마무리
 
-- [ ] 8.1 `adapters/cache/retrieval.py` 에 크기 상한이 있는 LRU 를 만든다. 키는 `sha256(query ‖ fingerprint ‖ search_signature ‖ candidate_depths)` — `candidate_depths` 는 이름순으로 정렬한 `(retriever 이름, 깊이)` 쌍 전체다. `top_k` 는 키에 넣지 않는다
-- [ ] 8.2 대상 집합 지문(정렬된 삼중항 해시)과 검색 구성 서명(활성 목록·가중치·`RRF_K`·하한)을 유도하는 순수 함수를 만든다. 삼중항 순서가 지문을 바꾸지 않아야 한다
-- [ ] 8.3 서비스에 캐시를 끼운다 — **상위 K로 자르기 전의 융합 결과만** 담고, 현재성 재검증과 상위 K 절단은 적중 여부와 무관하게 매번 돈다. 하한은 여기서 다시 걸지 않는다(융합 앞에서 이미 걸렸다)
-- [ ] 8.4 설정으로 캐시를 끌 수 있게 한다
-- [ ] 8.5 `tests/test_retrieval_cache.py` — 두 번째 요청에서 retriever 미호출, 문서 추가·교체·삭제 후 자동 미적중, 가중치 변경 후 미적중, 적중 상태에서 삭제된 문서가 결과에서 빠지는 것, 캐시를 꺼도 결과가 같은 것, 적중 시 임베딩 미호출
-- [ ] 8.6 `ARCHITECTURE.md` 에 캐시 키 설계와 "무효화 호출이 없는 이유", Redis 를 쓰지 않은 이유를 적는다
-
-## 9. 계측·회귀·마무리
-
-- [ ] 9.1 `tests/test_retrieval_quality.py` 를 회귀 기준으로 유지한다 — `sample-docs/` 네 질의가 하이브리드 구성에서도 1위를 맞히는지, 무관 질의가 빈 결과인지
-- [ ] 9.2 하이브리드가 구제하는 질의(문서에 그대로 적힌 식별자를 문맥 없이 묻기)를 밀집 단독 구성과 비교하는 테스트를 더한다
-- [ ] 9.3 네 회귀 질의와 식별자 질의로 가중치·IDF 커버리지 하한을 실측하고, 조정이 필요하면 설정 기본값만 바꾼다
-- [ ] 9.4 실측 절차와 값의 근거를 `ARCHITECTURE.md` 검색 파이프라인 절에 적는다 — 점수 의미 변경(유사도 → 융합 점수)과 하한 적용 지점 이동의 이력을 함께 남긴다
-- [ ] 9.5 `docker compose run --build --rm test` 로 전체 스위트를 돌린다. `--build` 없이 돌린 결과는 직전 이미지의 코드다
-- [ ] 9.6 `docker compose run --build --rm test ruff check .` 와 `python3 scripts/check_comments.py` 를 통과시킨다
-- [ ] 9.7 `docker compose up -d --build --wait` 후 `./data` 를 비우고 `sample-docs/` 두 건을 올려 `/search`·`/qa` 를 눈으로 확인한다 — 기여 내역과 기여 retriever 목록이 실제로 실려 나오는지
-- [ ] 9.8 `openspec validate add-rrf-algorithm-spec --strict` 와 문서-코드 일치(`README.md`·`ARCHITECTURE.md` 에 적은 것이 전부 존재하는지)를 확인한다
+- [ ] 8.1 `tests/test_retrieval_quality.py` 를 회귀 기준으로 유지한다 — `sample-docs/` 네 질의가 하이브리드 구성에서도 1위를 맞히는지, 무관 질의가 빈 결과인지
+- [ ] 8.2 하이브리드가 구제하는 질의(문서에 그대로 적힌 식별자를 문맥 없이 묻기)를 밀집 단독 구성과 비교하는 테스트를 더한다
+- [ ] 8.3 네 회귀 질의와 식별자 질의로 가중치·IDF 커버리지 하한을 실측하고, 조정이 필요하면 설정 기본값만 바꾼다
+- [ ] 8.4 실측 절차와 값의 근거를 `ARCHITECTURE.md` 검색 파이프라인 절에 적는다 — 점수 의미 변경(유사도 → 융합 점수)과 하한 적용 지점 이동의 이력을 함께 남긴다. 검색 결과 캐시를 넣지 않은 이유(결과가 아니라 지연만 다룬다)도 한 줄 남긴다 — 적지 않으면 다음 사람이 빠진 것으로 읽고 다시 설계한다
+- [ ] 8.5 `docker compose run --build --rm test` 로 전체 스위트를 돌린다. `--build` 없이 돌린 결과는 직전 이미지의 코드다
+- [ ] 8.6 `docker compose run --build --rm test ruff check .` 와 `python3 scripts/check_comments.py` 를 통과시킨다
+- [ ] 8.7 `docker compose up -d --build --wait` 후 `./data` 를 비우고 `sample-docs/` 두 건을 올려 `/search`·`/qa` 를 눈으로 확인한다 — 기여 내역과 기여 retriever 목록이 실제로 실려 나오는지
+- [ ] 8.8 `openspec validate add-rrf-algorithm-spec --strict` 와 문서-코드 일치(`README.md`·`ARCHITECTURE.md` 에 적은 것이 전부 존재하는지)를 확인한다
