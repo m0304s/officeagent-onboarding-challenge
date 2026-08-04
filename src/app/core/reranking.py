@@ -10,6 +10,10 @@ from dataclasses import replace
 
 from app.core.retrieval import ScoredChunk
 
+#: 응답이 밝히는 순위 신호. 문자열인 이유는 이 값이 API 표면으로 그대로 나가기 때문이다.
+ORDERED_BY_RERANK = "rerank"
+ORDERED_BY_FUSION = "fusion"
+
 
 def targets(chunks: Sequence[ScoredChunk], *, depth: int) -> tuple[ScoredChunk, ...]:
     """리랭커에 넘길 후보 — 융합 상위 `depth` 개.

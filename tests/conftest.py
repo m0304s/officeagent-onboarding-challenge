@@ -142,6 +142,8 @@ def make_settings(data_dir: Path) -> Settings:
         registry_path=data_dir / "registry.sqlite3",
         probe_timeout_seconds=0.2,
         health_total_timeout_seconds=0.5,
+        # 실물 가중치를 배선하지 않는다 — 리랭킹을 보는 테스트는 페이크를 직접 주입한다.
+        reranker_enabled=False,
     )
 
 

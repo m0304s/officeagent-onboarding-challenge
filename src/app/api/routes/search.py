@@ -94,6 +94,11 @@ def _log_search(request: Request, result: RetrievalResult) -> None:
             "top_fusion_score": result.top_score,
             # 이름 하나가 빠진 것이 하이브리드가 꺼진 배포의 유일한 신호다.
             "contributing_retrievers": list(result.retrievers),
+            # 리랭커가 빠진 배포와 정상 배포는 둘 다 `200` 을 낸다 — 로그가 말해 주지
+            # 않으면 구별할 방법이 없다.
+            "ordered_by": result.ordered_by,
+            "reranker": result.reranker,
+            "reranked_candidates": result.reranked_candidates,
             "target_documents": result.target_documents,
         },
     )

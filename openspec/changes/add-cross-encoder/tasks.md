@@ -22,24 +22,24 @@
 
 ## 3. 설정과 기동 검증
 
-- [ ] 3.1 `config.py` 에 항목을 더한다 — `reranker_enabled`(기본 `True`), `reranker_model`(기본 `BAAI/bge-reranker-v2-m3`), `rerank_candidates`(기본 30), `reranker_timeout_seconds`. 전부 기본값을 가져 환경변수 없이 기동된다
-- [ ] 3.2 `rerank_candidates < retrieval_max_top_k` 면 기동을 막는 검증자를 더한다. `_candidate_depth_must_cover_the_k_ceiling` 옆에 같은 모양으로 둔다 (`retrieval`: 리랭크 깊이가 K 상한보다 작으면 기동을 막는다)
-- [ ] 3.3 선언된 입력 창이 `retrieval_max_query_chars` 와 `chunk_size` 를 함께 담지 못하면 기동을 막는다 (`reranking`: 입력 창이 질의와 청크를 담지 못하면 기동을 막는다)
-- [ ] 3.4 테스트 — 위 세 실패가 각각 기동을 세우고, 실패 사유에서 문제가 된 값을 확인할 수 있는지. 기본 설정으로는 기동이 통과하는지
+- [x] 3.1 `config.py` 에 항목을 더한다 — `reranker_enabled`(기본 `True`), `reranker_model`(기본 `BAAI/bge-reranker-v2-m3`), `rerank_candidates`(기본 30), `reranker_timeout_seconds`. 전부 기본값을 가져 환경변수 없이 기동된다
+- [x] 3.2 `rerank_candidates < retrieval_max_top_k` 면 기동을 막는 검증자를 더한다. `_candidate_depth_must_cover_the_k_ceiling` 옆에 같은 모양으로 둔다 (`retrieval`: 리랭크 깊이가 K 상한보다 작으면 기동을 막는다)
+- [x] 3.3 선언된 입력 창이 `retrieval_max_query_chars` 와 `chunk_size` 를 함께 담지 못하면 기동을 막는다 (`reranking`: 입력 창이 질의와 청크를 담지 못하면 기동을 막는다)
+- [x] 3.4 테스트 — 위 세 실패가 각각 기동을 세우고, 실패 사유에서 문제가 된 값을 확인할 수 있는지. 기본 설정으로는 기동이 통과하는지
 
 ## 4. 검색 파이프라인 배선
 
-- [ ] 4.1 `services/retrieval.py` 에 리랭커를 선택 의존성으로 받는다(`None` 이면 리랭킹 없음). 융합 **뒤**, `_drop_superseded` **앞**에 한 단계를 끼운다 — 절단은 지금처럼 재검증 뒤에 남는다 (design 결정 4)
-- [ ] 4.2 `RetrievalResult` 에 `ordered_by` 와 이번 검색에 실제로 돈 리랭커 이름을 싣는다. 리랭킹이 돌지 않았으면 이름이 없다 (`retrieval`: 응답은 순서를 정한 신호를 밝힌다)
-- [ ] 4.3 축소 경로를 구현한다 — `asyncio.wait_for` 로 감싸고, 예외·타임아웃이면 경고 로그 뒤 융합 순서를 그대로 쓴다. 취소(`CancelledError`)는 축소 대상이 아니다 (`_dispose_of` 가 취소를 다루는 방식과 같게) (design 결정 6)
-- [ ] 4.4 `RetrievalService` 에 `rerank_signature` 읽기 전용 프로퍼티를 더한다 — 리랭커가 없으면 빈 문자열. 캐시가 이것을 물어본다 (design 결정 7)
-- [ ] 4.5 `main.py` 에서 리랭커를 배선하고 `create_app` 의 주입 인자로 연다. `reranker_enabled=false` 면 `None` 을 넘긴다 — 인메모리 대역 같은 중간 구현을 만들지 않는다
-- [ ] 4.6 lifespan 에서 리랭커를 선로딩한다. 임베더와 같은 자리이고 **실패는 경고로 끝낸다** (design 결정 10, `reranking`: 가중치가 없어도 기동된다)
-- [ ] 4.7 검색 로그에 `ordered_by` 와 리랭커 이름·리랭킹 대상 후보 수를 더한다. 질의 문자열과 청크 본문은 여전히 싣지 않는다
-- [ ] 4.8 테스트 — 순서를 뒤집는 페이크 리랭커에서 `results` 순서가 바뀌고, 결과 집합은 그대로인지 (`retrieval`: 리랭킹이 순서를 바꾼다)
-- [ ] 4.9 테스트 — 실패하는 페이크·느린 페이크에서 각각 `200` 과 융합 순서로 끝나고, 그 결과가 **리랭커를 끈 구성의 결과와 같은지** (`retrieval`: 축소 결과는 리랭커를 끈 구성과 같다)
-- [ ] 4.10 테스트 — 리랭킹이 융합 **뒤**·재검증 **앞**에 정확히 한 번 도는지. 재검증에서 떨어진 문서의 청크가 결과에 없고, 리랭킹 호출 횟수가 요청당 1 인지
-- [ ] 4.11 테스트 — 리랭킹이 오래 걸리는 동안 헬스 응답이 막히지 않는지 (`retrieval`: 리랭킹이 오래 걸리는 검색 중 다른 요청)
+- [x] 4.1 `services/retrieval.py` 에 리랭커를 선택 의존성으로 받는다(`None` 이면 리랭킹 없음). 융합 **뒤**, `_drop_superseded` **앞**에 한 단계를 끼운다 — 절단은 지금처럼 재검증 뒤에 남는다 (design 결정 4)
+- [x] 4.2 `RetrievalResult` 에 `ordered_by` 와 이번 검색에 실제로 돈 리랭커 이름을 싣는다. 리랭킹이 돌지 않았으면 이름이 없다 (`retrieval`: 응답은 순서를 정한 신호를 밝힌다)
+- [x] 4.3 축소 경로를 구현한다 — `asyncio.wait_for` 로 감싸고, 예외·타임아웃이면 경고 로그 뒤 융합 순서를 그대로 쓴다. 취소(`CancelledError`)는 축소 대상이 아니다 (`_dispose_of` 가 취소를 다루는 방식과 같게) (design 결정 6)
+- [x] 4.4 `RetrievalService` 에 `rerank_signature` 읽기 전용 프로퍼티를 더한다 — 리랭커가 없으면 빈 문자열. 캐시가 이것을 물어본다 (design 결정 7)
+- [x] 4.5 `main.py` 에서 리랭커를 배선하고 `create_app` 의 주입 인자로 연다. `reranker_enabled=false` 면 `None` 을 넘긴다 — 인메모리 대역 같은 중간 구현을 만들지 않는다
+- [x] 4.6 lifespan 에서 리랭커를 선로딩한다. 임베더와 같은 자리이고 **실패는 경고로 끝낸다** (design 결정 10, `reranking`: 가중치가 없어도 기동된다)
+- [x] 4.7 검색 로그에 `ordered_by` 와 리랭커 이름·리랭킹 대상 후보 수를 더한다. 질의 문자열과 청크 본문은 여전히 싣지 않는다
+- [x] 4.8 테스트 — 순서를 뒤집는 페이크 리랭커에서 `results` 순서가 바뀌고, 결과 집합은 그대로인지 (`retrieval`: 리랭킹이 순서를 바꾼다)
+- [x] 4.9 테스트 — 실패하는 페이크·느린 페이크에서 각각 `200` 과 융합 순서로 끝나고, 그 결과가 **리랭커를 끈 구성의 결과와 같은지** (`retrieval`: 축소 결과는 리랭커를 끈 구성과 같다)
+- [x] 4.10 테스트 — 리랭킹이 융합 **뒤**·재검증 **앞**에 정확히 한 번 도는지. 재검증에서 떨어진 문서의 청크가 결과에 없고, 리랭킹 호출 횟수가 요청당 1 인지
+- [x] 4.11 테스트 — 리랭킹이 오래 걸리는 동안 헬스 응답이 막히지 않는지 (`retrieval`: 리랭킹이 오래 걸리는 검색 중 다른 요청)
 
 ## 5. API 표면
 

@@ -164,7 +164,9 @@ class FakeReranker:
     async def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
         self.calls.append((query, list(documents)))
         if self._delay:
-            await asyncio.sleep(self._delay)
+            # 블로킹을 스레드로 내보낸다 — 실물 어댑터와 같은 모양이라야 대역으로 통과한
+            # 오프로드 단언이 실물에서 뒤집히지 않는다.
+            await asyncio.to_thread(time.sleep, self._delay)
         if self.error is not None:
             raise self.error
         return [self._scorer(query, document) for document in documents]

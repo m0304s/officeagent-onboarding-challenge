@@ -4,6 +4,8 @@
 그 성질로 정렬 방향과 필터를 의미 없이도 결정적으로 잰다.
 """
 
+import asyncio
+from collections.abc import Sequence
 from dataclasses import replace
 
 import pytest
@@ -11,7 +13,7 @@ import pytest
 from app.core.documents import IndexStatus
 from app.core.exceptions import StorageUnavailable
 from tests.retrieval_harness import GUIDE, POLICY, SHORT, make_harness
-from tests.stubs import StubLexicalIndex, StubVectorStore
+from tests.stubs import FakeReranker, StubLexicalIndex, StubVectorStore
 
 #: 하한 테스트가 공유하는 질의. 하한을 점수 분포에서 유도하므로 세 테스트가 같은
 #: 질의를 봐야 유도한 값이 그대로 쓰인다.
@@ -445,3 +447,153 @@ def _store_that_cannot_delete():
     from tests.stubs import StubVectorStore
 
     return StubVectorStore(fail_delete=True)
+
+
+# ── 리랭킹 (4.8~4.11) ────────────────────────────────────────────────────
+
+#: 두 문서 모두에서 후보가 나오는 질의. 리랭킹 대상이 한 문서로 쏠리면 순서 단언이
+#: 융합과 리랭킹 중 무엇을 봤는지 갈리지 않는다.
+RERANK_QUERY = "교육비 지원"
+
+
+def _identities(result) -> list[tuple[str, int]]:
+    return [(chunk.document_id, chunk.chunk_index) for chunk in result.chunks]
+
+
+def _ranking_by_text(chunks, order: Sequence[int]) -> dict[str, float]:
+    """본문 → 점수. `order` 가 앞에 세울 순서라 그대로 뒤집거나 섞을 수 있다."""
+    return {chunk.text: float(len(order) - place) for place, chunk in enumerate(order)}
+
+
+async def _fused_baseline(harness):
+    """리랭커를 끈 같은 구성의 결과. 순서·집합 비교의 기준선이다."""
+    return await harness.retrieval.search(RERANK_QUERY)
+
+
+async def _harness_with_two_documents():
+    harness = make_harness()
+    await harness.ingest("policy.txt", POLICY)
+    await harness.ingest("guide.md", GUIDE)
+    return harness
+
+
+async def test_reranking_reorders_the_results_without_changing_the_set():
+    """순서를 뒤집는 리랭커에서 순서만 바뀐다 — 빠진 청크도 더해진 청크도 없다."""
+    harness = await _harness_with_two_documents()
+    fused = await _fused_baseline(harness)
+    assert fused.count > 1, "결과가 하나면 순서 단언이 공허해진다"
+    scores = {chunk.text: float(place) for place, chunk in enumerate(fused.chunks)}
+    reranker = FakeReranker(scorer=lambda query, text: scores.get(text, -1.0))
+
+    result = await harness.searching_with(reranker=reranker).search(RERANK_QUERY)
+
+    assert _identities(result) == list(reversed(_identities(fused)))
+    assert set(_identities(result)) == set(_identities(fused))
+    assert result.ordered_by == "rerank"
+    assert result.reranker == reranker.name
+    assert all(chunk.rerank_score is not None for chunk in result.chunks)
+
+
+async def test_reranking_leaves_the_fusion_score_and_its_contributions_alone():
+    """두 신호가 함께 산다 — 리랭킹 점수가 융합 점수의 자리를 대신하지 않는다."""
+    harness = await _harness_with_two_documents()
+    fused = await _fused_baseline(harness)
+    before = {
+        (chunk.document_id, chunk.chunk_index): (chunk.score, chunk.contributions)
+        for chunk in fused.chunks
+    }
+
+    result = await harness.searching_with(reranker=FakeReranker()).search(RERANK_QUERY)
+
+    common = [chunk for chunk in result.chunks if (chunk.document_id, chunk.chunk_index) in before]
+    assert common, "공통 청크가 없어 단언이 공허해졌다"
+    for chunk in common:
+        assert (chunk.score, chunk.contributions) == before[(chunk.document_id, chunk.chunk_index)]
+
+
+async def test_candidates_outside_the_rerank_depth_keep_the_fusion_order():
+    """깊이 밖은 버려지지도 섞이지도 않는다 — 융합 순서 그대로 뒤에 온다."""
+    harness = await _harness_with_two_documents()
+    fused = await _fused_baseline(harness)
+    assert fused.count > 2
+    head = list(fused.chunks[:2])
+    scores = _ranking_by_text(fused.chunks, list(reversed(head)))
+
+    result = await harness.searching_with(
+        reranker=FakeReranker(scorer=lambda query, text: scores.get(text, 0.0)),
+        rerank_candidates=2,
+    ).search(RERANK_QUERY)
+
+    reversed_head = [(chunk.document_id, chunk.chunk_index) for chunk in reversed(head)]
+    assert _identities(result)[:2] == reversed_head
+    assert _identities(result)[2:] == _identities(fused)[2:]
+
+
+async def test_a_failing_reranker_ends_in_the_fusion_order(caplog):
+    """리랭커가 죽어도 사라지는 것은 순서의 질뿐이다 — 근거는 그대로 있다."""
+    harness = await _harness_with_two_documents()
+    off = await _fused_baseline(harness)
+    broken = harness.searching_with(reranker=FakeReranker(error=RuntimeError("주입된 실패")))
+
+    with caplog.at_level("WARNING"):
+        result = await broken.search(RERANK_QUERY)
+
+    assert result.chunks == off.chunks, "축소 결과가 리랭커를 끈 구성과 달라졌다"
+    assert result.ordered_by == "fusion"
+    assert result.reranker is None
+    assert any(record.levelname == "WARNING" for record in caplog.records)
+
+
+async def test_a_reranker_slower_than_the_timeout_ends_in_the_fusion_order():
+    """상한이 없으면 축소 경로는 있지만 실제로는 아무것도 지켜 주지 못한다."""
+    harness = await _harness_with_two_documents()
+    off = await _fused_baseline(harness)
+    delay = 0.3
+    slow = harness.searching_with(
+        reranker=FakeReranker(delay=delay), rerank_timeout_seconds=0.05
+    )
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    result = await slow.search(RERANK_QUERY)
+    elapsed = loop.time() - started
+
+    assert result.chunks == off.chunks
+    assert result.ordered_by == "fusion"
+    assert elapsed < delay, f"제한 시간이 지연을 끊지 못했다 — {elapsed:.3f}s"
+
+
+async def test_reranking_runs_once_between_the_fusion_and_the_revalidation():
+    """리랭킹이 재검증 뒤로 밀리면 그 사이의 창으로 밀려난 리비전이 새어 나간다."""
+    harness = await _harness_with_two_documents()
+    policy = harness.registry.documents[
+        next(
+            document_id
+            for document_id, document in harness.registry.documents.items()
+            if document.filename == "policy.txt"
+        )
+    ]
+    reranker = FakeReranker()
+
+    async def delete_after_the_store_query() -> None:
+        harness.registry.documents.pop(policy.document_id)
+
+    harness.registry.before_get = delete_after_the_store_query
+    result = await harness.searching_with(reranker=reranker).search(RERANK_QUERY)
+
+    assert len(reranker.calls) == 1, "리랭킹이 요청당 한 번이 아니다"
+    reranked_texts = reranker.calls[0][1]
+    assert any(
+        harness.chunk_text(policy.document_id, index) in reranked_texts
+        for index in range(len(harness.store.chunks_of(policy.document_id)))
+    ), "리랭킹이 재검증 뒤에 돌아 떨어진 문서를 보지 못했다"
+    assert all(chunk.document_id != policy.document_id for chunk in result.chunks)
+
+
+async def test_the_rerank_signature_is_empty_without_a_reranker():
+    """빈 값도 값이다 — 캐시가 켠 구성과 끈 구성을 이 값으로 가른다."""
+    harness = await _harness_with_two_documents()
+    reranker = FakeReranker()
+
+    assert harness.retrieval.rerank_signature == ""
+    assert harness.searching_with(reranker=reranker).rerank_signature == reranker.signature

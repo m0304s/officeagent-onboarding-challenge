@@ -9,13 +9,18 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from app.adapters.protocols import DocumentRegistry, Retriever
+from app.adapters.protocols import DocumentRegistry, Reranker, Retriever
 from app.core.documents import Document, StoredIndexVersion
 from app.core.exceptions import AppError, ConfigurationError, StorageUnavailable
 from app.core.fusion import DEFAULT_RRF_K, FusedItem, FusionInput, fuse
+from app.core.reranking import ORDERED_BY_FUSION, ORDERED_BY_RERANK, reorder, targets
 from app.core.retrieval import RetrievedChunk, ScoredChunk
 
 logger = logging.getLogger(__name__)
+
+#: 리랭킹 없이 도는 구성이 통과하는 값. 실제 깊이·상한은 배선이 설정에서 넣는다.
+DEFAULT_RERANK_CANDIDATES = 30
+DEFAULT_RERANK_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -43,10 +48,19 @@ class RetrievalResult:
     target_documents: int
     #: 이번 검색에서 융합에 목록을 실어 보낸 retriever 이름들. 실패한 것은 빠진다
     retrievers: tuple[str, ...] = ()
+    #: 이번 검색에서 실제로 순서를 정한 리랭커 이름. 축소됐거나 꺼져 있으면 `None`
+    reranker: str | None = None
+    #: 리랭커에 실제로 넘긴 후보 수. 로그가 깊이와 융합 결과 크기를 함께 읽는 자리다
+    reranked_candidates: int = 0
 
     @property
     def count(self) -> int:
         return len(self.chunks)
+
+    @property
+    def ordered_by(self) -> str:
+        """무엇이 순서를 정했는가. 이름과 따로 두면 둘이 어긋난 응답이 나갈 수 있다."""
+        return ORDERED_BY_RERANK if self.reranker else ORDERED_BY_FUSION
 
     @property
     def top_score(self) -> float | None:
@@ -65,11 +79,18 @@ class RetrievalService:
         index_signature: str,
         top_k: int,
         rrf_k: int = DEFAULT_RRF_K,
+        reranker: Reranker | None = None,
+        rerank_candidates: int = DEFAULT_RERANK_CANDIDATES,
+        rerank_timeout_seconds: float = DEFAULT_RERANK_TIMEOUT_SECONDS,
     ) -> None:
         if not retrievers:
             raise ConfigurationError("활성 retriever 가 하나도 없습니다")
         self._bindings = tuple(retrievers)
         self._registry = registry
+        # 선택 의존성이다 — `None` 이면 리랭킹 단계 자체가 없고 결과는 융합 순서 그대로다.
+        self._reranker = reranker
+        self._rerank_candidates = rerank_candidates
+        self._rerank_timeout_seconds = rerank_timeout_seconds
         # 수집이 쓴 것과 같은 값이어야 해 배선이 한 번 유도해 넣는다 — 각자 유도하면
         # 한쪽만 고쳐진 순간 방금 올린 문서가 오류 없이 검색되지 않는다.
         self._index_signature = index_signature
@@ -82,6 +103,13 @@ class RetrievalService:
 
         캐시가 배선에서 따로 받으면 유도 지점이 셋이 되어 조용히 어긋난다 (design 결정 14)."""
         return self._index_signature
+
+    @property
+    def rerank_signature(self) -> str:
+        """이 서비스가 쓰는 리랭커의 서명. 리랭커가 없으면 빈 문자열이다.
+
+        빈 값도 값이다 — 켜고 끈 두 구성이 캐시에서 갈리는 것이 여기서 나온다."""
+        return self._reranker.signature if self._reranker else ""
 
     def resolve_top_k(self, top_k: int | None) -> int:
         """요청의 K 를 확정한다 — 생략하면 설정 기본값.
@@ -107,7 +135,11 @@ class RetrievalService:
         sources = await self._fan_out(query, versions)
         fused = [_assemble(entry) for entry in fuse(sources, rrf_k=self._rrf_k)]
 
-        fresh = await self._drop_superseded(fused, current)
+        # 재검증 앞이어야 재검증과 조립 사이에 모델 순전파가 끼어들지 않는다 — 그 창으로
+        # 새어 나간 리비전은 어떤 무효화에도 걸리지 않는다.
+        ordered, reranker, reranked = await self._rerank(query, fused)
+
+        fresh = await self._drop_superseded(ordered, current)
         return RetrievalResult(
             query=query,
             top_k=effective_k,
@@ -116,7 +148,37 @@ class RetrievalService:
             chunks=tuple(fresh[:effective_k]),
             target_documents=len(current),
             retrievers=tuple(source.name for source in sources),
+            reranker=reranker,
+            reranked_candidates=reranked,
         )
+
+    # ── 리랭킹 ──────────────────────────────────────────────────────────
+
+    async def _rerank(
+        self, query: str, fused: Sequence[ScoredChunk]
+    ) -> tuple[list[ScoredChunk], str | None, int]:
+        """융합 상위 후보를 다시 읽어 순서를 세운다. 요청당 한 번이다.
+
+        돌지 않았거나 축소된 경우 이름이 `None` 이라 응답이 그 사실을 밝힌다."""
+        if self._reranker is None or not fused:
+            return list(fused), None, 0
+
+        head = targets(fused, depth=self._rerank_candidates)
+        try:
+            scores = await asyncio.wait_for(
+                self._reranker.rerank(query, [chunk.text for chunk in head]),
+                timeout=self._rerank_timeout_seconds,
+            )
+            ordered = reorder(fused, scores, depth=self._rerank_candidates)
+        # 취소는 축소 대상이 아니다 — `BaseException` 이라 여기 걸리지 않는다.
+        except Exception as failure:
+            logger.warning(
+                "리랭킹에 실패해 융합 순서로 돌려줍니다",
+                exc_info=failure,
+                extra={"reranker": self._reranker.name, "rerank_candidates": len(head)},
+            )
+            return list(fused), None, 0
+        return ordered, self._reranker.name, len(head)
 
     # ── 팬아웃 ──────────────────────────────────────────────────────────
 

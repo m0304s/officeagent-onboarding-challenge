@@ -51,6 +51,12 @@ def test_boots_with_no_configuration_at_all(monkeypatch, tmp_path):
     assert settings.qa_llm_interrupt_grace_seconds > 0
     assert settings.qa_llm_session_startup_timeout_seconds > 0
     assert settings.qa_llm_model == ""
+
+    # 리랭킹도 마찬가지다 — 켜진 채로 기본값만으로 기동이 통과해야 한다.
+    assert settings.reranker_enabled is True
+    assert settings.reranker_model
+    assert settings.rerank_candidates >= settings.retrieval_max_top_k
+    assert settings.reranker_timeout_seconds > 0
     get_settings.cache_clear()
 
 
@@ -252,6 +258,7 @@ def test_a_candidate_depth_below_the_k_ceiling_fails_startup(monkeypatch, tmp_pa
     monkeypatch.setenv("APP_RETRIEVAL_TOP_K", "5")
     monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "40")
     monkeypatch.setenv("APP_RETRIEVERS", '[{"name": "dense", "candidate_depth": 10}]')
+    monkeypatch.setenv("APP_RERANK_CANDIDATES", "40")  # 리랭크 깊이 검증에 먼저 걸리지 않게
 
     get_settings.cache_clear()
     with pytest.raises(ConfigurationError) as exc_info:
@@ -267,6 +274,7 @@ def test_a_candidate_depth_at_the_k_ceiling_boots(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "40")
     monkeypatch.setenv("APP_RETRIEVERS", '[{"name": "lexical", "candidate_depth": 40}]')
+    monkeypatch.setenv("APP_RERANK_CANDIDATES", "40")  # 리랭크 깊이 검증에 먼저 걸리지 않게
 
     get_settings.cache_clear()
     settings = get_settings()
@@ -274,6 +282,117 @@ def test_a_candidate_depth_at_the_k_ceiling_boots(monkeypatch, tmp_path):
 
     assert [item.name for item in settings.retrievers] == ["lexical"]
     assert settings.retrievers[0].candidate_depth == 40
+
+
+# ── 리랭킹 구성 (3.4) ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "field", "expected"),
+    [
+        ("APP_RERANKER_ENABLED", "false", "reranker_enabled", False),
+        ("APP_RERANK_CANDIDATES", "40", "rerank_candidates", 40),
+        ("APP_RERANKER_TIMEOUT_SECONDS", "2.5", "reranker_timeout_seconds", 2.5),
+    ],
+)
+def test_reranking_settings_can_be_overridden_by_environment(
+    monkeypatch, tmp_path, variable, value, field, expected
+):
+    """끄고 켜는 데 코드 변경이 들지 않아야 한다 — 되돌리기가 설정 한 줄이다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(variable, value)
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert getattr(settings, field) == expected
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "expected_field"),
+    [
+        ("APP_RERANK_CANDIDATES", "0", "rerank_candidates"),
+        ("APP_RERANKER_TIMEOUT_SECONDS", "0", "reranker_timeout_seconds"),
+    ],
+)
+def test_invalid_reranking_values_fail_startup(
+    monkeypatch, tmp_path, variable, value, expected_field
+):
+    """리랭킹 설정도 무효값이면 조용히 기본값으로 흘러가지 않고 기동을 멈춘다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(variable, value)
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    assert expected_field in str(exc_info.value)
+
+
+def test_a_rerank_depth_below_the_k_ceiling_fails_startup(monkeypatch, tmp_path):
+    """깊이가 K 상한보다 작으면 응답 뒷자리가 두 신호로 정렬된 목록이 된다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "20")
+    monkeypatch.setenv("APP_RERANK_CANDIDATES", "10")
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "rerank_candidates" in message and "retrieval_max_top_k" in message
+    assert "10" in message and "20" in message, "문제가 된 값을 확인할 수 있어야 한다"
+
+
+def test_a_rerank_depth_at_the_k_ceiling_boots(monkeypatch, tmp_path):
+    """상한과 같으면 통과한다 — 후보 깊이 검증의 반대편과 같은 경계다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "20")
+    monkeypatch.setenv("APP_RERANK_CANDIDATES", "20")
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert settings.rerank_candidates == 20
+
+
+def test_an_input_window_too_narrow_for_a_query_and_a_chunk_fails_startup(monkeypatch, tmp_path):
+    """창을 넘으면 토크나이저가 조용히 자른다 — 오류가 아니라 틀어진 점수가 된다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RETRIEVAL_MAX_QUERY_CHARS", "9000")
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "retrieval_max_query_chars" in message and "chunk_size" in message
+    assert "9000" in message, "문제가 된 값을 확인할 수 있어야 한다"
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [("APP_RERANK_CANDIDATES", "10"), ("APP_RETRIEVAL_MAX_QUERY_CHARS", "9000")],
+)
+def test_disabling_the_reranker_rescues_a_boot_its_own_checks_would_stop(
+    monkeypatch, tmp_path, variable, value
+):
+    """끄는 것이 롤백 수단이라, 리랭킹 검증이 그 수단을 막지 않는지 본다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "20")
+    monkeypatch.setenv(variable, value)
+    monkeypatch.setenv("APP_RERANKER_ENABLED", "false")
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert settings.reranker_enabled is False
 
 
 # ── 답변 생성 설정 ──────────────────────────────────────────────────────
