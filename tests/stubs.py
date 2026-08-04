@@ -167,6 +167,25 @@ class FakeEmbedder:
         return [value / norm for value in values]
 
 
+class SynonymEmbedder(FakeEmbedder):
+    """지정한 질의들을 **한 벡터로 묶는** 임베더.
+
+    해시 기반 페이크로는 "글자는 다르고 뜻은 같은" 쌍을 만들 수 없다 — 서로 다른 문자열은
+    무관한 벡터가 되어 유사 매치 층이 영영 히트하지 않는다. 그 쌍을 만드는 것은 실물
+    모델의 성질이라 여기서 흉내 내는 대신 **묶임 자체를 주입한다**: 캐시 테스트가 확인하려는
+    것은 "임베딩이 두 질문을 가깝다고 보는가"가 아니라 "가깝다고 볼 때 캐시가 어떻게
+    행동하는가"이기 때문이다. 앞의 것은 `test_retrieval_quality.py` 가 실물로 덮는다.
+    """
+
+    def __init__(self, synonyms: dict[str, str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._synonyms = synonyms
+
+    async def embed_query(self, text: str) -> list[float]:
+        self.queries.append(text)
+        return self._vector(self._synonyms.get(text, text))
+
+
 class StubParser:
     """지정한 세그먼트를 돌려주는 파서.
 
@@ -626,6 +645,78 @@ class ScriptedGenerator:
             # 취소(순회 중단)도 여기를 지난다. 실물 어댑터가 `finally` 에서 턴을 중단하고
             # 세션을 회수하는 자리와 같은 지점이라, 정리 누락이 같은 모양으로 드러난다.
             self.open_turns -= 1
+
+
+class StubResponseCache:
+    """인메모리 응답 캐시를 감싸 **실패와 지연을 주입하고 호출을 세는** 대역.
+
+    감싸는 이유는 캐시의 의미를 다시 구현하지 않기 위해서다 — 히트/미스 판정을 여기서
+    흉내 내면 검증 대상이 대역이 된다.
+
+    - `fail`: 모든 호출이 `StorageUnavailable`. 죽은 저장소를 만드는 유일한 수단이다.
+    - `delay`: 응답하지 않는 저장소. 조회가 상한 안에 미스로 끝나는지 보는 데 쓴다.
+    - `calls`: 저장소에 실제로 닿은 호출 이름들. **차단기가 열린 뒤 저장소를 아예 부르지
+      않는다**는 성질은 호출의 부재로만 관측되므로, 이 목록이 없으면 그 단언을 쓸 수 없다.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = 60.0,
+        max_entries: int = 100,
+        clock: Callable[[], float] | None = None,
+        fail: bool = False,
+        delay: float = 0.0,
+    ) -> None:
+        from app.adapters.cache.memory import InMemoryResponseCache
+
+        self._inner = InMemoryResponseCache(
+            ttl_seconds=ttl_seconds,
+            max_entries=max_entries,
+            **({"clock": clock} if clock else {}),
+        )
+        self.fail = fail
+        self.delay = delay
+        self.calls: list[str] = []
+
+    async def lookup_exact(self, fingerprint):
+        await self._enter("lookup_exact")
+        return await self._inner.lookup_exact(fingerprint)
+
+    async def count_candidates(self, scope):
+        await self._enter("count_candidates")
+        return await self._inner.count_candidates(scope)
+
+    async def lookup_semantic(self, embedding, *, scope, threshold, candidates):
+        await self._enter("lookup_semantic")
+        return await self._inner.lookup_semantic(
+            embedding, scope=scope, threshold=threshold, candidates=candidates
+        )
+
+    async def store(self, fingerprint, entry, *, scope, embedding, negative):
+        await self._enter("store")
+        await self._inner.store(
+            fingerprint, entry, scope=scope, embedding=embedding, negative=negative
+        )
+
+    async def invalidate_document(self, document_id):
+        await self._enter("invalidate_document")
+        return await self._inner.invalidate_document(document_id)
+
+    async def invalidate_negative(self):
+        await self._enter("invalidate_negative")
+        return await self._inner.invalidate_negative()
+
+    async def discard(self, fingerprint):
+        await self._enter("discard")
+        await self._inner.discard(fingerprint)
+
+    async def _enter(self, name: str) -> None:
+        self.calls.append(name)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.fail:
+            raise StorageUnavailable("주입된 캐시 실패")
 
 
 class StubDocumentRegistry:
