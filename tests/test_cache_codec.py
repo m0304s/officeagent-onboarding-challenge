@@ -1,12 +1,7 @@
-"""캐시 페이로드 왕복 — 저장된 항목이 원래의 응답을 그대로 복원하는가.
+"""캐시 페이로드 왕복 — 저장된 항목이 원래 응답을 그대로 복원하는가.
 
-Redis 없이 돈다. **이 파일이 기본 실행에 남는 이유**가 그것이다 — Redis 계약 테스트는
-`redis` 마커 뒤에 있어 평가자의 한 줄에서 빠지므로, 왕복 정확성까지 그 뒤에 두면
-`done` 이벤트가 캐시를 거치며 달라지는 회귀를 아무도 잡지 않는다.
-
-무엇이 빠지면 무엇이 깨지는지를 필드 단위로 고정한다. 인용이 빠지면 히트에 출처가
-사라지고, 기여 내역이 빠지면 히트의 `sources` 가 미스의 것과 달라지며, `page` 가 빠지면
-PDF 출처가 몇 쪽인지 잃는다.
+Redis 계약 테스트는 마커 뒤라 기본 실행에서 빠진다. 왕복까지 그 뒤에 두면 `done` 이
+캐시를 거치며 달라지는 회귀를 아무도 잡지 않는다.
 """
 
 import pytest
@@ -100,7 +95,8 @@ def test_pdf_page_survives():
 
 
 def test_no_evidence_entry_survives_as_itself():
-    """근거도 인용도 본문도 없는 종료가 왕복에서 `stop` 으로 둔갑하면 안 된다."""
+    """근거도 인용도 본문도 없는 종료가 왕복에서 `stop` 으로 둔갑하면 빈 화면이 정상
+    답변으로 보인다."""
     entry = CachedAnswer(answer=Answer.no_evidence(), top_k=5, target_documents=0)
 
     restored = roundtrip(entry)

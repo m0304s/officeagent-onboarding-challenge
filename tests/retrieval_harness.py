@@ -1,21 +1,7 @@
-"""검색 서비스 테스트 하네스.
+"""검색 서비스 테스트 하네스 — 수집·검색을 같은 대역 위에 세운다.
 
-검색 테스트는 **수집을 거쳐 만들어진 상태** 위에서만 의미가 있다. 대역에 청크를 손으로
-심으면 레지스트리와 벡터 스토어가 어긋난 상태를 쉽게 만들 수 있고, 그러면 검증 대상인
-"둘이 어긋났을 때 검색이 무엇을 하는가"를 테스트가 스스로 조작하게 된다. 그래서 두
-서비스를 **같은 대역 위에** 세워 두고, 상태는 실제 수집 경로로 만든다.
-
-기본 하한은 `0.0` 이다. 페이크 임베더의 벡터는 텍스트 해시라 점수에 의미가 없으므로,
-구조(순서·필터·K)를 재는 테스트가 하한에 걸리면 그건 검증이 아니라 잡음이다. 하한 자체를
-재는 테스트만 `searching_with(min_score=...)` 로 값을 명시한다.
-
-**기본 구성은 밀집 단독이다.** 구조를 재는 단언 대부분이 "질의 문자열과 같은 본문의 청크가
-1위"라는 페이크의 성질에 기대는데, 어휘 목록이 함께 들어오면 그 성질이 융합에 흔들린다.
-하이브리드는 `retrievers=("dense", "lexical")` 로 명시한 테스트에서만 켜진다.
-
-**임베더는 프로토콜로 받는다.** 기본값은 페이크지만 품질 테스트
-(`test_retrieval_quality.py`)가 같은 하네스에 **실물 모델**을 꽂는다 — 구조를 재는 층과
-품질을 재는 층이 같은 배선 위에 서야, 한쪽에서만 통과하는 상태가 생기지 않는다.
+대역에 청크를 손으로 심으면 "둘이 어긋났을 때 검색이 무엇을 하는가"를 테스트가 스스로
+조작하게 된다. 기본 하한과 기본 구성(밀집 단독)의 근거는 `tests/README.md` 에 있다.
 """
 
 from collections.abc import Sequence
@@ -106,9 +92,7 @@ class Harness:
     ) -> RetrievalService:
         """같은 대역을 보되 설정만 다른 검색 서비스.
 
-        하한·구성 비교는 **같은 저장소 상태**에서 설정만 갈아야 성립한다. 앱을 다시
-        만들면 저장소도 새로 생겨 비교가 무의미해진다.
-        """
+        앱을 다시 만들면 저장소도 새로 생겨 하한·구성 비교가 무의미해진다."""
         return _service(
             self.embedder,
             self.store,
@@ -123,11 +107,9 @@ class Harness:
         )
 
     def chunk_text(self, document_id: str, chunk_index: int) -> str:
-        """저장된 청크의 **실제 본문**.
+        """저장된 청크의 실제 본문.
 
-        순위 단언은 "질의 문자열을 청크 본문과 똑같이 두면 벡터가 일치해 1위"라는 성질에
-        기대는데, 그 본문은 정규화와 분할을 거친 뒤의 값이라 원문에서 짐작할 수 없다.
-        """
+        정규화와 분할을 거친 값이라 원문에서 짐작할 수 없는데, 순위 단언이 그 값에 기댄다."""
         return self.store.chunks_of(document_id)[chunk_index].text
 
 
@@ -156,7 +138,7 @@ def make_harness(
     lexical = lexical_index or StubLexicalIndex()
     registry = registry or StubDocumentRegistry()
     weights = weights or {}
-    # 배선(`create_app`)이 하는 일 그대로 — 한 번 유도해 **두 서비스에 같은 값**을 준다.
+    # 배선(`create_app`)이 하는 일 그대로 — 한 번 유도해 두 서비스에 같은 값을 준다.
     signature = derive_index_signature(
         embedder_signature=embedder.signature,
         chunk_strategy=ChunkStrategy.RECURSIVE.value,
@@ -234,10 +216,9 @@ def _service(
     weights: dict[str, float],
     required: Sequence[str],
 ) -> RetrievalService:
-    """이름 목록을 배선이 하는 것과 **같은 경로**로 인스턴스에 옮긴다.
+    """이름 목록을 배선이 하는 것과 같은 경로로 인스턴스에 옮긴다.
 
-    등록부를 지나가야 "이름으로 구성한다"가 실제로 검증된다 — 여기서 직접 생성하면
-    등록부가 비어도 테스트가 통과한다."""
+    등록부를 지나가야 "이름으로 구성한다"가 실제로 검증된다."""
     dependencies = RetrieverDependencies(
         embedder=embedder,
         vector_store=store,

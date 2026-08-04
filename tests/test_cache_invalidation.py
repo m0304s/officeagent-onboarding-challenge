@@ -1,25 +1,7 @@
-"""무효화 — 문서가 바뀌면 무엇이 사라지고 무엇이 남는가.
+"""무효화 — 문서가 바뀌면 무엇이 사라지고 무엇이 남는가 (핵심 3경로).
 
-**핵심 3경로 중 하나다.** 여기서 깨지는 것은 성능이 아니라 정확성이다: 문서를 고쳤는데
-옛 답변이 계속 나가면, 사용자는 서버가 자기 문서를 안 읽었다고 믿게 된다.
-
-긍정과 부정의 **비대칭**이 이 파일의 절반이다.
-
-| 종료 | 그 답변이 주장하는 것 | 무엇이 뒤집나 |
-|------|---------------------|--------------|
-| `stop` | **이 청크들이** 답을 담고 있다 | 그 청크가 바뀌는 것 |
-| `no_evidence`·`insufficient_evidence` | **어디에도** 답이 없다 | 코퍼스에 내용이 더해지는 것 |
-
-부정 판정을 만들려면 근거가 0건이어야 한다. 페이크 임베더의 점수에는 의미가 없어 하한을
-`1.0` 으로 올려 그 상태를 만든다 — 실제로 `0.82` 하한이 하는 일과 같다.
-
-부정 판정은 "없음에 대한 주장"이라 자기가 본 문서만 봐서는 반증되지 않는다 — 관계없어
-보이는 문서 하나가 그 주장을 깨는데, 그 문서에는 이 항목을 가리키는 태그가 없다. 그래서
-문서 태그와 별개로 부정 집합이라는 축이 하나 더 있고, **같은 사건이 긍정은 살리고 부정은
-지운다**(6.7 ↔ 6.11 한 쌍이 그것을 고정한다).
-
-수집·삭제가 캐시를 걷어내는지는 **다음 질문이 미스가 되는가**로 잰다. 캐시 내부를 들여다보면
-"지웠다"만 확인되고 "지운 것이 옳은 항목인가"는 확인되지 않는다.
+긍정과 부정의 비대칭이 이 파일의 절반이다. 부정 판정을 만들려면 근거가 0건이어야 해
+하한을 `1.0` 으로 올린다 — 실제 `0.82` 하한이 하는 일과 같다 (`tests/README.md`).
 """
 
 import pytest
@@ -97,9 +79,9 @@ async def test_deleting_invalidates_answers_that_cited_the_document():
 async def test_an_unrelated_document_change_leaves_the_answer_alone():
     """관계없는 문서의 변경이 캐시를 지우면 업로드 한 번이 캐시 전체 비우기가 된다.
 
-    6.11 과 짝이다 — **같은 사건**(문서 B 수집)이 긍정은 살리고 부정은 지운다 (결정 4)."""
+    6.11 과 짝이다 — 같은 사건(문서 B 수집)이 긍정은 살리고 부정은 지운다 (결정 4)."""
     harness = cached()
-    # 문서 하나만 올린 채 캐시한다 — 둘을 올리면 근거가 섞여 "A 만 인용한 답변"이 안 된다.
+    # 문서 하나만 올린 채 캐시한다 — 둘을 올리면 근거가 섞여 "A 만 인용한 답변"이 만들어지지 않는다.
     await harness.ingest("policy.txt", POLICY)
     await harness.ask(QUESTION)
 
@@ -161,7 +143,7 @@ async def test_ingesting_a_new_document_invalidates_no_evidence():
 
 
 async def test_replacing_a_document_invalidates_no_evidence():
-    """문서를 교체해도 근거 없음 판정이 사라진다 — **문서 수가 그대로인 것이 함정이다.**
+    """문서를 교체해도 근거 없음 판정이 사라진다 — 문서 수가 그대로인 것이 함정이다.
 
     무효화의 조건이 개수였다면 여기서만 조용히 틀린다."""
     harness = nothing_relevant()
@@ -177,7 +159,7 @@ async def test_replacing_a_document_invalidates_no_evidence():
 async def test_a_new_document_overturns_insufficient_evidence():
     """새 문서가 "답할 수 없음" 판정을 뒤집는다 (`response-cache`).
 
-    판정을 뒤집는 문서는 그 항목이 인용한 문서와 **다른 문서**라 태그가 닿지 않는다."""
+    판정을 뒤집는 문서는 그 항목이 인용한 문서와 다른 문서라 태그가 닿지 않는다."""
     harness = cached(refusing(), answering())
     await harness.ingest("policy.txt", POLICY)
     events = await harness.ask()
@@ -191,10 +173,9 @@ async def test_a_new_document_overturns_insufficient_evidence():
 
 
 async def test_recovering_a_stale_document_invalidates_no_evidence():
-    """`STALE` 로 검색에서 빠진 문서가 **같은 내용으로** 복구되는 경로다.
+    """`STALE` 로 검색에서 빠진 문서가 같은 내용으로 복구되는 경로다.
 
-    색인 서명이 그대로라 캐시 키가 살아 있는 유일한 재색인 경로이고, `REINDEXED` 를
-    무효화 대상에서 빠뜨리면 여기서만 낫지 않는다 (design 결정 8)."""
+    서명이 그대로라 캐시 키가 살아 있는 유일한 재색인 경로다 (design 결정 8)."""
     harness = cached()
     document = await harness.retrieval.ingest("policy.txt", POLICY)
 
@@ -244,7 +225,7 @@ async def test_deleting_does_not_clear_the_negative_set():
 
 
 async def test_ingestion_succeeds_when_the_cache_store_is_dead():
-    """무효화 실패가 문서 변경 요청을 실패로 만들어서는 안 된다 (`response-cache`).
+    """무효화 실패가 문서 변경 요청을 실패로 만들지 않는다 (`response-cache`).
 
     문서는 이미 바뀌었고 그것을 되돌리는 쪽이 더 큰 손해다."""
     harness = make_qa_harness(answering(), cache=StubResponseCache(fail=True))

@@ -1,20 +1,7 @@
 """캐시 오케스트레이션 — 조회 순서, 현재성 재검증, 저장 정책, 축소 동작.
 
-이 층이 캐시의 **정책** 전부를 든다. 저장소는 맡아 두고 걷어내는 일만 하므로, 여기서
-깨지는 것은 "언제 무엇을 써도 되는가"이지 "무엇이 저장되었는가"가 아니다.
-
-네 묶음이다.
-
-1. **조회 순서** — 정확 매치가 성공하면 임베딩을 만들지 않는다. 이 성질은 응답 어디에도
-   드러나지 않아 임베더의 호출 기록으로만 관측된다. 후보 집합이 비어 있을 때 임베딩을
-   건너뛰는 최적화(design 결정 10)도 같은 방식으로 본다.
-2. **현재성 재검증** — 무효화가 새는 두 경우(무효화 실패, 생성 중 문서 변경)를 응답 시점에
-   닫는 두 번째 방어선이다. 버려진 항목이 캐시에 남으면 요청마다 같은 비용을 다시 문다.
-3. **저장 정책** — 태그는 인용이 아니라 근거 전부이고, 부정 판정은 축을 하나 더 받는다.
-   `insufficient_evidence` 가 **둘 다** 받는 것이 결정 4의 비대칭이다.
-4. **장애 아래에서** — 죽은 저장소는 미스이고, 느린 저장소는 상한 안에 미스이며, 연속
-   실패 뒤에는 저장소를 아예 부르지 않는다. 이 셋이 "캐시를 껐을 때 달라지는 것은 응답
-   시간뿐"이라는 약속의 내용이다.
+이 층이 정책 전부를 들어, 깨지는 것은 "언제 무엇을 써도 되는가"이지 "무엇이 저장되었는가"가
+아니다. 네 묶음의 내용은 `tests/README.md` 에 있다.
 """
 
 from datetime import UTC, datetime
@@ -346,7 +333,7 @@ async def test_no_evidence_joins_the_negative_set(service, store):
 async def test_insufficient_evidence_gets_both_defences(service, store):
     """자기가 본 청크가 바뀌면 태그가, 코퍼스에 내용이 더해지면 집합이 잡는다.
 
-    두 기제가 **다른 사건**을 덮으므로 중복이 아니다 (design 결정 4)."""
+    두 기제가 다른 사건을 덮으므로 중복이 아니다 (design 결정 4)."""
     item = CachedAnswer(
         answer=Answer(
             text="문서에 답이 없습니다", finish_reason=FinishReason.INSUFFICIENT_EVIDENCE
@@ -429,7 +416,7 @@ async def test_the_breaker_stops_calling_a_dead_store(registry, embedder, clock)
 
 
 async def test_the_breaker_reopens_after_the_cooldown_without_a_restart(registry, embedder, clock):
-    """회복에 재기동이나 수동 개입이 필요해서는 안 된다 (`response-cache`)."""
+    """회복에 재기동이나 수동 개입이 필요하지 않다 (`response-cache`)."""
     store = StubResponseCache(fail=True, clock=clock)
     service = make_service(store, registry, embedder, clock=clock, breaker_cooldown_seconds=30.0)
     for _ in range(3):

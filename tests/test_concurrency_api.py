@@ -1,19 +1,7 @@
-"""수집·검색 중에도 서비스가 살아 있는가 — 오프로드와 동시성.
+"""수집·검색 중에도 서비스가 살아 있는가 — HTTP 경계에서 본 오프로드와 동시성.
 
-여기서 고정하는 것은 **HTTP 경계에서 관측되는 성질** 넷이다.
-
-1. 수집의 블로킹 작업(텍스트 추출, 임베딩)이 진행 중이어도 다른 요청이 즉시 응답한다.
-2. 서로 다른 문서는 서로를 기다리지 않는다.
-3. 같은 문서에 대한 동시 요청은 직렬화되어, 두 요청의 효과가 뒤섞인 상태가 관측되지 않는다.
-4. **검색의 오래 걸리는 작업(질의 임베딩, 저장소 질의, 토큰 계산)도 마찬가지다.**
-
-서비스 계층의 같은 성질은 `test_ingestion_pipeline.py` 가 덮는다. 그쪽이 잠금과 상한의
-동작을 직접 보는 데 반해, 여기서는 **라우터·의존성 배선까지 포함한 실제 경로**로 본다 —
-누군가 라우터에서 블로킹 호출을 하거나 서비스를 요청마다 새로 만들면 그쪽은 통과하고
-여기서만 깨진다.
-
-시간 단언은 전부 **주입한 지연 대비 상대값**이다. 절대 시간을 쓰면 느린 CI 에서 무관한
-이유로 깨지고, 그때 지연을 늘리는 것으로 무마하면 검증하려던 성질이 사라진다.
+서비스 계층의 같은 성질은 `test_ingestion_pipeline.py` 가 덮고, 여기서는 라우터·배선까지
+포함한 실제 경로로 본다. 시간 단언은 전부 주입한 지연 대비 상대값이다.
 """
 
 import asyncio
@@ -40,10 +28,7 @@ _TICK = 0.005
 async def until(condition, *, timeout: float = 5.0) -> None:
     """조건이 참이 될 때까지 이벤트 루프를 돌린다.
 
-    "수집이 **실제로 시작된 뒤**에 헬스를 부른다"를 보장하는 데 쓴다. 고정 시간을
-    기다리면 느린 환경에서는 아직 시작 전이고, 빠른 환경에서는 이미 끝나 있어
-    아무것도 확인하지 못한다.
-    """
+    고정 시간을 기다리면 느린 환경에서는 시작 전이고 빠른 환경에서는 이미 끝나 있다."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while not condition():
@@ -66,9 +51,7 @@ async def measure(coroutine):
 async def test_health_answers_while_text_extraction_is_running(make_client):
     """파서를 이벤트 루프에서 직접 호출하면 여기서 깨진다.
 
-    `StubParser` 의 지연은 **블로킹**(`time.sleep`)이다. 누군가 `asyncio.to_thread` 를
-    걷어내면 헬스 응답이 파싱이 끝날 때까지 밀린다.
-    """
+    `StubParser` 의 지연이 블로킹이라, 오프로드를 걷어내면 헬스가 파싱만큼 밀린다."""
     delay = 0.3
     parser = StubParser(delay=delay, text=LONG_KOREAN)
 
@@ -88,9 +71,7 @@ async def test_health_answers_while_text_extraction_is_running(make_client):
 async def test_health_answers_while_embedding_is_running(make_client, settings):
     """임베딩 단계도 이벤트 루프를 붙잡지 않는다.
 
-    배치가 여러 개 나오도록 구성해, 헬스가 **전체 임베딩이 끝나기 전에** 응답하는지 본다.
-    배치 사이에 루프로 돌아오지 않으면 헬스가 전체 지연만큼 밀린다.
-    """
+    배치 사이에 루프로 돌아오지 않으면 헬스가 전체 지연만큼 밀린다."""
     delay = 0.1
     embedder = FakeEmbedder(delay=delay)
     batched = settings.model_copy(
@@ -156,11 +137,9 @@ async def test_different_documents_are_not_serialized(make_client):
 async def test_concurrent_reuploads_of_the_same_document_leave_one_revision(
     make_client, vector_store
 ):
-    """두 요청의 `get → 저장 → 커밋 → 삭제` 가 인터리빙되면 두 리비전의 청크가 함께 남는다.
+    """두 요청이 인터리빙되면 두 리비전의 청크가 함께 남는다.
 
-    **어느 쪽이 이기는지는 단언하지 않는다** — 비결정적이다. 규정하는 것은 최종 상태가
-    두 요청을 어느 한 순서로 차례로 실행한 결과와 같다는 것뿐이다.
-    """
+    어느 쪽이 이기는지는 단언하지 않는다 — 최종 상태가 순차 실행 결과와 같으면 된다."""
     async with make_client(parsers=[StubParser(delay=0.05, text=LONG_KOREAN)]) as client:
         first, second = await asyncio.gather(
             client.post("/documents", **upload("policy.txt", DATA)),
@@ -210,10 +189,7 @@ async def test_a_reupload_racing_a_delete_ends_in_one_of_the_two_serial_states(
 
 
 # ── 검색 중에도 헬스가 즉시 응답한다 ────────────────────────────────────
-#
-# 검색의 오래 걸리는 작업은 셋이다 — 토큰 계산(블로킹, 라우터가 오프로드), 질의 임베딩,
-# 저장소 질의. 셋 다 같은 방식으로 확인한다: 그 작업이 **실제로 시작된 뒤** 헬스를 부르고,
-# 헬스가 그 작업보다 먼저 끝나는지 본다.
+# 셋(토큰 계산·질의 임베딩·저장소 질의)을 같은 방식으로 본다 — 시작 뒤 헬스가 먼저 끝나는가.
 
 QUERY = "교육비는 얼마까지 지원되나요?"
 
@@ -221,10 +197,7 @@ QUERY = "교육비는 얼마까지 지원되나요?"
 async def test_health_answers_while_a_query_is_being_embedded(make_client, settings):
     """질의 임베딩이 진행 중이어도 다른 요청이 기다리지 않는다.
 
-    **문서를 먼저 올린다.** 질의 임베딩이 밀집 retriever 안으로 들어가 대상 집합 확정
-    **뒤**가 되었으므로, 대상이 비면 임베딩 자체가 일어나지 않는다 — 그 상태로는 재려던
-    지연이 발동하지 않는다. 옆의 저장소 질의 테스트가 문서를 먼저 올리는 이유와 같다.
-    """
+    문서를 먼저 올린다 — 대상이 비면 임베딩이 일어나지 않아 지연이 발동하지 않는다."""
     delay = 0.3
     embedder = FakeEmbedder(delay=delay)
     searchable = settings.model_copy(update={"retrieval_min_score": 0.0})
@@ -248,12 +221,7 @@ async def test_health_answers_while_a_query_is_being_embedded(make_client, setti
 async def test_health_answers_while_the_store_is_being_queried(make_client, settings):
     """저장소 질의가 진행 중이어도 다른 요청이 기다리지 않는다.
 
-    `StubVectorStore` 의 질의 지연은 실물 어댑터와 같은 자리에서 스레드풀로 나간다.
-    어댑터가 오프로드를 걷어내면 실물 경로가 여기서 깨지는 것과 같은 방식으로 깨진다.
-
-    **문서를 먼저 올린다.** 대상 집합이 비면 서비스가 저장소를 아예 건드리지 않아
-    지연이 발동하지 않는다 — 그 상태로는 테스트가 통과해도 아무것도 확인되지 않는다.
-    """
+    지연이 실물과 같은 자리에서 스레드풀로 나가, 오프로드를 걷어내면 같은 모양으로 깨진다."""
     delay = 0.3
     store = StubVectorStore(query_delay=delay)
     searchable = settings.model_copy(update={"retrieval_min_score": 0.0})
@@ -279,21 +247,14 @@ async def test_health_answers_while_the_store_is_being_queried(make_client, sett
 async def test_health_answers_while_a_query_is_being_counted(make_client):
     """토큰 계산도 이벤트 루프를 붙잡지 않는다.
 
-    토큰 계산은 프로토콜상 **동기**라 오프로드 책임이 라우터에 있다(수집의
-    `_guard_tokens` 와 같은 자리·같은 이유). 그 `asyncio.to_thread` 를 걷어내면 긴 질의
-    하나가 다른 요청을 통째로 막는데, 나머지 검색 테스트는 전부 통과한다 — 계산 결과가
-    같기 때문이다. 지연이 블로킹이라야 그 차이가 드러난다.
-
-    계산은 임베딩 **이전**이므로, 여기서 세는 동안 `queries` 는 아직 비어 있다.
-    """
+    계산 결과가 같아 나머지 검색 테스트는 통과한다 — 지연이 블로킹이라야 드러난다."""
     delay = 0.3
     embedder = FakeEmbedder(count_delay=delay)
 
     async with make_client(embedder=embedder) as client:
         searching = asyncio.create_task(client.post("/search", json={"query": QUERY}))
-        # 요청이 라우터에 닿아 토큰 계산에 들어갈 틈을 준다. 조건으로 걸 관측점이 없어
-        # (계산은 부수 효과가 없다) 한 틱만 양보하고, 아래 `not done()` 이 실제로 계산
-        # 중이었음을 확인한다.
+        # 계산은 부수 효과가 없어 걸 관측점이 없다. 한 틱만 양보하고, 아래 `not done()`
+        # 이 실제로 계산 중이었음을 확인한다.
         await asyncio.sleep(_TICK)
 
         health, elapsed = await measure(client.get("/health"))
@@ -306,17 +267,13 @@ async def test_health_answers_while_a_query_is_being_counted(make_client):
 
 
 # ── 답변 생성 중에도 헬스가 즉시 응답한다 ──────────────────────────────
-#
-# 생성은 초 단위다. 그 대기가 이벤트 루프를 붙잡으면 답변 하나가 서비스 전체를 멈춘다 —
-# 스펙이 "헬스 응답 시간은 헬스 자신의 상한만으로 결정된다"고 못 박은 자리다.
+# 생성은 초 단위라, 그 대기가 루프를 붙잡으면 답변 하나가 서비스 전체를 멈춘다.
 
 
 async def test_health_answers_while_an_answer_is_being_generated(make_client, settings):
     """생성 지연이 다른 요청을 막지 않는다.
 
-    `/qa` 는 스트림이라 응답이 늦게 끝나는 것이 정상이다. 확인하는 것은 그 대기가 **다른
-    요청의 처리**를 늦추지 않는다는 것이고, 그래서 헬스가 스트림보다 먼저 끝나야 한다.
-    """
+    `/qa` 는 스트림이라 늦게 끝나는 것이 정상이고, 헬스가 그보다 먼저 끝나야 한다."""
     delay = 0.3
     turn = GenerationTurn(chunks=(VERDICT_ANSWERABLE, "교육비는 지원됩니다 [1]."), delay=delay)
     generator = ScriptedGenerator(turns=(turn,))
@@ -341,11 +298,9 @@ async def test_health_answers_while_an_answer_is_being_generated(make_client, se
 
 @pytest.mark.parametrize("concurrency", [1, 2])
 async def test_the_concurrency_limit_does_not_reject_requests(make_client, settings, concurrency):
-    """상한에 걸린 요청은 실패하지 않고 **기다린다.**
+    """상한에 걸린 요청은 실패하지 않고 기다린다.
 
-    상한을 초과 요청 거절로 구현하면 여기서 깨진다. 처리량을 제한하는 것과 요청을
-    떨어뜨리는 것은 다른 일이다.
-    """
+    처리량을 제한하는 것과 요청을 떨어뜨리는 것은 다른 일이다."""
     limited = settings.model_copy(update={"ingestion_concurrency": concurrency})
     parsers = [StubParser(delay=0.05, text=LONG_KOREAN)]
 

@@ -1,17 +1,7 @@
-"""캐시 저장소 구현 셋 — 무엇이 맡아 두고, 무엇이 밀려나고, 무엇이 아무 일도 하지 않는가.
+"""캐시 저장소 구현 셋 — 무엇이 맡아 두고, 무엇이 밀려나고, 무엇이 무동작인가.
 
-Redis 도 네트워크도 없이 돈다. 인메모리 구현이 **전체 의미**(TTL·상한·유사 매치·태그
-무효화)를 내는 덕에, 기본 `pytest` 한 줄이 캐시 히트를 실제로 검증한다 — Redis 어댑터
-자체의 계약은 `redis` 마커 뒤에서 따로 확인한다 (design "테스트가 실제 Redis 를 요구하면").
-
-세 묶음이다.
-
-1. **수명과 총량** — TTL 이 지난 항목은 히트가 아니고, 상한을 넘으면 오래된 것이 밀려나되
-   저장이 거부되지는 않으며, 유사 매치가 훑는 후보 수에 상한이 있다.
-2. **후보 집합의 경계** — 유사 매치가 K·프롬프트·색인·모델이 다른 항목까지 훑으면,
-   `top_k=3` 으로 캐시된 답변이 `top_k=5` 요청에 유사도 1.0 으로 나간다.
-3. **꺼진 캐시** — `NullResponseCache` 는 저장한 것도 되돌려 주지 않는다. 그리고 프로덕션
-   배선에 인메모리로 가는 분기가 없다는 것을 소스에서 고정한다 (design 결정 12).
+인메모리 구현이 전체 의미를 내는 덕에 기본 실행이 캐시 히트를 실제로 검증한다. 세 묶음의
+내용과 배선에 인메모리 분기가 없어야 하는 이유는 `tests/README.md` 에 있다.
 """
 
 import ast
@@ -143,7 +133,7 @@ async def test_semantic_lookup_below_the_threshold_is_a_miss(cache):
 
 
 async def test_semantic_lookup_on_an_empty_cache_is_a_miss(cache):
-    """평가자의 첫 실행이 오류가 되면 안 된다."""
+    """평가자의 첫 실행이 오류가 되지 않는다."""
     assert not (await cache.lookup_semantic(NEAR, scope=SCOPE, threshold=0.93, candidates=10)).hit
 
 
@@ -281,8 +271,7 @@ async def test_reinvalidation_does_not_recount_removed_entries(cache):
 async def test_disabled_cache_never_returns_what_it_was_given():
     """같은 질문을 두 번 보내도 둘 다 미스여야 한다 (`response-cache`).
 
-    운영자가 캐시를 끄는 이유는 대개 "캐시를 배제하고 원인을 보겠다"인데, 히트가 나면
-    그 배제가 성립하지 않는다."""
+    캐시를 끄는 이유가 대개 "배제하고 원인을 보겠다"라, 히트가 나면 배제가 성립하지 않는다."""
     cache = NullResponseCache()
 
     await cache.store("fp-1", entry(), scope=SCOPE, embedding=NEAR, negative=False)

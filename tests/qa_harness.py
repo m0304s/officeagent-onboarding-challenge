@@ -1,13 +1,7 @@
-"""답변 생성 테스트 하네스.
+"""답변 생성 테스트 하네스 — 검색 하네스 위에 페이크 생성기 하나만 얹는다.
 
-검색 하네스(`retrieval_harness.py`) 위에 **페이크 생성기 하나만** 얹는다. 근거는 실제
-수집·검색 경로로 만든다 — 근거 목록을 손으로 지어내면 `sources` 이벤트가 `/search` 와 같은
-모양인지, 인용 값이 그 근거와 일치하는지가 테스트의 조작으로 항상 참이 된다.
-
-**시간을 재지 않는다.** 재시도 백오프도 조각 도착 순서도 시각이 아니라 순서로 단언한다 —
-백오프는 `sleeps` 로 관측하고(실제로 자지 않는다), 조각과 이벤트의 관계는
-`ScriptedGenerator.emitted_chunks` 로 본다. 벽시계에 기대는 단언은 느린 CI 에서 흔들리고,
-흔들리는 테스트는 결국 꺼진다.
+근거를 손으로 지어내면 `sources` 가 `/search` 와 같은 모양인지가 조작으로 항상 참이 된다.
+시간을 재지 않는 이유는 `tests/README.md` 에 있다 — 벽시계 단언은 느린 CI 에서 흔들린다.
 """
 
 import asyncio
@@ -66,12 +60,9 @@ class QaHarness:
         return [event async for event in self.service.stream(context)]
 
     async def ask_watching_chunks(self, question: str = QUESTION) -> list[tuple[QaEvent, int]]:
-        """이벤트마다 **그 시점까지 생성기가 내보낸 조각 수**를 함께 기록한다.
+        """이벤트마다 그 시점까지 생성기가 내보낸 조각 수를 함께 기록한다.
 
-        "판정이 확정되기 전에는 `answer` 이벤트가 나가지 않는다"는 개수만으로는 확인되지
-        않는다 — 이벤트 수가 맞아도 첫 조각에서 이미 하나 나갔을 수 있다. 이벤트가 몇 번째
-        조각에서 나왔는지를 보면 그 성질이 순서로 고정된다.
-        """
+        이벤트 수가 맞아도 첫 조각에서 이미 하나 나갔을 수 있어, 순서로만 고정된다."""
         context = await self.service.prepare(question, request_id="req-test")
         return [
             (event, self.generator.emitted_chunks) async for event in self.service.stream(context)
@@ -99,14 +90,7 @@ def make_qa_harness(
 ) -> QaHarness:
     """대본을 받아 하네스 하나를 만든다.
 
-    `monkeypatch` 를 주면 재시도 대기를 **기록만 하고 실제로 자지 않는다.** 백오프가 늘어난다는
-    단언은 값 자체를 보면 되는데, 그걸 확인하려고 테스트가 실제로 3초를 자야 할 이유가 없다.
-
-    **캐시는 기본으로 꺼져 있다.** 배포 기본값은 켜짐이지만, 이 하네스를 쓰는 테스트
-    대부분은 "생성기가 몇 번 불렸는가"로 정책을 재는데 캐시가 켜져 있으면 같은 질문의 두
-    번째 요청이 생성기를 부르지 않아 그 단언이 통째로 뜻을 잃는다. 캐시를 재는 테스트만
-    `cached=True` 로 켠다 — 그 상태가 곧 `cache_enabled=false` 배선이기도 하다.
-    """
+    캐시가 기본으로 꺼져 있는 이유는 `tests/README.md` 에 있다 — 켜면 호출 수 단언이 무뎌진다."""
     # 저장소를 그대로 두고 설정만 바꾼 서비스를 세울 수 있어야 한다 — `retrieval_top_k`
     # 변경이 캐시 항목을 어떻게 가르는지는 같은 저장소 위에서만 재진다.
     storage = retrieval or make_harness(
@@ -180,10 +164,7 @@ def _only(events: list[QaEvent], kind: type) -> QaEvent:
 
 
 # ── SSE 응답을 읽는 창 ───────────────────────────────────────────────────
-#
-# 시퀀스 단언이 전부 이 위에 선다. 주석을 **따로 세는 것**이 요점이다 — 하트비트가
-# 이벤트로 해석되면 계약(이벤트 넷, 종료 하나)이 조용히 깨지는데, 파서가 그것을 이벤트로
-# 세어 버리면 그 사고가 테스트를 통과한다.
+# 주석은 이벤트와 따로 센다 — 하트비트를 이벤트로 세면 그 사고가 테스트를 통과한다.
 
 
 @dataclass(frozen=True)
@@ -249,10 +230,7 @@ def parse_sse(payload: str) -> SseStream:
 class AsgiStream:
     """ASGI 앱을 직접 몰아 응답 조각을 도착 순서대로 받는다.
 
-    `httpx.ASGITransport` 를 쓰지 않는 이유가 이 클래스의 존재 이유다 — 그쪽은 앱이 **끝난
-    뒤에** 응답을 돌려주므로 "근거가 생성보다 먼저 도착한다"와 "클라이언트가 끊으면 생성이
-    멈춘다"가 둘 다 관측되지 않는다. 전자는 순서가 사라져서, 후자는 끊을 수가 없어서다.
-    """
+    `ASGITransport` 는 앱이 끝난 뒤에 응답을 주어 도착 순서와 클라이언트 종료를 못 본다."""
 
     def __init__(self, app: FastAPI, path: str, payload: dict[str, Any]) -> None:
         self._app = app

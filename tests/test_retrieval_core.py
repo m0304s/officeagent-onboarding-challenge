@@ -1,11 +1,7 @@
-"""검색 결과 값 객체의 불변식과, 관련성 하한이 걸리는 **지점**.
+"""검색 결과 값 객체의 불변식과, 관련성 하한이 걸리는 지점.
 
-값 객체가 스스로 지키는 불변식이 있어야, 융합의 정규화 분모가 입력 목록 집합과 어긋나는
-버그가 상위 계층의 비교를 조용히 무의미하게 만들기 전에 걸린다.
-
-하한 테스트가 여기 있는 이유는 그것이 값이 아니라 **순서**에 관한 성질이기 때문이다 —
-"융합 앞이냐 뒤냐"는 점수 하나를 봐서는 알 수 없고, retriever 하나의 하한을 극단까지
-올렸을 때 다른 retriever 의 결과가 남는지로만 관측된다.
+하한이 여기 있는 이유는 그것이 값이 아니라 순서에 관한 성질이기 때문이다 — 융합 앞이냐
+뒤냐는 점수 하나로는 알 수 없고, 한 retriever 의 하한을 극단까지 올려야 관측된다.
 """
 
 import pytest
@@ -102,10 +98,7 @@ class TestContributionsRideAlong:
 async def test_the_dense_floor_is_applied_before_fusion():
     """하한을 넘긴 청크만 밀집 목록에 실린다 — 융합 뒤에 걸면 척도가 이미 사라졌다.
 
-    관측 방법은 기여 내역이다. 밀집 내역이 붙은 결과의 **원래 점수**가 전부 하한 이상이면
-    걸러진 자리가 융합 앞이다 — 뒤였다면 하한 미만인 청크가 목록에 들어와 순위를 밀어
-    올린 뒤 융합 점수로만 잘렸을 것이고, 그 흔적이 내역에 남는다.
-    """
+    관측 방법은 기여 내역이다. 걸러진 자리가 융합 뒤였다면 그 흔적이 내역에 남는다."""
     harness = make_harness(retrievers=HYBRID)
     await harness.ingest("policy.txt", POLICY)
     await harness.ingest("guide.md", GUIDE)
@@ -149,11 +142,9 @@ async def test_failing_both_floors_empties_the_results_without_an_error():
 
 
 async def _floor_between_the_top_two_dense_scores(harness) -> float:
-    """1위와 2위의 **밀집 원점수** 사이의 하한.
+    """1위와 2위의 밀집 원점수 사이의 하한.
 
-    상수로 박으면 페이크의 점수 분포가 조금만 움직여도 단언이 공허해진다 — 전부
-    통과하거나 전부 걸리는 쪽으로 조용히 넘어가고, 그때 테스트는 여전히 초록이다.
-    """
+    상수로 박으면 분포가 조금만 움직여도 단언이 공허해지고, 그때도 테스트는 초록이다."""
     dense_only = harness.searching_with(min_score=0.0, retrievers=("dense",))
     everything = await dense_only.search(IDENTIFIER_QUERY)
     scores = [chunk.contributions[0].native_score for chunk in everything.chunks]

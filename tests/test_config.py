@@ -69,7 +69,7 @@ def test_invalid_value_fails_startup_with_an_identifiable_field(monkeypatch, tmp
 
 
 def test_invalid_value_does_not_silently_fall_back_to_the_default(monkeypatch, tmp_path):
-    """잘못된 설정으로 조용히 기동되면 안 된다 — 기본값으로 흘러가지 않는다."""
+    """잘못된 설정으로는 조용히 기동되지 않는다 — 기본값으로 흘러가지 않는다."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("APP_PROBE_TIMEOUT_SECONDS", "not-a-number")
 
@@ -245,12 +245,9 @@ def test_a_non_positive_weight_fails_startup(monkeypatch, tmp_path, weight):
 
 
 def test_a_candidate_depth_below_the_k_ceiling_fails_startup(monkeypatch, tmp_path):
-    """비교 대상이 K **상한**이다 — 기본값과만 비교하면 큰 `top_k` 요청 하나가 곧 넘어선다.
+    """비교 대상이 K 상한이다 — 기본값과만 비교하면 큰 `top_k` 하나가 곧 넘어선다.
 
-    기본 K 를 상한보다 훨씬 낮게 두고 깊이를 그 **기본값 이상·상한 미만**으로 잡는다.
-    기본값과 비교하는 구현은 이 구성을 통과시키고, 그 배포에서 `top_k=40` 요청 하나가
-    곧바로 융합할 후보가 없는 상태를 만든다.
-    """
+    기본값과 비교하는 구현은 이 구성을 통과시키고, 그 배포에서 후보가 없는 상태가 된다."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("APP_RETRIEVAL_TOP_K", "5")
     monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "40")
@@ -349,9 +346,7 @@ def test_invalid_answer_generation_values_fail_startup(
 def test_the_generator_environment_carries_only_the_three_names(monkeypatch):
     """생성기에게 넘길 환경은 상속이 아니라 목록이다.
 
-    컨테이너 환경변수에 저장소 접속 정보가 들어 있어, 도구를 쓸 수 있는 에이전트에게
-    통째로 넘길 이유가 없다. 어댑터가 아니라 여기서 정해진다.
-    """
+    컨테이너 환경변수에 저장소 접속 정보가 있어 통째로 넘길 이유가 없다."""
     monkeypatch.setenv("APP_CACHE_URL", "redis://secret-host:6379/0")
     monkeypatch.setenv("HOME", "/home/app")
     monkeypatch.setenv("CODEX_HOME", "/home/app/.codex")
@@ -366,9 +361,7 @@ def test_the_generator_environment_carries_only_the_three_names(monkeypatch):
 def test_unimplemented_chunk_strategy_fails_startup(monkeypatch, tmp_path):
     """구현되지 않은 전략을 설정으로 고를 수 없어야 한다.
 
-    고를 수 있게 두면 "설정에 있으니 지원한다"는 허위 기재가 된다. 오류 메시지에는
-    실제로 받아들여지는 값 목록이 나와야 무엇을 넣어야 하는지 알 수 있다.
-    """
+    고를 수 있게 두면 "설정에 있으니 지원한다"는 허위 기재가 된다."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("APP_CHUNK_STRATEGY", "parent-child")  # 아직 구현되지 않았다
 

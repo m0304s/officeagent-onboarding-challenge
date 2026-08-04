@@ -1,11 +1,7 @@
-"""알림 파싱 — **저장된 실물 샘플** 위에서 고정한다.
+"""알림 파싱 — 저장된 실물 샘플(`tests/fixtures/codex/`) 위에서 고정한다.
 
-손으로 지어낸 샘플은 우리가 상상한 형식을 검증할 뿐이다. 여기 있는 단언은 전부 컨테이너
-안에서 실물 `codex app-server` 의 stdout 을 그대로 뜬 파일(`tests/fixtures/codex/`)을 읽고,
-그 파일이 곧 "무엇을 보고 파서를 만들었는가"의 증거다.
-
-프로세스도 이벤트 루프도 없다 — `parse_message` 와 `TurnReader` 가 순수하기 때문에 이 층이
-문자열 단언만으로 선다. 구독도 네트워크도 필요 없다.
+손으로 지어낸 샘플은 우리가 상상한 형식을 검증할 뿐이다. `parse_message` 와 `TurnReader`
+가 순수해 프로세스도 루프도 없이 문자열 단언만으로 선다.
 """
 
 import json
@@ -45,8 +41,7 @@ def completed_text(path: Path) -> str:
 def test_델타를_이어_붙이면_완성본과_같다():
     """이 성질이 표면을 바꾼 이유 그 자체다.
 
-    `exec` 에는 없던 것이라, 여기서 깨지면 스트리밍이 사라졌다는 뜻이다.
-    """
+    `exec` 에는 없던 것이라, 여기서 깨지면 스트리밍이 사라졌다는 뜻이다."""
     reader = TurnReader()
     chunks: list[str] = []
 
@@ -73,9 +68,7 @@ def test_판정_줄이_델타_경계에_걸쳐_온다():
 def test_프롬프트가_답변으로_새지_않는다():
     """우리가 보낸 프롬프트가 `userMessage` 아이템으로 되돌아온다.
 
-    `item.type` 으로 거르지 않으면 프롬프트 전문이 답변 자리에 앉는다 — 형식이 멀쩡해서
-    눈에 띄지 않는 종류의 오염이다.
-    """
+    `item.type` 으로 거르지 않으면 형식이 멀쩡한 채 프롬프트가 답변 자리에 앉는다."""
     reader = TurnReader()
     chunks: list[str] = []
 
@@ -125,9 +118,7 @@ def test_401_샘플은_인증_예외가_된다():
 def test_401_은_턴이_끝나기_훨씬_전에_판정된다():
     """CLI 의 자체 재시도를 기다리면 19초, 첫 401 을 보면 약 2초다.
 
-    "몇 번째 알림에서 알 수 있었는가"로 그 차이를 고정한다 — 초를 단언하면 기계 속도에
-    묶이지만, 순서는 프로토콜의 성질이다.
-    """
+    초가 아니라 "몇 번째 알림에서 알 수 있었는가"로 고정한다 — 순서는 프로토콜의 성질이다."""
     all_notifications = list(notifications(UNAUTHENTICATED))
     reader = TurnReader()
     seen = 0
@@ -142,11 +133,9 @@ def test_401_은_턴이_끝나기_훨씬_전에_판정된다():
 
 
 def test_codexErrorInfo_가_문자열이어도_죽지_않는다():
-    """마지막 `error` 알림에서는 `"other"` 라는 **문자열**로 온다.
+    """마지막 `error` 알림에서는 `"other"` 라는 문자열로 온다.
 
-    객체를 가정한 체이닝은 거기서 `AttributeError` 로 죽고, 그 죽음은 인증 실패 경로에서만
-    나므로 정상 회차 테스트로는 잡히지 않는다.
-    """
+    객체를 가정한 체이닝은 인증 실패 경로에서만 죽어 정상 회차로는 잡히지 않는다."""
     params = {
         "error": {"message": "unexpected status 401", "codexErrorInfo": "other"},
         "willRetry": False,
@@ -172,13 +161,13 @@ def test_자체_재시도_중인_오류는_예외가_아니다():
 
 
 def test_실패한_턴도_turn_completed_로_온다():
-    """`turn/failed` 라는 알림은 **없다.** 메서드 이름만 보면 실패를 성공으로 센다."""
+    """`turn/failed` 라는 알림은 없다. 메서드 이름만 보면 실패를 성공으로 센다."""
     reader = TurnReader()
 
     with pytest.raises(LlmGenerationFailed):
         reader.feed("turn/completed", {"turn": {"id": "t", "status": "failed"}})
 
-    # 실패해도 턴은 **끝났다** — 세션 반납의 조건은 성패가 아니라 종료 여부다.
+    # 실패해도 턴은 끝났다 — 세션 반납의 조건은 성패가 아니라 종료 여부다.
     assert reader.completed
 
 
@@ -205,14 +194,12 @@ def test_성공한_턴은_완료로_표시된다():
 def test_깨진_줄은_None_이고_예외가_아니다(line: str):
     """한 줄 때문에 세션 전체가 사망으로 판정되면 정상 요청이 실패한다.
 
-    실험 단계 표면이라 우리가 모르는 줄이 섞일 수 있다. 한 줄을 버리는 대가는 그 줄이
-    나르던 정보뿐이다.
-    """
+    실험 단계 표면이라 모르는 줄이 섞일 수 있고, 버리는 대가는 그 줄의 정보뿐이다."""
     assert parse_message(line) is None
 
 
 def test_깨진_줄_다음_줄은_정상_파싱된다():
-    """파서가 죽지 않는다는 것은 **다음 줄을 계속 읽는다**는 뜻이다."""
+    """파서가 죽지 않는다는 것은 다음 줄을 계속 읽는다는 뜻이다."""
     good = json.dumps({"method": "turn/completed", "params": {"threadId": "t"}})
 
     assert parse_message("{절반만") is None

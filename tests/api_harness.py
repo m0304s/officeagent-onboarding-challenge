@@ -1,8 +1,7 @@
-"""HTTP 경계 테스트의 공통 도구.
+"""HTTP 경계 테스트의 공통 도구 — 업로드 요청 하나와 현재 문서 목록 조회.
 
-업로드 요청 한 건을 만드는 것과, "지금 수집되어 있는 문서가 무엇인가"를 API 로 묻는 것.
-둘 다 거의 모든 API 테스트에 나오므로 여기 모아 둔다 — 특히 목록 조회는 **거부된 업로드가
-아무 흔적도 남기지 않았는지**를 확인하는 표준 수단이라 형태가 흔들리면 안 된다.
+목록 조회는 거부된 업로드가 흔적을 남기지 않았는지 확인하는 표준 수단이라, 형태가
+흔들리면 그 단언의 근거가 함께 사라진다.
 """
 
 from httpx import AsyncClient
@@ -17,7 +16,7 @@ SHORT_KOREAN = "재택근무는 주 2회까지 가능합니다."
 
 
 def upload(filename: str, data: bytes, content_type: str = "application/octet-stream") -> dict:
-    """`client.post("/documents", **upload(...))` 형태로 쓰는 multipart 인자."""
+    """업로드 요청 하나의 multipart 인자. `client.post("/documents", ...)` 에 펼쳐 넣는다."""
     return {"files": {"file": (filename, data, content_type)}}
 
 

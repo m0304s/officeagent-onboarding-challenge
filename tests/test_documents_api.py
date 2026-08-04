@@ -1,13 +1,7 @@
-"""문서 업로드 엔드포인트.
+"""문서 업로드 엔드포인트 — 요청 하나가 HTTP 경계에서 무엇을 약속하는가.
 
-여기서 고정하는 것은 **업로드 한 건이 HTTP 경계에서 무엇을 약속하는가**다 — 어떤 요청이
-어떤 상태 코드와 어떤 봉투를 받고, 그때 저장소에 실제로 무엇이 남는가. 목록·상세·삭제와
-재업로드 의미론은 `test_documents_crud_api.py` 가, 추출·분할 자체의 성질은
-`test_ingestion.py`·`test_chunking.py` 가 덮는다.
-
-**응답만 보고 끝내지 않는다.** spec 이 요구하는 것은 "`chunk_count` 만큼의 청크가 벡터
-스토어에 실제로 저장되었는가"이지 "응답에 숫자가 적혀 있는가"가 아니다. 그래서 대부분의
-단언이 주입된 `vector_store` 대역을 함께 들여다본다.
+응답만 보지 않고 주입된 벡터 스토어 대역을 함께 들여다본다. spec 이 요구하는 것은
+`chunk_count` 만큼의 청크가 실제로 저장되었는가이지 응답에 숫자가 적혀 있는가가 아니다.
 """
 
 import pytest
@@ -217,7 +211,7 @@ async def test_the_unsupported_format_error_lists_supported_formats(client):
 
 
 async def test_parse_errors_do_not_leak_internals(client):
-    """응답 본문에 파서의 내부 예외 메시지나 스택 트레이스가 실리면 안 된다."""
+    """응답 본문에 파서의 내부 예외 메시지나 스택 트레이스가 실리지 않는다."""
     response = await client.post("/documents", **upload("broken.pdf", b"%PDF-1.7 broken"))
 
     body = response.text
@@ -257,11 +251,9 @@ async def test_a_storage_failure_is_reported_as_service_unavailable(make_client,
 async def test_a_storage_failure_leaves_the_previous_revision_intact(
     make_client, settings, vector_store
 ):
-    """실패한 교체가 이전 리비전을 건드리면, 답할 수 있던 질문에 답할 수 없게 된다.
+    """실패한 교체가 이전 리비전을 건드리면 답할 수 있던 질문에 답할 수 없게 된다.
 
-    배치 하나를 쓴 **뒤** 실패시켜 부분 기록 상태를 만든다 — 그래야 되돌리기가 실제로
-    할 일이 생긴다. 응답이 돌아온 시점에 새 리비전 청크가 0개여야 한다.
-    """
+    배치 하나를 쓴 뒤 실패시켜 되돌리기가 실제로 할 일이 있는 상태를 만든다."""
     one_at_a_time = settings.model_copy(update={"embedding_batch_size": 1})
 
     async with make_client(settings=one_at_a_time) as client:
@@ -312,9 +304,7 @@ async def test_uploads_over_the_limit_are_rejected_with_the_limit(small_limit_cl
 async def test_a_file_far_over_the_limit_is_still_rejected(make_client, settings):
     """상한이 막는 것은 수신이 아니라 파싱·임베딩이다.
 
-    `UploadFile` 은 핸들러가 불릴 때 본문이 이미 수신된 뒤다(1 MiB 를 넘으면 디스크로
-    스풀된다). 수신 자체를 끊으려면 리버스 프록시의 본문 상한이 앞단에 필요하다.
-    """
+    수신 자체를 끊으려면 리버스 프록시의 본문 상한이 앞단에 필요하다."""
     tiny = settings.model_copy(update={"max_upload_bytes": 1024})
 
     async with make_client(settings=tiny) as client:
@@ -327,9 +317,7 @@ async def test_a_file_far_over_the_limit_is_still_rejected(make_client, settings
 async def test_a_file_larger_than_the_frameworks_part_default_is_accepted(client):
     """프레임워크의 multipart 파트 기본 상한은 1 MiB 다.
 
-    그 기본값이 파일 파트에도 걸린다면, 설정을 20 MiB 로 올려도 2 MiB 파일이 설정과
-    무관한 이유로 거절된다. 상한이 하나여야 하므로 이 경계를 고정한다.
-    """
+    그것이 파일 파트에도 걸리면 설정과 무관한 이유로 거절되어 상한이 둘이 된다."""
     unit = ("사내 복리후생 안내입니다. " * 8 + "\n\n").encode()  # 문자 경계에서 자르지 않는다
     data = unit * (2_000_000 // len(unit))
     assert len(data) > 1024 * 1024
@@ -362,12 +350,9 @@ async def test_the_limit_applies_before_parsing(small_limit_client, monkeypatch)
 async def test_a_file_within_the_limit_passes_even_though_the_body_is_larger(
     small_limit_client,
 ):
-    """상한은 **파일** 크기에 대한 약속이다.
+    """상한은 파일 크기에 대한 약속이다.
 
-    multipart 봉투(경계선·파트 헤더)까지 세면 상한에 꼭 맞는 파일이 몇백 바이트 때문에
-    거절되어, 응답이 알려주는 상한과 실제 동작이 어긋난다. 이 요청의 본문은 상한(100)을
-    넘지만 파일은 넘지 않으므로 통과해야 한다.
-    """
+    봉투까지 세면 응답이 알려주는 상한과 실제 동작이 어긋난다."""
     async with small_limit_client as client:
         response = await client.post("/documents", **upload("ok.txt", "짧은 본문".encode()))
 
@@ -440,23 +425,16 @@ def test_the_upload_limit_has_a_default():
 
 @needs_vector_store
 async def test_the_default_wiring_works_with_the_real_stores(settings, healthy_probes, embedder):
-    """대역이 아니라 **실제 Chroma 서버·SQLite** 로 배선한 앱에 한 번은 요청해 본다.
+    """대역이 아니라 실제 Chroma·SQLite 로 배선한 앱에 한 번은 요청해 본다.
 
-    나머지 API 테스트는 전부 저장소 대역을 쓴다 — 저장 결과를 들여다보고 실패를 주입해야
-    하기 때문이다. 그래서 "설정의 경로로 실제 어댑터가 만들어지고 그 위에서 수집·조회·
-    삭제가 성립하는가"를 확인하는 곳은 여기뿐이다. 이게 없으면 배선이 깨져도 스위트는
-    끝까지 초록이고, 그 사실은 평가자가 서비스를 띄웠을 때 드러난다.
-
-    임베더만 대역으로 남긴다. 실제 모델을 쓰면 이 테스트 하나가 수백 MB 다운로드에 묶여
-    "구독·네트워크 없이 한 줄 실행"이 깨진다.
-    """
+    없으면 배선이 깨져도 스위트는 초록이고, 그 사실은 평가자가 띄웠을 때 드러난다."""
     from httpx import ASGITransport, AsyncClient
 
     from app.adapters.vector_store import ChromaVectorStore, collection_for
     from app.main import create_app
 
     app = create_app(settings=settings, probes=healthy_probes, embedder=embedder)
-    # 배선이 고르는 것과 **같은 컬렉션**을 봐야 한다. 이름 규칙이 어긋나면 여기서 0이 나온다.
+    # 배선이 고르는 것과 같은 컬렉션을 봐야 한다. 이름 규칙이 어긋나면 여기서 0이 나온다.
     store = ChromaVectorStore(
         settings.vector_store_url, collection_name=collection_for(embedder.dimension)
     )
@@ -477,7 +455,7 @@ async def test_the_default_wiring_works_with_the_real_stores(settings, healthy_p
     assert listing["count"] == 1
     assert removed.status_code == 204
     assert after == []
-    # 청크가 **실제 서버**에 들어갔다가 삭제와 함께 사라졌는지. 배선이 어긋나면
+    # 청크가 실제 서버에 들어갔다가 삭제와 함께 사라졌는지. 배선이 어긋나면
     # 응답은 멀쩡한데 저장된 것이 없는 상태가 되고, 그건 검색 단계에서야 드러난다.
     assert stored == created["chunk_count"]
     assert await store.count_chunks(created["document_id"]) == 0

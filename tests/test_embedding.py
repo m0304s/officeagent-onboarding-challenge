@@ -1,13 +1,7 @@
-"""임베딩 어댑터.
+"""임베딩 어댑터 — 로딩 없이 서명을 읽는가, 역할 접두사가 새지 않는가.
 
-여기서 고정하는 것은 두 가지다.
-
-1. **모델을 로딩하지 않고도** 색인 서명의 재료(`signature`·`dimension`)를 읽을 수 있다.
-   읽는 일이 로딩을 유발하면 지연 초기화가 무의미해진다.
-2. 역할 접두사가 어댑터 밖으로 새지 않는다.
-
-실제 모델을 쓰는 단언은 파일 끝의 통합 테스트 하나뿐이며, 가중치가 로컬에 없으면
-스킵한다. 나머지는 전부 페이크로 돈다 — `pytest` 한 줄이 네트워크에 묶이면 안 된다.
+실제 모델을 쓰는 단언은 파일 끝의 통합 테스트 하나뿐이고 가중치가 없으면 스킵한다.
+나머지는 페이크로 돈다 — `pytest` 한 줄이 네트워크에 묶이지 않게.
 """
 
 import asyncio
@@ -46,7 +40,8 @@ def test_implementations_satisfy_the_protocol(embedder):
 
 
 def test_the_signature_is_readable_without_loading_the_model():
-    """서명은 수집이 시작되기 전에 필요하다. 읽는 일이 로딩을 유발하면 안 된다."""
+    """서명은 수집이 시작되기 전에 필요하다. 읽는 일이 로딩을 유발하면 지연 초기화가
+    무의미해진다."""
     embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
 
     assert embedder.signature
@@ -81,7 +76,7 @@ def test_the_signature_keeps_the_organization_prefix():
     ids=["model", "normalization"],
 )
 def test_a_different_configuration_gets_a_different_signature(left, right):
-    """서명이 같으면 재색인이 일어나지 않는다 — 서명이 막으려던 바로 그 실패다."""
+    """서명이 같으면 재색인이 일어나지 않는다 — 서명이 막으려던 실패가 서명을 통해 돌아온다."""
     assert left.signature != right.signature
 
 
@@ -143,9 +138,7 @@ def test_the_fakes_token_count_is_tunable():
 def test_the_fake_counts_both_roles_the_same():
     """페이크에는 역할 접두사가 없으므로 흉내 낼 차이도 없다.
 
-    여기서 인위적인 차이를 만들면 검증 대상이 페이크가 되고, 정작 확인하려던 성질
-    (두 경로가 실제로 다르게 센다)은 여전히 실물에서 미확인으로 남는다.
-    """
+    인위적인 차이를 만들면 검증 대상이 페이크가 되고 실물은 미확인으로 남는다."""
     embedder = FakeEmbedder(chars_per_token=2)
 
     assert embedder.count_query_tokens(KOREAN) == embedder.count_document_tokens(KOREAN)
@@ -159,15 +152,9 @@ async def test_embedding_nothing_calls_nothing():
 
 
 async def test_encoding_does_not_block_the_event_loop():
-    """인코딩은 CPU 바운드다. 이벤트 루프에서 그냥 돌면 문서 하나가 서비스 전체를 멈춘다.
+    """인코딩은 CPU 바운드다 — 루프에서 그냥 돌면 문서 하나가 서비스 전체를 멈춘다.
 
-    모델을 실제로 올리지 않고 **느린 인코더를 끼워** 확인한다. 가중치 유무와 무관하게
-    항상 돌아야 하는 성질이고(오프로드는 모델이 무엇이든 지켜져야 한다), 실물 모델은
-    빨라서 오히려 이 회귀를 드러내지 못한다.
-
-    수집 서비스는 배치마다 이 메서드를 부르므로, 호출당 오프로드가 성립하지 않으면
-    임베딩 단계 전체가 루프를 붙잡는다.
-    """
+    실물 모델은 빨라서 오히려 이 회귀를 드러내지 못해 느린 인코더를 끼운다."""
     delay = 0.2
     embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
     embedder._model = _SlowModel(delay)  # 로딩을 건너뛴다 — 여기서 볼 것은 인코딩이다
@@ -190,7 +177,7 @@ async def test_encoding_does_not_block_the_event_loop():
 
 
 class _SlowModel:
-    """`encode` 만 있는 느린 모델 대역. 지연은 **블로킹**이다."""
+    """`encode` 만 있는 느린 모델 대역. 지연은 블로킹이다."""
 
     def __init__(self, delay: float = 0.0) -> None:
         self._delay = delay
@@ -241,9 +228,7 @@ def test_each_count_encodes_its_own_role_prefix():
 def test_the_two_counts_differ_by_the_prefix_length():
     """역할마다 인코딩되는 문자열이 다르므로 계산도 갈려야 한다.
 
-    하나로 뭉치면 둘 중 한쪽이 반드시 틀리고, 그 틀림은 **상한 바로 아래 입력이
-    조용히 잘리는** 방식으로만 드러난다.
-    """
+    뭉치면 한쪽이 틀리고, 그 틀림은 상한 바로 아래 입력이 잘리는 방식으로만 드러난다."""
     embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
     embedder._model = _TokenizerOnlyModel()
 
@@ -259,9 +244,7 @@ def test_the_two_counts_differ_by_the_prefix_length():
 async def test_warming_up_loads_the_model_and_encodes_once():
     """로딩만 하면 첫 `encode` 의 초기화 비용이 그대로 남는다.
 
-    "첫 요청 지연을 없앤다"가 목적이므로 실제로 한 번 돌려 봐야 한다. 그 김에
-    "이 모델로 벡터가 나오는가"까지 기동 시점에 확인된다.
-    """
+    실제로 한 번 돌리는 김에 "이 모델로 벡터가 나오는가"까지 기동 시점에 확인된다."""
     embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
     loaded = _SlowModel()
     embedder._load = lambda: loaded  # 가중치 없이 로딩 경로만 대신한다
@@ -276,8 +259,7 @@ async def test_warming_up_loads_the_model_and_encodes_once():
 async def test_warming_up_does_not_swallow_its_failure():
     """실패를 여기서 삼키면 무엇이 준비되지 않았는지가 사라진다.
 
-    계속 뜰지 말지는 호출자(앱 팩토리)가 정한다 — 어댑터는 사실만 올린다.
-    """
+    계속 뜰지 말지는 호출자(앱 팩토리)가 정한다 — 어댑터는 사실만 올린다."""
     embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
 
     def explode():
@@ -292,9 +274,7 @@ async def test_warming_up_does_not_swallow_its_failure():
 async def test_the_first_encode_still_loads_when_warm_up_never_ran():
     """지연 로딩은 선로딩이 생겨도 남는다 — 선로딩 실패의 백스톱이다.
 
-    걷어내면 선로딩 실패가 곧 영구 실패가 되어, 일시적 원인(디스크 경합, 느린 볼륨)에도
-    재시작 전까지 수집이 죽는다.
-    """
+    걷어내면 일시적 원인에도 재시작 전까지 수집이 죽는다."""
     embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
     loaded = _SlowModel()
     embedder._load = lambda: loaded
@@ -325,9 +305,7 @@ async def test_warming_up_twice_loads_once():
 
 
 # ── 실물 모델 (가중치가 로컬에 있을 때만) ────────────────────────────────
-#
-# 스킵 조건(`needs_weights`)은 `conftest.py` 에 있다 — 품질 테스트도 같은 조건을 쓰므로,
-# 두 벌로 두면 한쪽만 고쳐진 채 다른 쪽이 조용히 안 돌 수 있다.
+# 스킵 조건은 `conftest.py` 에 있다 — 두 벌로 두면 한쪽만 고쳐진 채 안 돌 수 있다.
 
 
 @pytest.fixture(scope="module")
@@ -342,8 +320,7 @@ def real_embedder():
 async def test_the_real_model_matches_what_the_signature_declares(real_embedder):
     """선언이 틀리면 서명이 거짓이 되고 토큰 가드가 상한을 넘겨 통과시킨다.
 
-    페이크만 검증하면 이 어긋남이 배포까지 살아남는다.
-    """
+    페이크만 검증하면 이 어긋남이 배포까지 살아남는다."""
     embedder = real_embedder
 
     vectors = await embedder.embed_documents([KOREAN])
@@ -384,14 +361,9 @@ def test_the_real_token_count_includes_the_prefix(real_embedder):
 
 @needs_weights
 def test_the_real_query_count_matches_what_the_model_actually_encodes(real_embedder):
-    """**이 일치가 깨지면 가드가 통과시킨 질의가 잘린다.**
+    """이 일치가 깨지면 가드가 통과시킨 질의가 잘린다.
 
-    검색의 길이 가드는 이 수 하나로 "이 질의가 입력 창에 들어가는가"를 판정한다.
-    모델이 실제로 먹는 토큰 열(`tokenize`)보다 적게 세면, 가드를 통과한 질의의
-    뒷부분이 벡터에 반영되지 않으면서 호출부는 전부 반영됐다고 믿는다.
-
-    특수 토큰(`<s>`·`</s>`)까지 포함해야 성립한다 — 둘이 빠지면 계산이 2 적어진다.
-    """
+    특수 토큰(`<s>`·`</s>`)까지 포함해야 성립한다 — 둘이 빠지면 계산이 2 적어진다."""
     counted = real_embedder.count_query_tokens(KOREAN)
     fed = real_embedder._model.tokenize(["query: " + KOREAN])
 
@@ -403,10 +375,9 @@ def test_the_real_query_count_matches_what_the_model_actually_encodes(real_embed
 
 @needs_weights
 async def test_the_real_model_warms_up():
-    """대역이 아니라 **실물 가중치**로 선로딩 경로가 끝까지 도는지 확인한다.
+    """대역이 아니라 실물 가중치로 선로딩 경로가 끝까지 도는지 확인한다.
 
-    기동 시점에 도는 경로라, 여기서 깨지면 컨테이너가 매번 경고를 남기며 뜬다.
-    """
+    기동 시점에 도는 경로라, 여기서 깨지면 컨테이너가 매번 경고를 남기며 뜬다."""
     embedder = SentenceTransformerEmbedder(DEFAULT_MODEL)
 
     await embedder.warm_up()

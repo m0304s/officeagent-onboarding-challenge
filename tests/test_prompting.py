@@ -1,19 +1,7 @@
-"""프롬프트 조립·출력 파싱·판정 줄 분리.
+"""프롬프트 조립·출력 파싱·판정 줄 분리 — 문자열 단언뿐이다.
 
-**LLM 도, 비동기도, 페이크도 없다 — 문자열 단언뿐이다.** 이 층을 순수 함수로 둔 이유가
-그것이고(design 결정 10), 그래서 이 파일은 `pytest` 한 줄에서 구독·네트워크 없이 밀리초에
-끝난다.
-
-세 묶음이 있다.
-
-1. **프롬프트 회귀** — 문맥에 근거가 번호·파일명·위치와 함께 들어가는가, 지시문이 환각을
-   막는 문장들을 갖고 있는가. 마지막 테스트가 가장 중요하다: 프롬프트가 지시하는 판정 줄과
-   파서가 인식하는 판정 줄이 **같은 문자열**인가. 둘이 갈리면 모델은 시킨 대로 쓰는데
-   서버가 못 알아듣고, 그 증상은 "판정 줄 없음" 경로로 조용히 흡수된다.
-2. **파서 경계** — design 결정 4의 표를 그대로 덮는다.
-3. **판정 줄 분리** — 실측이 만든 부품이라(판정 한 줄이 델타 일곱 조각에 걸쳐 온다) 조각
-   경계의 모든 경우를 덮고, **임의의 분할에서 `parse_answer` 와 결과가 같음**을 단언한다.
-   그 일치가 "`answer` 이벤트를 이어 붙인 것 = `done.answer`" 라는 스펙 불변식의 근거다.
+LLM 도 비동기도 페이크도 없다(design 결정 10). 세 묶음의 내용과, 프롬프트가 지시하는
+판정 줄과 파서가 인식하는 줄이 같아야 하는 이유는 `tests/README.md` 에 있다.
 """
 
 import itertools
@@ -61,9 +49,7 @@ PDF_CHUNK = chunk(
 def emit(text: str, pieces: list[str] | None = None) -> tuple[VerdictSplitter, list[str]]:
     """조각들을 분리기에 통과시키고 `(분리기, 내보낸 조각들)` 을 돌려준다.
 
-    `pieces` 를 주지 않으면 `text` 전체를 한 조각으로 넣는다. `finish()` 까지 부르는 것이
-    계약의 일부다 — 개행 없이 끝나는 출력은 그 호출이 있어야 버퍼에서 나온다.
-    """
+    `finish()` 까지 부르는 것이 계약이다 — 개행 없이 끝난 출력은 그때 버퍼에서 나온다."""
     splitter = VerdictSplitter()
     emitted: list[str] = []
     for piece in pieces if pieces is not None else [text]:
@@ -110,7 +96,7 @@ class TestContextCarriesEveryPieceOfEvidence:
         assert "(문자 120–540)" in prompt
 
     def test_pdf_source_shows_a_page(self):
-        """PDF 의 문자 오프셋은 **그 쪽 안의** 값이라 적으면 문서 전체 기준으로 오해된다."""
+        """PDF 의 문자 오프셋은 그 쪽 안의 값이라 적으면 문서 전체 기준으로 오해된다."""
         prompt = build_prompt("질문", [PDF_CHUNK])
 
         assert "(3쪽)" in prompt
@@ -153,13 +139,9 @@ class TestInstructionsStateWhatMustNotHappen:
 
 
 class TestThePromptAndTheParserAgreeOnTheFormat:
-    """**이 파일에서 가장 중요한 테스트다.**
+    """이 파일에서 가장 무거운 묶음 — 프롬프트의 판정 줄과 파서의 판정 줄이 같은 문자열인가.
 
-    프롬프트가 지시하는 판정 줄과 파서가 인식하는 판정 줄이 갈리면, 모델은 시킨 대로 쓰는데
-    서버가 못 알아듣는다. 그 증상은 오류가 아니라 "판정 줄 없음" 경로로 조용히 흡수되어
-    `INSUFFICIENT` 가 영원히 나오지 않는 형태로만 드러난다 — 거절이 사라지는 것이라
-    환각 억제가 통째로 무력해지는데 어디에도 실패가 남지 않는다.
-    """
+    갈리면 거절이 사라져 환각 억제가 무력해지는데 어디에도 실패가 남지 않는다."""
 
     def test_the_prompt_shows_exactly_the_lines_the_parser_accepts(self):
         prompt = build_prompt("질문", [chunk()])
@@ -243,11 +225,9 @@ class TestVerdictLine:
         ],
     )
     def test_only_the_exact_line_counts_as_a_verdict(self, raw):
-        """관대하게 받으면 분리기가 버퍼 상한을 가질 수 없다 — 뒤에 공백이 몇 개 더 올지 모른다.
+        """관대하게 받으면 분리기가 버퍼 상한을 가질 수 없다.
 
-        느슨한 인식의 대가는 스트리밍이고, 엄격한 인식의 대가는 형식 위반 회차에서
-        판정 줄이 본문에 남는 것뿐이다. 후자가 훨씬 싸다.
-        """
+        느슨한 인식의 대가는 스트리밍이고, 엄격한 인식의 대가는 판정 줄이 본문에 남는 것뿐이다."""
         parsed = parse_answer(raw, source_count=1)
 
         assert not parsed.verdict_line_present
@@ -309,8 +289,7 @@ class TestMarkers:
     def test_a_repeated_out_of_range_marker_counts_once(self):
         """세는 대상은 "잘못 가리킨 근거"이지 "잘못 적은 글자"가 아니다.
 
-        뒤집으면 이 수가 답변 길이에 비례해 흔들려, 프롬프트 열화를 재는 신호로 쓸 수 없다.
-        """
+        뒤집으면 이 수가 답변 길이에 비례해 흔들려, 프롬프트 열화를 재는 신호로 쓸 수 없다."""
         parsed = parse_answer("VERDICT: ANSWERABLE\n[7] ... [7] ... [7]", source_count=2)
 
         assert parsed.dropped_markers == 1
@@ -351,7 +330,8 @@ class TestVerdictSplitterBoundaries:
         assert emitted == ["교육비는 200만원입니다."]
 
     def test_the_shape_the_measurement_actually_produced(self):
-        """실측에서 판정 줄 하나가 델타 일곱 조각에 걸쳐 왔다. 그때 이벤트가 나가면 안 된다."""
+        """실측에서 판정 줄 하나가 델타 일곱 조각에 걸쳐 왔다. 그때 이벤트가 나가면 판정
+        줄이 본문에 섞인다."""
         splitter = VerdictSplitter()
         pieces = ["VER", "DICT", ": ANSW", "ERABLE", "\n"]
 
@@ -379,7 +359,7 @@ class TestVerdictSplitterBoundaries:
         assert "".join(emitted) == "교육비는 200만원입니다."
 
     def test_a_prefix_that_stops_being_a_prefix_is_flushed_whole(self):
-        """`VERDICT` 로 시작하는 답변 문장도 있을 수 있다 — 붙들고 있으면 안 된다."""
+        """`VERDICT` 로 시작하는 답변 문장도 있을 수 있다 — 붙들면 답변이 그만큼 늦게 나간다."""
         splitter = VerdictSplitter()
 
         assert splitter.feed("VERDICT") == []
@@ -446,13 +426,9 @@ class TestVerdictSplitterHoldsBackNoMoreThanTheVerdictLine:
 
 
 class TestTheSplitterAndTheParserNeverDisagree:
-    """**"조각을 이어 붙인 것 = `done.answer`" 라는 스펙 불변식의 근거가 이 묶음이다.**
+    """"조각을 이어 붙인 것 = `done.answer`" 라는 스펙 불변식의 근거가 이 묶음이다.
 
-    서비스는 스트리밍에 `VerdictSplitter` 를, 종료 조립에 `parse_answer` 를 쓴다. 두 경로가
-    본문을 다르게 잘라내면 클라이언트가 받는 두 값이 어긋나고, 그때 클라이언트는 무엇을
-    표시해야 할지 알 수 없다. 같은 상수를 공유한다는 사실만으로는 부족해서 — 앞쪽 공백
-    처리처럼 규칙이 두 벌인 자리가 있다 — 임의의 분할에 대해 직접 단언한다.
-    """
+    상수를 공유한다는 사실만으로는 부족해 임의의 분할에 대해 직접 단언한다."""
 
     OUTPUTS = [
         "VERDICT: ANSWERABLE\n교육비는 200만원입니다 [1].",

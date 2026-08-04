@@ -1,12 +1,7 @@
 """재시도 정책 — 시도 횟수, 백오프, 재시도 대상과 비대상.
 
-**정책이 서비스에 있는지를 재는 파일이다.** 한 시도의 상한과 자원 회수는 어댑터가
-(`test_llm_pool.py`), 시도 횟수·백오프·가부는 여기가 덮는다. 어댑터가 실패를 예외 셋으로
-정규화하므로 생성 표면을 바꿔도 이 파일은 그대로다 — 페이크가 던지는 것도 그 셋이다.
-
-**실제로 자지 않는다.** 백오프 단언은 대기 시간을 관측하는 것이지 겪는 것이 아니라,
-하네스가 `asyncio.sleep` 을 기록으로 바꾼다. 겪게 두면 이 파일 하나가 스위트 전체보다
-오래 걸린다.
+한 시도의 상한과 자원 회수는 어댑터(`test_llm_pool.py`)의 몫이고 여기는 정책만 잰다.
+백오프는 겪지 않고 관측한다 — 하네스가 `asyncio.sleep` 을 기록으로 바꾼다.
 """
 
 from app.core.answers import FinishReason
@@ -110,9 +105,7 @@ async def test_no_backoff_is_paid_after_the_last_attempt(monkeypatch):
 async def test_a_failure_after_the_first_chunk_is_not_retried(monkeypatch):
     """재시도는 이어 쓰는 것이 아니라 처음부터 다시 쓰는 것이다.
 
-    이어 붙이면 사용자는 앞부분이 두 번 적힌 답변을 본다. 스트리밍이 재시도 정책에 거는
-    제약이며, 스트리밍이 없었다면 존재하지 않았을 규칙이다.
-    """
+    이어 붙이면 앞부분이 두 번 적힌 답변이 보인다 — 스트리밍이 정책에 거는 제약이다."""
     harness = make_qa_harness(
         GenerationTurn(
             chunks=(VERDICT_ANSWERABLE, "앞부분입니다."),

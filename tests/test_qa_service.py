@@ -1,12 +1,7 @@
-"""QA 서비스 — 이벤트 시퀀스, 판정 줄 버퍼링, 거절 두 갈래, 빈 답변의 유일성.
+"""QA 서비스 — 무엇이 몇 번 어떤 순서로 나가는가.
 
-인용 검증은 `test_qa_citations.py`, 재시도 정책은 `test_qa_retry.py`, SSE 프레이밍과 상태
-코드는 `test_qa_api.py` 가 덮는다. 여기서 고정하는 것은 **무엇이 몇 번 어떤 순서로
-나가는가**다.
-
-`VerdictSplitter` 자체의 경계는 `test_prompting.py` 가 문자열 단언으로 이미 덮었다. 이
-파일이 다시 보는 것은 그 상태 기계를 **구동한 결과가 이벤트 수와 내용으로 드러나는가**다 —
-서비스가 조각을 다시 모으거나 쪼개면 순수 함수 테스트는 여전히 통과한다.
+`VerdictSplitter` 의 경계는 `test_prompting.py` 가 문자열로 덮었고, 여기서는 그 상태
+기계를 구동한 결과가 이벤트 수와 내용으로 드러나는지를 본다.
 """
 
 import asyncio
@@ -141,9 +136,7 @@ async def test_the_verdict_line_never_reaches_the_client():
 async def test_a_verdict_split_across_chunks_holds_events_until_it_settles():
     """실측 모양 그대로 — 판정 줄 하나가 여러 델타에 걸쳐 온다.
 
-    이벤트 **수**만 세면 확인되지 않는다. 첫 조각에서 이미 하나 나갔어도 총합은 같을 수
-    있어서, 이벤트가 몇 번째 조각에서 나왔는지를 함께 본다.
-    """
+    이벤트 수는 같을 수 있어, 몇 번째 조각에서 나왔는지를 함께 본다."""
     harness = make_qa_harness(
         GenerationTurn(chunks=("VERDICT", ": ANSWERABLE\n앞부분입니다.", " 뒷부분입니다."))
     )
@@ -153,7 +146,7 @@ async def test_a_verdict_split_across_chunks_holds_events_until_it_settles():
 
     answers = [(event.text, chunks) for event, chunks in observed if event.name.value == "answer"]
     assert [text for text, _ in answers] == ["앞부분입니다.", " 뒷부분입니다."]
-    # 첫 `answer` 는 **두 번째** 조각에서야 나온다 — 첫 조각 동안에는 하나도 안 나갔다.
+    # 첫 `answer` 는 두 번째 조각에서야 나온다 — 첫 조각 동안에는 하나도 안 나갔다.
     assert [chunks for _, chunks in answers] == [2, 3]
 
 
@@ -319,12 +312,9 @@ async def test_whitespace_only_bodies_count_as_no_body(monkeypatch):
 
 
 async def test_the_concurrency_ceiling_makes_requests_wait_not_fail():
-    """상한에 걸린 요청은 **실패하지 않고 대기한다** — 수집과 같은 규율이다.
+    """상한에 걸린 요청은 실패하지 않고 대기한다 — 수집과 같은 규율이다.
 
-    성패로는 드러나지 않는 성질이라(둘 다 성공한다) 동시에 열려 있던 시도의 최대치로
-    잰다. 상한이 없으면 동시 요청 수만큼 프로세스가 뜨고 컨테이너 메모리가 요청 수에
-    비례한다.
-    """
+    둘 다 성공해 성패로는 안 드러나므로 동시에 열려 있던 시도의 최대치로 잰다."""
     harness = make_qa_harness(
         GenerationTurn(chunks=(VERDICT_ANSWERABLE, "답변입니다."), delay=0.01),
         concurrency=1,
@@ -341,11 +331,7 @@ async def test_the_concurrency_ceiling_makes_requests_wait_not_fail():
 async def test_abandoning_the_stream_stops_the_generation():
     """순회를 멈추면 진행 중이던 시도가 정리된다.
 
-    `async for` 는 순회를 멈출 때 대상 생성기를 닫아 주지 않는다. 서비스가 위임 지점과
-    어댑터 호출 양쪽을 `aclosing` 으로 감싸지 않으면 정리 시점이 가비지 컬렉션에 달리고,
-    그때는 취소된 요청 하나가 프로세스 하나씩을 남긴다 — 답이 마음에 안 들어 새 질문을
-    보내는 것은 흔한 조작이라 이 누수는 정상 사용에서 쌓인다.
-    """
+    `aclosing` 이 없으면 정리가 가비지 컬렉션에 달려, 취소된 요청이 프로세스를 남긴다."""
     harness = make_qa_harness(
         GenerationTurn(chunks=(VERDICT_ANSWERABLE, "앞부분.", "뒷부분."), delay=0.01)
     )

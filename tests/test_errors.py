@@ -1,8 +1,6 @@
-"""오류 응답 형식.
+"""오류 응답 형식 — 네 경로가 같은 봉투를 쓰고 내부 정보를 흘리지 않는가.
 
-네 경로(경로 없음 · 메서드 불허 · 요청 검증 실패 · 미처리 예외)가 **같은 봉투**를 쓰고,
-어느 것도 내부 정보를 흘리지 않는지 확인한다. 형식이 두 가지가 되면 소비자가 파서를 둘
-들고 있어야 하므로, 그 회귀를 여기서 막는다.
+형식이 둘이 되면 소비자가 파서를 둘 들고 있게 된다.
 """
 
 import pytest
@@ -30,8 +28,7 @@ class CustomDomainError(AppError):
 def app_with_error_routes(settings):
     """오류를 낼 수 있는 라우트를 붙인 앱.
 
-    운영 코드에 테스트용 라우트를 두지 않기 위해 여기서만 추가한다.
-    """
+    운영 코드에 테스트용 라우트를 두지 않기 위해 여기서만 추가한다."""
     app = create_app(settings=settings, probes=(StubProbe("cache"), StubProbe("vector_store")))
 
     @app.post("/echo")

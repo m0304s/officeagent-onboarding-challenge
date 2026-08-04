@@ -99,6 +99,17 @@ OfficeAgent BE 채용 과제 — Document Q&A API. 문서를 업로드하면 내
 `ARCHITECTURE.md`나 `openspec/` 아티팩트로 옮긴다 — 근거가 사라지면 다음 사람이 같은 함정을
 다시 밟는다.
 
+`src`·`tests`·`scripts` 전부가 이 규칙 아래 있고 위반 0건이다. 인자 없이 한 번 돌려
+확인한다.
+
+```bash
+python3 scripts/check_comments.py       # 112개 파일, 위반 0건
+```
+
+테스트의 긴 설명은 [`tests/README.md`](./tests/README.md)로 옮겼다 — 파일 안에는 한 줄
+요약과 가장 무거운 "왜" 하나만 남기고, 밀려난 근거는 거기에 파일별로 있다. 새 테스트를
+쓸 때도 같은 규칙을 따른다: 설명이 3줄을 넘으면 지우지 말고 그 문서로 옮긴다.
+
 ## 필수 산출물
 
 - `README.md` — 실행 방법 + **테스트 실행 방법** + 기술 선택 이유

@@ -1,24 +1,7 @@
 """가짜 `codex app-server` — 같은 줄 단위 JSON-RPC 를 말하는 짧은 스크립트.
 
-**실물 CLI 의 대체재가 아니라, 실물 CLI 가 닿지 못하는 곳이다.** 핸드셰이크 무응답, 턴
-도중 사망, 중단 요청 무시 같은 실패는 실물로는 인위적으로 만들 수 없다. 이 파일이 인자
-하나로 그것들을 재현한다.
-
-| 지시 | 재현하는 실패 |
-|------|--------------|
-| (기본) | 정상 — 델타를 흘리고 `turn/completed` |
-| `--no-handshake` | `initialize` 무응답 → 핸드셰이크 실패 |
-| `--die-mid-turn` | 델타 몇 개 뒤 프로세스 즉사 |
-| `--hang` | `turn/start` 뒤 침묵 → 타임아웃 |
-| `--ignore-interrupt` | 중단 요청 무시 → 유예 초과 → 세션 폐기 경로 |
-| `--auth-401` | `willRetry` 가 붙은 401 `error` 알림 |
-| `--slow-deltas N` | 델타 사이 지연 → 취소·상한 대기 관측 |
-
-전부 즉시 응답하므로 상한을 수십 ms 로 두면 테스트가 밀리초 단위로 끝난다.
-
-**모양은 실물 픽스처에서 가져왔다**(`tests/fixtures/codex/`) — `thread/started` 처럼
-`threadId` 가 없는 세션 수준 알림을 함께 보내는 것도 실물이 그렇기 때문이다. 그 알림이
-턴의 큐로 새면 대기하던 쪽이 남의 메시지를 읽는다.
+실물 CLI 의 대체재가 아니라 실물이 닿지 못하는 곳이다. 핸드셰이크 무응답·턴 도중 사망·
+중단 요청 무시는 인위적으로 만들 수 없다. 지시 목록은 `tests/README.md` 에 있다.
 """
 
 import argparse
@@ -113,8 +96,7 @@ def _run_turn(args: argparse.Namespace) -> None:
 def _wait_for_interrupt(args: argparse.Namespace) -> None:
     """침묵한 채 중단 요청만 기다린다.
 
-    `--ignore-interrupt` 면 끝까지 침묵한다 — 어댑터가 유예를 넘겨 세션을 폐기하는 경로다.
-    """
+    `--ignore-interrupt` 면 끝까지 침묵한다 — 어댑터가 유예를 넘겨 세션을 폐기하는 경로다."""
     if _INTERRUPTED.wait(timeout=30) and not args.ignore_interrupt:
         _complete("failed")
 

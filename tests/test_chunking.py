@@ -1,9 +1,7 @@
-"""청킹.
+"""청킹 — 분할이 원문을 훼손하지 않는가.
 
-검색 품질은 여기서 재지 않는다 — 그건 실물 모델과 질의 경로가 있어야 재는 것이고
-retrieval change 의 몫이다. 여기서 고정하는 것은 **분할이 원문을 훼손하지 않는다**는
-성질이다. 청크 본문이 원문의 부분 문자열이 아니거나, 경계에서 내용이 사라지거나,
-청크가 모델 입력 창을 넘으면 검색 이전에 이미 틀린 것을 저장한 셈이 된다.
+검색 품질은 여기서 재지 않는다(실물 모델과 질의 경로가 필요하다). 경계에서 내용이
+사라지거나 청크가 입력 창을 넘으면 검색 이전에 이미 틀린 것을 저장한 셈이 된다.
 """
 
 import random
@@ -62,8 +60,7 @@ def test_long_document_is_split_and_every_chunk_respects_the_limit():
 def test_adjacent_chunks_overlap_in_the_source(size, overlap):
     """문단 경계에 걸친 문장이 양쪽 청크 어디에서도 온전히 읽히게 하는 성질이다.
 
-    한 설정만 보면 특정 크기에서만 성립하는 구현을 통과시킨다. 겹침 비율을 바꿔 가며 본다.
-    """
+    한 설정만 보면 특정 크기에서만 성립하는 구현을 통과시킨다. 겹침 비율을 바꿔 가며 본다."""
     chunks = split_recursive(one_segment(PROSE), size, overlap)
     ordered = sorted(chunks, key=lambda c: c.location.char_start)
 
@@ -74,9 +71,7 @@ def test_adjacent_chunks_overlap_in_the_source(size, overlap):
 def test_a_whitespace_only_boundary_may_not_overlap():
     """겹칠 구간이 공백뿐이면 겹치지 않아도 된다 — 보존할 문맥이 없다.
 
-    계약의 유일한 예외를 명시적으로 고정한다. 예외를 문서에만 적어 두면, 나중에 겹침이
-    사라지는 진짜 회귀가 났을 때 "그 예외인가 보다" 하고 넘어가게 된다.
-    """
+    예외를 문서에만 적어 두면 진짜 회귀가 났을 때 그 예외로 오인된다."""
     text = "a b c"  # 청크 사이가 공백 한 칸뿐인 극단적 설정
 
     chunks = split_recursive(one_segment(text), 3, 2)
@@ -90,8 +85,7 @@ def test_a_whitespace_only_boundary_may_not_overlap():
 def test_no_non_whitespace_character_is_lost():
     """경계에서 잘려 사라지는 내용이 없어야 한다.
 
-    사라진 내용은 검색되지 않는데, 저장은 성공했으므로 아무도 눈치채지 못한다.
-    """
+    사라진 내용은 검색되지 않는데, 저장은 성공했으므로 아무도 눈치채지 못한다."""
     chunks = split_recursive(one_segment(PROSE), SIZE, OVERLAP)
 
     covered = set()
@@ -103,11 +97,9 @@ def test_no_non_whitespace_character_is_lost():
 
 
 def test_chunks_strictly_advance_through_the_source():
-    """청크는 앞으로 나아가야 한다 — 앞 청크에 통째로 담긴 청크가 나오면 안 된다.
+    """청크는 앞으로 나아가야 한다 — 앞 청크에 통째로 담긴 청크가 나오면 원문이 조각만 남는다.
 
-    이 단언이 없으면 `['사내 복리후생 안내', '생 안내', '내']` 같은 결과가 다른 불변식을
-    **전부 만족한 채** 통과한다. 구간 일치·상한·무손실·겹침 넷은 저런 조각도 지킨다.
-    """
+    구간 일치·상한·무손실·겹침 넷은 `['사내 안내', '안내', '내']` 도 지킨다."""
     chunks = split_recursive(one_segment(PROSE), SIZE, OVERLAP)
 
     for earlier, later in zip(chunks, chunks[1:], strict=False):
@@ -116,11 +108,9 @@ def test_chunks_strictly_advance_through_the_source():
 
 
 def test_an_early_lone_structural_boundary_does_not_shatter_the_document():
-    """이른 자리에 구조 경계가 하나만 있을 때 거기서 끊고 멈추면 안 된다.
+    """이른 자리의 구조 경계 하나에서 끊고 멈추면 뒤가 통째로 사라진다 — 회귀 테스트다.
 
-    회귀 테스트다. 자르기만 하고 **합치지 않으면** 짧은 제목 뒤에 문단 구분자가 없는
-    문서에서 10자짜리 청크와 그 꼬리 조각들이 쏟아진다.
-    """
+    자르기만 하고 합치지 않으면 짧은 제목 뒤로 꼬리 조각이 쏟아진다."""
     text = "사내 복리후생 안내\n\n" + ("재택근무는 주 2회까지 가능합니다. " * 40)
 
     chunks = split_recursive(one_segment(text), 600, 100)
@@ -171,8 +161,7 @@ def test_chunks_never_start_or_end_with_whitespace():
 def test_paragraph_boundary_is_preferred_over_a_mid_sentence_cut():
     """문단 경계가 상한 안에 있으면 거기서 끊는다.
 
-    문장 중간을 자르면 그 조각이 검색됐을 때 출처로 보여줄 텍스트가 말이 되지 않는다.
-    """
+    문장 중간을 자르면 그 조각이 검색됐을 때 출처로 보여줄 텍스트가 말이 되지 않는다."""
     first = "첫 문단입니다. 짧습니다."
     text = f"{first}\n\n두 번째 문단입니다. 이쪽도 짧습니다."
 
@@ -264,12 +253,9 @@ def test_resplit_of_a_chunk_that_already_fits_returns_it_unchanged():
 
 @pytest.mark.parametrize("size", [2, 3, 41, SIZE])
 def test_the_clamped_overlap_always_lets_resplit_proceed(size):
-    """토큰 가드는 크기를 반씩 줄인다. 설정된 겹침이 그대로면 어느 순간 크기 이상이 된다.
+    """토큰 가드가 크기를 반씩 줄이므로 설정된 겹침이 그대로면 언젠가 크기 이상이 된다.
 
-    호출부가 그때마다 손으로 맞추면 **불변식을 아는 곳이 둘**이 되어, 한쪽(`_validate`)은
-    거절하고 한쪽은 조용히 맞추게 된다. 여기서 재는 것은 돌려준 값이 언제나 `resplit`
-    이 받아들이는 범위 안이라는 것이다.
-    """
+    호출부가 손으로 맞추면 불변식을 아는 곳이 둘이 되어 한쪽만 거절하게 된다."""
     overlap = clamp_overlap(size=size, preferred=OVERLAP)
 
     assert 0 < overlap < size
@@ -285,9 +271,7 @@ def test_a_smaller_preferred_overlap_survives_untouched():
 def test_a_size_too_small_to_overlap_is_rejected():
     """크기 1 에서는 "겹치면서 전진한다"가 성립하지 않는다.
 
-    호출부가 재분할 바닥값을 두어 실제로 닿지 않지만, 조용히 무효한 겹침을 돌려주면
-    그 값이 `resplit` 에서 터지고 원인이 여기라는 사실이 드러나지 않는다.
-    """
+    조용히 무효한 겹침을 돌려주면 `resplit` 에서 터지고 원인이 드러나지 않는다."""
     with pytest.raises(ValueError):
         clamp_overlap(size=1, preferred=OVERLAP)
 
@@ -309,22 +293,17 @@ def test_default_strategy_resolves_to_the_recursive_splitter():
     [(0, 0), (100, 100), (100, 200), (100, -1), (100, 0)],
 )
 def test_invalid_size_and_overlap_are_rejected(size, overlap):
-    """겹침이 크기 이상이면 전진하지 않고, `0`이면 겹치지 않는다. 둘 다 즉시 실패한다.
+    """겹침이 크기 이상이면 전진하지 않고 `0` 이면 겹치지 않는다 — 둘 다 즉시 실패한다.
 
-    `(100, 0)`은 설정 계층이 이미 막지만 여기서도 막아야 한다. 순수 함수는 설정을
-    거치지 않고 호출될 수 있어서, 한쪽만 막으면 계약이 호출 경로에 따라 달라진다.
-    """
+    순수 함수는 설정을 거치지 않고 불릴 수 있어 한쪽만 막으면 계약이 갈린다."""
     with pytest.raises(ValueError):
         split_recursive(one_segment(PROSE), size, overlap)
 
 
 def test_invariants_hold_across_generated_inputs():
-    """다섯 불변식을 무작위 입력으로 확인한다.
+    """다섯 불변식을 무작위 입력으로 확인한다. 시드를 고정해 실패가 재현되게 한다.
 
-    고정 픽스처는 내가 상상한 문서만 검사한다. 실제로 발견된 두 결함(이른 구조 경계에서
-    청크가 부서지는 것, 앞 청크가 뒤 청크에 삼켜지는 것)은 전부 여기서 나왔다.
-    시드를 고정해 실패가 재현되게 한다.
-    """
+    실제로 발견된 결함 둘이 전부 여기서 나왔다 — 고정 픽스처는 상상한 문서만 검사한다."""
     rng = random.Random(20260801)
     alphabet = ["가", "나", "다. ", "요. ", ". ", " ", "\n", "\n\n", "a", "Z", "\t", "  \n  "]
 

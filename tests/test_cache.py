@@ -1,17 +1,7 @@
 """캐시 도메인 — 질의 정규화, 항목 지문 유도, 유사 매치 판정.
 
-I/O 도 비동기도 없다. 이 층이 순수 함수인 덕에 `pytest` 한 줄에서 Redis 없이 돈다.
-
-세 묶음이다.
-
-1. **키의 정체성** — 무엇에 반응하고 무엇에 반응하지 않는가. 표기만 다른 같은 질문이 같은
-   키를 받아야 L1 이 성립하고, 다섯 재료 중 하나만 달라도 키가 갈려야 프롬프트·모델·색인을
-   바꾼 뒤 옛 답변이 새 구성의 답인 척 남지 않는다. 그리고 키가 질의를 복원 가능한 형태로
-   담지 않아야 한다 — 캐시 키는 `redis-cli KEYS` 와 로그에 그대로 노출되는 문자열이다.
-2. **값 객체의 불변식** — 히트에는 층이 함께 있고, 유사도는 유사 매치에만 실린다. 이 둘이
-   갈리면 응답의 `cache_layer` 와 `cache_similarity` 가 서로를 부정한다.
-3. **유사 매치 판정** — 임계값 미달은 미스, 후보가 여럿이면 최댓값 하나. 판정이 도메인에
-   있어야 어댑터를 갈아도 "얼마나 틀려도 되는가"가 한 곳에 남는다.
+I/O 도 비동기도 없어 `pytest` 한 줄에서 Redis 없이 돈다. 키가 무엇에 반응하고 질의를
+복원 가능하게 담지 않는지가 축이다 (묶음별 근거는 `tests/README.md`).
 """
 
 import unicodedata
@@ -80,7 +70,7 @@ def test_normalization_folds_case():
 
 
 def test_normalization_unifies_unicode_composition():
-    """macOS(NFD)와 리눅스(NFC)에서 온 같은 한글 질문이 다른 항목이 되면 안 된다."""
+    """macOS(NFD)와 리눅스(NFC)에서 온 같은 한글 질문이 다른 항목이 되면 매번 미스가 된다."""
     nfc = "연차 규정"
     nfd = unicodedata.normalize("NFD", nfc)
 
@@ -168,7 +158,8 @@ def scope_materials(**overrides) -> dict:
 
 
 def test_scope_ignores_the_query():
-    """유사 매치는 질의가 다른 항목을 찾는 층이라, 질의가 후보 집합을 갈라서는 안 된다."""
+    """유사 매치는 질의가 다른 항목을 찾는 층이라, 질의가 후보 집합을 가르면 그 층이 할 일을
+    잃는다."""
     assert derive_cache_scope(**scope_materials()) == derive_cache_scope(**scope_materials())
 
 
@@ -182,9 +173,9 @@ def test_scope_ignores_the_query():
     ],
 )
 def test_scope_splits_on_every_non_query_material(material, other):
-    """K 나 프롬프트나 색인이 다른 항목이 유사도만으로 히트가 되면 안 된다 (`response-cache`).
+    """다른 항목이 유사도만으로 히트가 되면 K 가 뜻을 잃는다 (`response-cache`).
 
-    이것이 없으면 `top_k=3` 으로 캐시된 답변이 `top_k=5` 요청에 유사도 1.0 으로 나간다."""
+    `top_k=3` 으로 캐시된 답변이 `top_k=5` 요청에 유사도 1.0 으로 나가는 자리다."""
     assert derive_cache_scope(**scope_materials(**{material: other})) != derive_cache_scope(
         **scope_materials()
     )
@@ -199,7 +190,7 @@ def test_scope_is_not_a_cache_key():
 
 
 def test_entry_reports_one_version_per_document():
-    """같은 문서의 청크 여럿이 태그와 재검증 대상을 부풀리면 안 된다."""
+    """같은 문서의 청크 여럿이 태그와 재검증 대상을 부풀리면 무효화가 관계없는 항목까지 지운다."""
     item = entry(sources=(chunk(chunk_index=0), chunk(chunk_index=1), chunk(document_id="doc-2")))
 
     assert item.document_ids == ("doc-1", "doc-2")
@@ -314,7 +305,7 @@ def test_zero_vector_never_becomes_a_hit():
     [([1.0, 0.0], [1.0, 0.0, 0.0]), ([], [1.0]), ([1.0], [])],
 )
 def test_similarity_rejects_incomparable_vectors(left, right):
-    """차원이 갈린 것은 임베더 세대가 갈렸다는 신호라 조용히 0 을 돌려주면 안 된다."""
+    """차원이 갈린 것은 임베더 세대가 갈렸다는 신호라, 조용히 0 을 돌려주면 그 신호가 묻힌다."""
     with pytest.raises(ValueError):
         cosine_similarity(left, right)
 
@@ -345,7 +336,7 @@ def test_best_match_accepts_the_threshold_itself():
 
 
 def test_best_match_on_empty_candidates_is_a_miss():
-    """캐시가 비어 있는 상태(평가자의 첫 실행)가 오류가 되면 안 된다."""
+    """캐시가 비어 있는 상태(평가자의 첫 실행)에서도 조회가 성립한다."""
     assert best_match([1.0, 0.0], [], threshold=0.93) is None
 
 

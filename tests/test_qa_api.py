@@ -1,16 +1,7 @@
-"""`POST /qa` — SSE 경계에서만 확인되는 것들.
+"""`POST /qa` — HTTP 로 내려와야만 드러나는 넷.
 
-시퀀스·거절 두 갈래·인용 검증·재시도는 `test_qa_service.py`·`test_qa_citations.py`·
-`test_qa_retry.py` 가 서비스 계층에서 덮는다. 여기서 고정하는 것은 **HTTP 로 내려와야만
-드러나는 넷**이다.
-
-1. 응답이 SSE 인가 — 상태 코드·콘텐츠 타입·프레임 형식.
-2. 스트림 **밖** 실패가 상태 코드로 끝나는가 — 열린 뒤에는 어떤 방법으로도 알릴 수 없다.
-3. 근거가 생성보다 **먼저 도착하는가** — 이벤트 목록의 순서가 아니라 도착 순서다.
-4. 하트비트가 이벤트로 해석되지 않는가.
-
-뒤의 둘은 `httpx.ASGITransport` 로 관측되지 않아(앱이 끝난 뒤에야 응답이 나온다)
-`AsgiStream` 이 프로토콜을 직접 쓴다. 클라이언트 종료도 같은 이유로 그쪽이다.
+SSE 형식, 스트림 밖 실패의 상태 코드, 근거의 도착 순서, 하트비트. 뒤의 둘은
+`ASGITransport` 로 관측되지 않아 `AsgiStream` 이 프로토콜을 직접 쓴다.
 """
 
 from contextlib import asynccontextmanager
@@ -41,8 +32,7 @@ def scripted(*chunks: str, delay: float = 0.0) -> ScriptedGenerator:
 def qa_settings(settings):
     """하한만 낮춘 설정.
 
-    페이크 임베더의 점수에는 의미가 없어 운영 기본값(0.82)이면 근거가 통째로 사라진다 —
-    그 상태로는 모든 스트림이 `no_evidence` 라 이 파일이 아무것도 확인하지 못한다."""
+    페이크 점수에는 의미가 없어 운영 기본값이면 모든 스트림이 `no_evidence` 가 된다."""
     return settings.model_copy(update={"retrieval_min_score": 0.0})
 
 
@@ -170,9 +160,7 @@ async def test_the_request_can_specify_top_k(client):
 
 
 # ── 스트림 밖 실패 (5.8) ─────────────────────────────────────────────────
-#
-# 상태 코드는 첫 바이트와 함께 확정된다. 아래 넷이 스트림 안으로 들어가는 순간 관측되는
-# 것은 **본문 없는 200** 이 되고, 그 형태는 스펙의 어떤 시나리오로도 잡히지 않는다.
+# 스트림 안으로 들어가면 관측되는 것이 본문 없는 200 이 되어 어떤 시나리오로도 안 잡힌다.
 
 
 def assert_rejected_outside_the_stream(response, code: str, generator, embedder=None) -> None:
@@ -248,9 +236,7 @@ async def test_the_sources_event_arrives_before_generation_produces_anything(
 ):
     """`sources` 선행이 스트리밍으로 실제로 앞당겨지는 것의 전부다.
 
-    이벤트 목록의 순서로는 확인되지 않는다 — 목록은 스트림이 끝난 뒤의 사진이라, 서버가
-    전부 모아 두었다가 한 번에 보내도 똑같이 보인다.
-    """
+    이벤트 목록은 끝난 뒤의 사진이라, 전부 모아 보내도 똑같이 보인다."""
     generator = scripted(VERDICT_ANSWERABLE, ANSWER_BODY, delay=0.05)
 
     async with app_with_document(make_app, settings=qa_settings, generator=generator) as app:
@@ -290,8 +276,7 @@ async def test_a_quiet_stream_keeps_alive_without_emitting_events(make_app, qa_s
 async def test_disconnecting_stops_generation_and_leaves_nothing_open(make_app, qa_settings):
     """정리하지 않으면 취소된 요청 하나가 프로세스 하나씩을 남긴다.
 
-    답이 마음에 안 들어 새 질문을 보내는 것은 흔한 조작이라, 이 누수는 정상 사용에서 쌓인다.
-    """
+    답이 마음에 안 들어 새 질문을 보내는 것은 흔한 조작이라, 이 누수는 정상 사용에서 쌓인다."""
     generator = scripted(VERDICT_ANSWERABLE, "앞부분", "뒷부분", "꼬리", delay=0.05)
 
     async with app_with_document(make_app, settings=qa_settings, generator=generator) as app:

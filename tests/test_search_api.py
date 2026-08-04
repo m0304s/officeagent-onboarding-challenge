@@ -1,13 +1,7 @@
 """`POST /search` — 응답 봉투·출처·요청 거부·저장소 장애.
 
-HTTP 경계에서만 확인되는 것들을 덮는다. 무엇을 대상으로 삼고 무엇을 버리는가(필터·현재성
-재검증)는 `test_retrieval_service.py` 가, 임베딩이 의미를 잡는지는 `test_retrieval_quality.py`
-가 실물 모델로 덮는다.
-
-**유사도 하한을 `0.0` 으로 낮춘 클라이언트를 쓴다.** 페이크 임베더의 벡터는 텍스트 해시라
-점수에 의미가 없으므로, 응답 모양을 재는 테스트가 운영 기본값(0.82)에 걸려 빈 결과를 받으면
-그건 검증이 아니라 잡음이다. 하한 자체의 동작은 서비스 테스트가 재고, 여기서는 하한이
-결과를 지우지 않는 상태에서 **봉투와 출처**를 본다.
+유사도 하한을 `0.0` 으로 낮춘 클라이언트를 쓴다. 해시 벡터의 점수에는 의미가 없어,
+봉투를 재는 테스트가 운영 기본값에 걸려 빈 결과를 받으면 검증이 아니라 잡음이 된다.
 """
 
 import pytest
@@ -112,9 +106,7 @@ async def test_nothing_collected_is_an_empty_result_not_an_error(client, vector_
 
 
 # ── 기여 내역 (7.3) ──────────────────────────────────────────────────────
-#
-# 어느 retriever 가 돌았는지가 응답에 없으면, 설정 오타 하나로 어휘 색인이 빠진 배포와
-# 정상 배포를 HTTP 로는 구별할 수 없다. 둘 다 `200` 이고 둘 다 그럴듯한 근거를 돌려준다.
+# 없으면 어휘 색인이 빠진 배포와 정상 배포를 HTTP 로 구별할 수 없다 — 둘 다 `200` 이다.
 
 
 async def test_both_retrievers_appear_in_the_contributing_list(client):
@@ -226,9 +218,7 @@ async def test_a_result_agrees_with_the_document_detail(client):
 
 
 # ── 요청 거부 (6.8) ──────────────────────────────────────────────────────
-#
-# 거부된 요청은 **임베딩도 저장소 질의도 유발하지 않는다.** 그 성질은 호출의 부재로만
-# 확인되므로 매 경로에서 두 기록을 함께 본다.
+# 거부가 임베딩도 질의도 유발하지 않는 것은 호출 부재로만 확인되어 두 기록을 함께 본다.
 
 
 def assert_nothing_was_computed(embedder: FakeEmbedder, store: StubVectorStore) -> None:
@@ -249,7 +239,7 @@ async def test_a_query_without_content_is_rejected(client, embedder, vector_stor
 async def test_a_query_over_the_character_ceiling_is_rejected(
     client, embedder, vector_store, searchable_settings
 ):
-    """**두 상한이 모두 응답에 있다.** 어느 쪽에 걸렸든 같은 모양이라야 파서가 하나다."""
+    """두 상한이 모두 응답에 있다. 어느 쪽에 걸렸든 같은 모양이라야 파서가 하나다."""
     ceiling = searchable_settings.retrieval_max_query_chars
 
     status, body = await search(client, "가" * (ceiling + 1))
@@ -264,11 +254,9 @@ async def test_a_query_over_the_character_ceiling_is_rejected(
 async def test_a_query_within_the_characters_but_over_the_input_window_is_rejected(
     make_client, searchable_settings, vector_store
 ):
-    """**조용한 절단을 막는 진짜 가드다.**
+    """조용한 절단을 막는 진짜 가드다.
 
-    문자 수는 상한 이내인데 인코딩하면 모델 입력 창을 넘는 질의. 자르고 검색하면 뒷부분이
-    반영되지 않는데 사용자는 전부 반영됐다고 믿는다.
-    """
+    자르고 검색하면 뒷부분이 반영되지 않는데 사용자는 전부 반영됐다고 믿는다."""
     narrow = FakeEmbedder(max_input_tokens=10, chars_per_token=2)
 
     async with make_client(settings=searchable_settings, embedder=narrow) as client:
@@ -278,7 +266,7 @@ async def test_a_query_within_the_characters_but_over_the_input_window_is_reject
 
     assert status == 422
     assert body["error"]["code"] == "query_too_long"
-    # 토큰 쪽에 걸렸어도 **두 상한이 다 있다** — 걸린 쪽만 실으면 같은 코드에 항목이
+    # 토큰 쪽에 걸렸어도 두 상한이 다 있다 — 걸린 쪽만 실으면 같은 코드에 항목이
     # 둘인 응답이 되어 소비자가 분기를 들어야 한다.
     assert body["error"]["max_query_tokens"] == narrow.max_input_tokens
     assert body["error"]["max_query_chars"] == searchable_settings.retrieval_max_query_chars
@@ -300,9 +288,7 @@ async def test_a_top_k_below_one_is_a_framework_validation_error(
 ):
     """하한은 어느 배포에서나 `1` 이라 요청 스키마에 속한다 — 프레임워크가 끝낸다.
 
-    자동으로 성립하는 성질이지만 **여기서 고정해 두지 않으면** 검증이 핸들러 안으로
-    옮겨졌을 때 조용히 깨진다.
-    """
+    고정해 두지 않으면 검증이 핸들러 안으로 옮겨졌을 때 조용히 깨진다."""
     status, body = await search(client, top_k=top_k)
 
     assert status == 422
@@ -330,9 +316,7 @@ async def test_a_top_k_over_the_ceiling_exposes_the_applied_ceiling(
 async def test_a_store_failure_is_a_503_and_never_an_empty_result(make_client, searchable_settings):
     """빈 결과와 저장소 장애는 다음 단계가 해야 할 일이 다르다.
 
-    뭉개면 벡터 스토어가 죽은 동안 서비스가 "근거를 찾지 못했습니다"라고 답하고, 아무도
-    장애를 눈치채지 못한다.
-    """
+    뭉개면 저장소가 죽은 동안 "근거를 찾지 못했습니다"가 나가고 아무도 눈치채지 못한다."""
     broken = StubVectorStore(fail_query=True)
 
     async with make_client(settings=searchable_settings, vector_store=broken) as client:
@@ -342,8 +326,7 @@ async def test_a_store_failure_is_a_503_and_never_an_empty_result(make_client, s
     assert status == 503
     assert body["error"]["code"] == "storage_unavailable"
     assert "results" not in body, "저장소 장애가 빈 결과로 위장되었다"
-    # 봉투에 `code` 와 `message` 밖에 없다 — 스택 트레이스도 저장소 라이브러리의 내부
-    # 사정도 응답에 실리지 않는다. 메시지 자체는 어댑터가 자기 경계에서 우리가 쓴 문구로
-    # 바꿔 던진 것이라(`chroma.py` 의 `_offload`) 라이브러리 문구가 여기까지 오지 않는다.
+    # 봉투에 `code` 와 `message` 밖에 없다. 메시지도 어댑터가 자기 경계에서 우리 문구로
+    # 바꿔 던진 것이라 라이브러리 사정이 여기까지 오지 않는다.
     assert set(body["error"]) == {"code", "message"}
     assert "Traceback" not in str(body)

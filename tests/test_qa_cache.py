@@ -1,15 +1,7 @@
 """`/qa` 와 캐시가 만나는 자리 — 히트가 미스와 같은 응답인가, 무엇을 아끼는가.
 
-캐시의 **의미**는 `test_cache_service.py` 가 서비스 계층에서 덮는다. 여기서만 확인되는 것은
-그 판정이 **요청 경로에 실제로 꽂혀 있는가**다: 히트에서 검색과 생성이 정말 돌지 않는지,
-이벤트 시퀀스가 미스와 같은지, 응답이 히트 여부를 밝히는지.
-
-**아끼는 것을 호출 부재로 잰다.** "생성기를 부르지 않았다"·"검색이 다시 돌지 않았다"는
-응답 어디에도 드러나지 않아 대역의 호출 기록으로만 관측된다. 캐시가 조용히 꺼져도 응답은
-멀쩡하므로, 그 기록이 없으면 이 층은 아무것도 확인하지 못한다.
-
-**하네스의 캐시는 기본으로 꺼져 있다**(`cached=True` 로 켠다). 꺼진 상태가 곧
-`cache_enabled=false` 배선이라, 그 상태를 재는 테스트는 같은 하네스를 그대로 쓴다.
+아끼는 것을 호출 부재로 잰다. 캐시가 조용히 꺼져도 응답은 멀쩡하므로, 대역의 호출 기록이
+없으면 이 층은 아무것도 확인하지 못한다. 하네스의 캐시는 `cached=True` 로만 켜진다.
 """
 
 from dataclasses import replace
@@ -104,7 +96,7 @@ async def test_a_different_question_still_reaches_the_generator():
 
 
 async def test_a_hit_has_the_same_event_sequence_as_a_miss():
-    """히트 전용 응답 형식이나 별도 엔드포인트를 두어서는 안 된다 (`answer-generation`)."""
+    """히트 전용 응답 형식이나 별도 엔드포인트를 두지 않는다 (`answer-generation`)."""
     harness = await cached_harness()
 
     miss = await harness.ask()
@@ -172,7 +164,7 @@ async def test_no_evidence_hit_emits_no_answer_event():
 
 
 async def test_a_miss_says_it_is_a_miss():
-    """필드가 없는 것과 `false` 인 것이 같은 뜻이어서는 안 된다 (`response-cache`)."""
+    """필드가 없는 것과 `false` 인 것은 다른 뜻이다 (`response-cache`)."""
     harness = await cached_harness()
 
     done = done_of(await harness.ask())
@@ -272,7 +264,7 @@ async def test_an_omitted_top_k_and_the_default_top_k_share_one_entry():
 
 
 async def test_changing_the_configured_top_k_does_not_reuse_the_entry():
-    """설정 기본값을 바꾸면 옛 항목이 새 기본값의 답인 척 남으면 안 된다."""
+    """설정 기본값을 바꾸면 옛 항목이 새 기본값의 답인 척 남지 않는다."""
     harness = await cached_harness(top_k=5)
     await harness.ask(top_k=None)
 
@@ -299,8 +291,7 @@ async def test_retrieval_and_cache_share_one_index_signature():
 async def test_a_disabled_cache_never_hits():
     """캐시를 끈 상태에서 같은 질문을 두 번 보내면 둘 다 미스여야 한다 (`response-cache`).
 
-    운영자가 캐시를 끄는 이유는 대개 "캐시를 배제하고 원인을 보겠다"인데, 히트가 나면
-    그 배제가 성립하지 않는다."""
+    캐시를 끄는 이유가 대개 "배제하고 원인을 보겠다"라, 히트가 나면 배제가 성립하지 않는다."""
     harness = make_qa_harness(answering(), answering())  # cached=False 가 기본이다
     await harness.ingest("policy.txt", POLICY)
 
@@ -351,10 +342,9 @@ def cache_settings(settings):
 
 
 async def test_qa_survives_an_unreachable_cache_store(make_client, cache_settings, generator):
-    """닿을 수 없는 주소로 배선된 캐시가 `/qa` 를 `5xx` 로 만들어서는 안 된다.
+    """닿을 수 없는 주소로 배선된 캐시가 `/qa` 를 `5xx` 로 만들지 않는다.
 
-    기본 테스트 설정의 `cache_url` 이 실제로 닿지 않는 주소라, 이 경로가 배포에서 캐시가
-    죽었을 때와 같다."""
+    기본 테스트 설정의 `cache_url` 이 실제로 닿지 않아, 배포에서 캐시가 죽은 것과 같다."""
     async with make_client(settings=cache_settings, generator=generator) as client:
         await ingest_over_http(client, "policy.txt", POLICY)
 
