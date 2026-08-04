@@ -42,12 +42,16 @@
 
 ### 결정 2 — Redis 키 구조: 페이로드·벡터·순서 인덱스·태그를 나눈다
 
-    qa:v1:entry:{fp}     STRING  JSON 페이로드      TTL O
-    qa:v1:vec:{fp}       STRING  float32 packed     TTL O
-    qa:v1:index          ZSET    fp → 단조 증가 seq  TTL X (지연 정리)
-    qa:v1:doc:{doc_id}   SET     fp 들               TTL O (갱신)
-    qa:v1:negative       SET     fp 들               TTL O (갱신)
-    qa:v1:seq            STRING  INCR 카운터
+    qa:v1:entry:{fp}      STRING  JSON 페이로드      TTL O
+    qa:v1:vec:{fp}        STRING  float32 packed     TTL O
+    qa:v1:index:{scope}   ZSET    fp → 단조 증가 seq  TTL X (지연 정리)
+    qa:v1:doc:{doc_id}    SET     fp 들               TTL O (갱신)
+    qa:v1:negative        SET     fp 들               TTL O (갱신)
+    qa:v1:seq             STRING  INCR 카운터
+
+**순서 인덱스가 후보 집합(`scope`)마다 하나인 것이 L2 의 경계다.** 하나로 두면 `top_k=3` 으로 캐시된 항목이 `top_k=5` 요청의 L2 후보에 섞이고, 질의가 글자까지 같으면 유사도 1.0 으로 이긴다 — `response-cache` 스펙이 「K 가 다르면 다른 질문이다」를 요구하는데 L1 에서 갈린 것이 L2 에서 도로 합쳐지는 것이다. 그 스펙의 「유사 매치의 비교 대상은 정확 매치와 같은 정체성 재료를 공유하는 항목으로 한정되어야 한다」가 이 키에서 강제된다. 페이로드·벡터 키는 `fp` 하나로 유일하므로 나누지 않는다 — 나뉘어야 하는 것은 **훑는 대상**뿐이다.
+
+**용량 상한과 지연 정리도 scope 단위로 돈다.** 살아 있는 scope 는 대개 하나다(다섯 재료 중 넷이 기동 시 고정된다). 옛 세대의 scope 에는 새 항목이 들어오지 않아 자라지 않고, 남은 항목은 `entry`·`vec` 의 TTL 로 사라진다 — 남는 것은 죽은 fp 를 든 ZSET 뿐이라 다음 조회의 지연 정리가 걷어낸다.
 
 **벡터를 페이로드에서 뗀 것이 핵심이다.** 합쳐 두면 L2 후보 스캔이 답변 본문·근거 청크 본문까지 전부 끌어온다 — 200건이면 수 MB 다. 나누면 스캔이 `ZREVRANGE`(fp 200개) + `MGET`(384×4 = 1536바이트 × 200 = 300KB) 로 끝나고, **이긴 하나만** 페이로드를 읽는다.
 
@@ -71,7 +75,17 @@ fingerprint = sha256(canonical_json({
     "index_signature":  index_signature,
     "model":            qa_llm_model,
 }))
+
+scope = sha256(canonical_json({          # 질의를 뺀 네 재료
+    "scope":            "qa",
+    "top_k":            effective_k,
+    "prompt_version":   PROMPT_VERSION,
+    "index_signature":  index_signature,
+    "model":            qa_llm_model,
+}))[:16]
 ```
+
+**지문이 둘인 이유는 두 층이 묻는 것이 다르기 때문이다.** L1 은 "이 다섯이 전부 같은 항목이 있나"를 묻고, L2 는 "질의를 뺀 넷이 같은 항목 중 가장 가까운 것이 무엇인가"를 묻는다. 다섯 재료의 해시 하나로는 뒤의 질문을 표현할 수 없다 — 해시는 부분 일치를 허용하지 않으므로, "넷은 같고 질의만 다른 항목"을 키에서 골라낼 방법이 없다. `scope` 는 그 넷의 이름이고, 순서 인덱스가 그 이름으로 갈린다(결정 2). `"scope": "qa"` 표지를 넣는 것은 질의가 빈 항목의 지문과 값이 겹치지 않게 하려는 것이다.
 
 - **해시인 이유**는 두 가지다. 값 경계가 모호한 연결(`q + ":" + str(k)`)은 서로 다른 구성이 같은 키를 받는 자리를 남긴다. 그리고 키가 질의 문자열을 그대로 담으면 `redis-cli KEYS *` 나 로그에 질문이 복원 가능한 형태로 노출된다(`response-cache` 스펙의 마지막 요구사항).
 - **재료가 `search_query` 인 것이 멀티턴 대비다.** 지금은 `question` 과 같은 값이지만, 재작성이 들어오면 `QaContext` 가 들고 있는 "검색에 실제로 쓰인 질의"가 자동으로 그 자리에 온다. `add-multiturn-qa` 제안이 캐시 change 에 못 박아 둔 요구를 **키 정의로** 흡수한 것이라, 나중에 고칠 코드가 없다.
@@ -139,6 +153,7 @@ prepare(question, top_k):
 - **`RetrievalService._drop_superseded` 와 같은 판정 함수를 쓴다.** 검색과 캐시가 각자 "현재인가"를 구현하면 한쪽만 고쳐졌을 때 각자 자기 기준으로는 옳은 채로 어긋난다 — `core/documents.py` 의 주석이 경고하는 바로 그 자리다.
 - **비용은 문서 수십 건 규모의 SQLite 조회 몇 건이다.** 히트가 아끼는 것(임베딩 + 벡터 질의 + 생성 수 초)에 비해 무시할 만하다.
 - **재검증에서 버린 항목은 지운다.** 남기면 같은 항목이 요청마다 재검증 비용을 다시 물린다.
+- **그래서 조회 결과가 항목의 지문을 함께 들고 나온다**(`CacheLookup.fingerprint`). 정확 매치의 지문은 호출부가 방금 유도한 값이지만, 유사 매치에서 **어느 항목이 이겼는지는 저장소만 안다** — 지문이 결과에 실리지 않으면 버린 항목을 지목할 수 없어 이 규칙이 성립하지 않는다.
 
 **이것이 왜 태그 무효화만으로 부족한가.** 검색이 끝나고 생성이 도는 십수 초 사이에 문서가 바뀌면, 무효화는 **아직 존재하지 않는 항목**을 지우고 그 뒤에 낡은 항목이 저장된다. 그 항목은 이후 어떤 무효화에도 걸리지 않는다. `ARCHITECTURE.md` 가 검색 재검증을 설명하며 *"밀리초짜리 읽기 어긋남이 무기한 캐시 오염으로 증폭됩니다"* 라고 예고한 것이 정확히 이 경로다. 재검증은 그 창을 응답 시점에 닫는다.
 

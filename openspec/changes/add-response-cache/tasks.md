@@ -20,10 +20,10 @@
 ## 3. Redis 어댑터
 
 - [ ] 3.1 `adapters/cache/redis.py` — 연결 관리. `probe.py` 와 클라이언트를 공유하지 말고 수명을 분리한다(프로브는 매번 새로 연결해 닫는다)
-- [ ] 3.2 `adapters/cache/store.py` — 키 구조를 구현한다: `qa:v1:entry:{fp}`(TTL), `qa:v1:vec:{fp}`(float32 packed, TTL), `qa:v1:index`(ZSET, 점수는 `INCR` 카운터), `qa:v1:doc:{id}`(SET), `qa:v1:negative`(SET) (design.md 결정 2)
-- [ ] 3.3 L2 후보 스캔을 구현한다 — `ZCARD` 가 0 이면 즉시 미스(임베딩을 만들지 않는다), 아니면 `ZREVRANGE` 상한개 → `MGET` 벡터 → 완전 탐색. 페이로드는 이긴 하나만 읽는다 (design.md 결정 1·10)
+- [ ] 3.2 `adapters/cache/store.py` — 키 구조를 구현한다: `qa:v1:entry:{fp}`(TTL), `qa:v1:vec:{fp}`(float32 packed, TTL), `qa:v1:index:{scope}`(ZSET, 점수는 `INCR` 카운터), `qa:v1:doc:{id}`(SET), `qa:v1:negative`(SET) (design.md 결정 2)
+- [ ] 3.3 L2 후보 스캔을 구현한다 — **그 scope 의** `ZCARD` 가 0 이면 즉시 미스(임베딩을 만들지 않는다), 아니면 `ZREVRANGE` 상한개 → `MGET` 벡터 → 완전 탐색. 페이로드는 이긴 하나만 읽는다. 다른 scope 의 항목은 후보에 들어오지 않는다 (design.md 결정 1·2·10)
 - [ ] 3.4 지연 정리를 구현한다 — `MGET` 이 `None` 을 돌려준 fp 를 `ZREM` 으로 걷어낸다. 백그라운드 스위퍼를 만들지 않는다
-- [ ] 3.5 용량 상한을 구현한다 — 저장 후 `ZCARD` 가 상한을 넘으면 `ZREMRANGEBYRANK` 로 오래된 것부터 자르고 그 fp 의 `entry`·`vec` 키를 지운다
+- [ ] 3.5 용량 상한을 구현한다 — 저장 후 그 scope 의 `ZCARD` 가 상한을 넘으면 `ZREMRANGEBYRANK` 로 오래된 것부터 자르고 그 fp 의 `entry`·`vec` 키를 지운다. 상한이 scope 단위로 도는 근거는 design.md 결정 2 에 있다
 - [ ] 3.6 태그 무효화를 구현한다 — `SMEMBERS` 로 fp 를 받아 `entry`·`vec` 를 `DEL`, `index` 에서 `ZREM`, 태그 SET 자체를 `DEL`. 저장 시 태그 SET 의 TTL 을 갱신한다
 - [ ] 3.7 Redis 왕복을 파이프라인으로 묶는다 — 저장은 `entry`·`vec`·`index`·태그 SET 이 한 번에 나가야 한다
 - [ ] 3.8 블로킹 호출이 이벤트 루프에 남지 않게 한다. 벡터 완전 탐색(CPU 바운드)은 스레드풀로 오프로드한다
