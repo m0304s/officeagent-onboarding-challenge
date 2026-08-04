@@ -8,11 +8,46 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.adapters.retrievers import RETRIEVER_NAMES
 from app.core.chunking import ChunkStrategy
 from app.core.exceptions import ConfigurationError
+from app.core.fusion import DEFAULT_RRF_K
+
+
+class RetrieverSettings(BaseModel):
+    """활성 retriever 하나의 구성 — 이름·가중치·후보 깊이·필수 여부."""
+
+    name: str
+    # 0 이나 음수는 그 목록이 순위에 아무것도 기여하지 않거나 순서를 뒤집는다는 뜻이다.
+    weight: float = Field(default=1.0, gt=0)
+    # 상위 K 상한과 같은 값이다. 깊이를 K 에 맞춰 두면 한 retriever 가 자리를 다 채워
+    # 다른 쪽의 발견이 들어올 자리가 없어진다 — 상한과의 대조는 `Settings` 가 한다.
+    candidate_depth: int = Field(default=50, gt=0)
+    # 어휘 색인은 선택이다 — 죽었다고 검색 전체를 세우면 retriever 를 늘릴수록
+    # 가용성이 떨어진다. 실패 사실은 응답의 기여 목록에서 드러난다.
+    required: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _must_be_registered(cls, value: str) -> str:
+        """등록되지 않은 이름은 기동을 막는다 — 런타임에 발견되면 오타가 조용히 도는 배포다."""
+        if value not in RETRIEVER_NAMES:
+            raise ValueError(
+                f"알 수 없는 retriever 이름입니다 — {value!r} "
+                f"(등록된 이름: {sorted(RETRIEVER_NAMES)})"
+            )
+        return value
+
+
+def _default_retrievers() -> list[RetrieverSettings]:
+    """밀집 필수 + 어휘 선택. 가중치를 같게 두는 근거는 `ARCHITECTURE.md` 에 있다."""
+    return [
+        RetrieverSettings(name="dense", required=True),
+        RetrieverSettings(name="lexical", required=False),
+    ]
 
 
 class Settings(BaseSettings):
@@ -73,8 +108,15 @@ class Settings(BaseSettings):
     # 50 은 기본값의 열 배이자 최악 응답 600자 × 50 ≈ 30 KB.
     retrieval_max_top_k: int = Field(default=50, gt=0)
     # 0.82 는 계측값이다 — 관련 1위 최솟값 0.8511 / 무관 1위 최댓값 0.8134 사이.
-    # 표본 크기와 측정 절차는 `ARCHITECTURE.md` 검색 파이프라인에 있다.
+    # 어휘 쪽 하한은 `lexical_min_token_rarity` 라 이 값은 밀집 retriever 만 본다.
     retrieval_min_score: float = Field(default=0.82, ge=0, le=1)
+
+    # 활성 retriever 구성. JSON 목록이라 조합·가중치·깊이·필수 여부가 재배포 없이 바뀐다.
+    retrievers: list[RetrieverSettings] = Field(default_factory=_default_retrievers)
+    # RRF 원 논문(Cormack et al., 2009)이 실험으로 고른 값이자 업계 관례다.
+    retrieval_rrf_k: int = Field(default=DEFAULT_RRF_K, gt=0)
+    # 융합 결과 캐시의 항목 수 상한. `0` 은 캐시를 끈다 — 꺼도 결과는 같아야 한다.
+    retrieval_cache_size: int = Field(default=256, ge=0)
     # 막는 것은 절단이 아니라 임의 길이 입력이 토크나이저에 들어가는 것이다. 절단은
     # 임베더가 선언한 입력 창이 막는다 — 문자 수로 막으면 상한이 101자가 된다.
     retrieval_max_query_chars: int = Field(default=1000, gt=0)
@@ -115,6 +157,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"retrieval_top_k({self.retrieval_top_k}) 는 "
                 f"retrieval_max_top_k({self.retrieval_max_top_k}) 이하여야 합니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _at_least_one_retriever_must_be_active(self) -> "Settings":
+        """빈 목록을 허용하면 검색이 아무것도 못 찾는 배포가 오류 없이 존재하게 된다."""
+        if not self.retrievers:
+            raise ValueError("retrievers 는 하나 이상이어야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _candidate_depth_must_cover_the_k_ceiling(self) -> "Settings":
+        """깊이를 K 상한과 비교한다 — 기본값으로만 보면 큰 `top_k` 요청 하나가 곧 넘어선다."""
+        shallow = [
+            item.name for item in self.retrievers if item.candidate_depth < self.retrieval_max_top_k
+        ]
+        if shallow:
+            raise ValueError(
+                f"retriever {shallow} 의 candidate_depth 가 "
+                f"retrieval_max_top_k({self.retrieval_max_top_k}) 보다 작습니다"
             )
         return self
 

@@ -23,7 +23,7 @@ from app.core.documents import (
 from app.core.exceptions import StorageUnavailable
 from app.core.lexical import DEFAULT_TOKENIZER
 from app.core.models import ProbeResult, Status
-from app.core.retrieval import RetrievedChunk, ScoredChunk
+from app.core.retrieval import RetrievedChunk
 
 
 class StubProbe:
@@ -315,7 +315,7 @@ class StubVectorStore:
         *,
         top_k: int,
         versions: Sequence[StoredIndexVersion],
-    ) -> list[ScoredChunk]:
+    ) -> list[RetrievedChunk]:
         self.queries.append((top_k, tuple(versions)))
         if self._query_delay:
             await asyncio.to_thread(time.sleep, self._query_delay)
@@ -342,7 +342,7 @@ class StubVectorStore:
         # 기대면 저장 순서가 바뀌는 순간 거짓이 된다.
         scored.sort(key=lambda item: (-item[0], item[1]["chunk"].id))
         return [
-            ScoredChunk(
+            RetrievedChunk(
                 document_id=record["chunk"].document_id,
                 revision=record["chunk"].revision,
                 index_signature=record["chunk"].index_signature,
@@ -351,7 +351,7 @@ class StubVectorStore:
                 location=record["chunk"].location,
                 filename=record["filename"],
                 format=record["format"],
-                score=score,
+                native_score=score,
             )
             for score, record in scored[:top_k]
         ]
@@ -383,8 +383,8 @@ class StubVectorStore:
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     """코사인 유사도를 `[0, 1]` 로 잘라 돌려준다.
 
-    실물 어댑터가 거리를 유사도로 바꾸며 클램프하는 것과 같은 정의역이다 — 대역이
-    범위를 벗어난 점수를 내면 `ScoredChunk` 가 거절해 테스트가 대역 탓으로 깨진다.
+    실물 어댑터가 거리를 유사도로 바꾸며 클램프하는 것과 같은 정의역이다 — 대역이 다른
+    범위를 쓰면 밀집 하한을 재는 테스트가 실물에서 뒤집힌다.
     """
     dot = sum(a * b for a, b in zip(left, right, strict=True))
     norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))

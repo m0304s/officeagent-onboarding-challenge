@@ -36,21 +36,21 @@
 
 ## 5. Retriever 계약과 구현
 
-- [ ] 5.1 `core/retrieval.py` 에 `RetrievedChunk`(청크 + `native_score`)와 `Contribution`(retriever 이름·순위·원래 점수)을 정의하고, `ScoredChunk` 에 기여 내역을 더한다. `score` 불변식을 `0 < score <= 1` 로 바꾼다
-- [ ] 5.2 `adapters/protocols.py` 에 `Retriever` 프로토콜(`retrieve(query, *, depth, versions)`)을 정의한다
-- [ ] 5.3 `adapters/retrievers/dense.py` — 기존 임베딩 + 벡터 스토어 질의를 프로토콜 뒤로 옮긴다. 코사인 하한을 이 안에서 적용한다
-- [ ] 5.4 `adapters/retrievers/lexical.py` — 어휘 색인을 프로토콜 뒤로 감싼다
-- [ ] 5.5 `adapters/retrievers/registry.py` — 이름 → 팩토리 표. 알 수 없는 이름은 `ConfigurationError`
-- [ ] 5.6 `config.py` 에 `retrievers` JSON 설정(이름·가중치·후보 깊이·필수 여부)과 융합 상수 `RRF_K`·IDF 커버리지 하한·캐시 크기를 더한다. 빈 목록·미등록 이름·비양수 가중치·`top_k` 상한보다 작은 후보 깊이는 기동을 막는다
-- [ ] 5.7 `tests/test_config.py` 확장 — 기동을 막는 네 경우를 각각 검증한다. 후보 깊이는 기본값이 아니라 **`top_k` 상한**과 비교되는지까지 본다
+- [x] 5.1 `core/retrieval.py` 에 `RetrievedChunk`(청크 + `native_score`)와 `Contribution`(retriever 이름·순위·원래 점수)을 정의하고, `ScoredChunk` 에 기여 내역을 더한다. `score` 불변식을 `0 < score <= 1` 로 바꾼다
+- [x] 5.2 `adapters/protocols.py` 에 `Retriever` 프로토콜(`retrieve(query, *, depth, versions)`)을 정의한다
+- [x] 5.3 `adapters/retrievers/dense.py` — 기존 임베딩 + 벡터 스토어 질의를 프로토콜 뒤로 옮긴다. 코사인 하한을 이 안에서 적용한다
+- [x] 5.4 `adapters/retrievers/lexical.py` — 어휘 색인을 프로토콜 뒤로 감싼다
+- [x] 5.5 `adapters/retrievers/registry.py` — 이름 → 팩토리 표. 알 수 없는 이름은 `ConfigurationError`
+- [x] 5.6 `config.py` 에 `retrievers` JSON 설정(이름·가중치·후보 깊이·필수 여부)과 융합 상수 `RRF_K`·IDF 커버리지 하한·캐시 크기를 더한다. 빈 목록·미등록 이름·비양수 가중치·`top_k` 상한보다 작은 후보 깊이는 기동을 막는다
+- [x] 5.7 `tests/test_config.py` 확장 — 기동을 막는 네 경우를 각각 검증한다. 후보 깊이는 기본값이 아니라 **`top_k` 상한**과 비교되는지까지 본다
 
 ## 6. 검색 서비스 팬아웃
 
-- [ ] 6.1 `services/retrieval.py` 의 저장소 질의 한 줄을 팬아웃으로 바꾼다. 대상 집합 계산·현재성 재검증·상위 K 절단은 **요청당 한 번** 그대로 유지한다
-- [ ] 6.2 `asyncio.gather(return_exceptions=True)` 결과를 분류한다 — 필수 실패는 `503`, 선택 실패는 경고 로그 후 제외, 전부 실패는 `503`. 실패한 retriever의 목록은 **빈 목록으로도 전달하지 않는다**(분모에서 빠져야 한다)
-- [ ] 6.3 융합 결과를 `ScoredChunk` 로 조립해 기여 내역을 싣는다. 기여 retriever 목록을 `RetrievalResult` 에 더한다
-- [ ] 6.4 `tests/test_retrieval_service.py` 확장 — 두 retriever 기여, 하나만 켠 구성의 순서 보존, 같은 대상 목록 공유, 대상 없으면 retriever 미호출, 어휘만 켜면 임베딩 미호출, 필수·선택·전부 실패의 세 처분, 선택 실패 시 1위 점수가 단독 구성과 같은 것
-- [ ] 6.5 `tests/test_retrieval_core.py` 확장 — 밀집 하한이 융합 **전에** 걸리는 것, 밀집 하한을 `1.0` 으로 올려도 어휘 결과가 남는 것, 양쪽 하한에 모두 걸리면 빈 결과
+- [x] 6.1 `services/retrieval.py` 의 저장소 질의 한 줄을 팬아웃으로 바꾼다. 대상 집합 계산·현재성 재검증·상위 K 절단은 **요청당 한 번** 그대로 유지한다
+- [x] 6.2 `asyncio.gather(return_exceptions=True)` 결과를 분류한다 — 필수 실패는 `503`, 선택 실패는 경고 로그 후 제외, 전부 실패는 `503`. 실패한 retriever의 목록은 **빈 목록으로도 전달하지 않는다**(분모에서 빠져야 한다)
+- [x] 6.3 융합 결과를 `ScoredChunk` 로 조립해 기여 내역을 싣는다. 기여 retriever 목록을 `RetrievalResult` 에 더한다
+- [x] 6.4 `tests/test_retrieval_service.py` 확장 — 두 retriever 기여, 하나만 켠 구성의 순서 보존, 같은 대상 목록 공유, 대상 없으면 retriever 미호출, 어휘만 켜면 임베딩 미호출, 필수·선택·전부 실패의 세 처분, 선택 실패 시 1위 점수가 단독 구성과 같은 것
+- [x] 6.5 `tests/test_retrieval_core.py` 확장 — 밀집 하한이 융합 **전에** 걸리는 것, 밀집 하한을 `1.0` 으로 올려도 어휘 결과가 남는 것, 양쪽 하한에 모두 걸리면 빈 결과
 
 ## 7. API 표면
 

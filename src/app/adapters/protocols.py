@@ -15,7 +15,7 @@ from app.core.documents import (
     StoredIndexVersion,
 )
 from app.core.models import ProbeResult
-from app.core.retrieval import RetrievedChunk, ScoredChunk
+from app.core.retrieval import RetrievedChunk
 
 
 @runtime_checkable
@@ -106,8 +106,8 @@ class VectorStore(Protocol):
         *,
         top_k: int,
         versions: Sequence[StoredIndexVersion],
-    ) -> list[ScoredChunk]:
-        """`versions` 의 청크 중 가까운 것부터 최대 `top_k` 개, 점수 내림차순.
+    ) -> list[RetrievedChunk]:
+        """`versions` 의 청크 중 가까운 것부터 최대 `top_k` 개, 코사인 유사도 내림차순.
 
         모자란 자리를 채우지 않고, `versions` 가 비면 저장소를 건드리지 않는다."""
         ...
@@ -155,6 +155,25 @@ class LexicalIndex(Protocol):
         """`versions` 의 청크 중 어휘가 겹치는 것부터 최대 `top_k` 개, 점수 내림차순.
 
         점수 척도가 벡터 쪽과 달라 `RetrievedChunk` 다. `versions` 가 비면 빈 목록이다."""
+        ...
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """질의 하나에 대해 자기 척도의 ranked list 를 돌려준다.
+
+    자기 이름도 가중치도 모른다 — 그것은 설정이 정하고 검색 서비스가 들고 있다."""
+
+    async def retrieve(
+        self,
+        query: str,
+        *,
+        depth: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[RetrievedChunk]:
+        """`versions` 의 청크 중 관련도가 높은 것부터 최대 `depth` 개, 점수 내림차순.
+
+        관련성 하한을 여기서 자기 단위로 건다 — 융합 뒤에는 척도가 사라진다."""
         ...
 
 

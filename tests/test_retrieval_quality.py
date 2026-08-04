@@ -124,11 +124,14 @@ async def test_a_query_gets_its_own_document_first(harness, query, expected_file
 
 
 async def test_an_unrelated_query_scores_below_every_relevant_one(harness):
-    """무관 질의의 최고 점수가 관련 질의들의 최저 최고점보다 낮아야 한다.
+    """무관 질의의 최고 **코사인**이 관련 질의들의 최저 최고점보다 낮아야 한다.
+
+    응답의 `score` 가 아니라 밀집 기여 내역의 원점수를 본다 — 융합 점수는 순위에서만
+    결정되므로 어떤 질의를 넣어도 1위가 `1.0` 이고, 그 값으로는 두 분포가 갈라졌는지를
+    물을 수 없다. 밀집 하한이 비교하는 값이 바로 이 원점수다.
 
     **절대값으로 단언하지 않는다.** 점수는 모델에 종속되므로 상수를 박으면 모델을 바꾼
-    순간 이 테스트가 품질이 아니라 그 상수를 재게 된다. 재는 것은 두 분포가 **갈라져
-    있는가**이고, 그 갈라짐이 유사도 하한이라는 정책이 성립하기 위한 전제다.
+    순간 이 테스트가 품질이 아니라 그 상수를 재게 된다.
     """
     relevant_tops = [await _top_score(harness, query) for query, _, _ in RELEVANT]
     unrelated_top = await _top_score(harness, UNRELATED)
@@ -171,4 +174,12 @@ async def test_the_same_query_twice_gives_the_same_ranking(harness):
 
 
 async def _top_score(harness, query: str) -> float | None:
-    return (await harness.retrieval.search(query)).top_score
+    """1위 청크에 밀집 retriever 가 매긴 코사인. 근거가 없으면 `None`."""
+    chunks = (await harness.retrieval.search(query)).chunks
+    if not chunks:
+        return None
+    return next(
+        credit.native_score
+        for credit in chunks[0].contributions
+        if credit.retriever == "dense"
+    )

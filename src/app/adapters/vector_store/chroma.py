@@ -13,7 +13,7 @@ from typing import Any
 from app.adapters.vector_store.client import ChromaEndpoint, create_client, parse_url
 from app.core.documents import Chunk, ChunkLocation, DocumentFormat, StoredIndexVersion
 from app.core.exceptions import StorageUnavailable
-from app.core.retrieval import ScoredChunk
+from app.core.retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class ChromaVectorStore:
         *,
         top_k: int,
         versions: Sequence[StoredIndexVersion],
-    ) -> list[ScoredChunk]:
+    ) -> list[RetrievedChunk]:
         """대상 삼중항으로 좁힌 뒤 벡터에 가까운 청크부터 돌려준다."""
         # 빈 목록은 조건 없음이 아니라 대상 없음이다 — 흘려보내면 잔여 청크만 남은
         # 저장소에서 사용자가 지운 문서가 검색된다.
@@ -161,7 +161,7 @@ class ChromaVectorStore:
         embedding: list[float],
         top_k: int,
         versions: tuple[StoredIndexVersion, ...],
-    ) -> list[ScoredChunk]:
+    ) -> list[RetrievedChunk]:
         response = self._get_collection().query(
             query_embeddings=[embedding],
             n_results=top_k,
@@ -175,7 +175,7 @@ class ChromaVectorStore:
         documents = _first_batch(response, "documents")
         distances = _first_batch(response, "distances")
         return [
-            _scored_chunk(metadata, text, distance)
+            _retrieved_chunk(metadata, text, distance)
             for metadata, text, distance in zip(metadatas, documents, distances, strict=True)
         ]
 
@@ -239,9 +239,9 @@ def _first_batch(response: dict[str, Any], key: str) -> list[Any]:
     return list(batches[0]) if batches else []
 
 
-def _scored_chunk(metadata: dict[str, Any], text: str, distance: float) -> ScoredChunk:
+def _retrieved_chunk(metadata: dict[str, Any], text: str, distance: float) -> RetrievedChunk:
     """응답 한 줄을 결과 값 객체로 옮긴다. `page` 부재는 `_metadata` 규약의 반대편이다."""
-    return ScoredChunk(
+    return RetrievedChunk(
         document_id=metadata["document_id"],
         revision=metadata["revision"],
         index_signature=metadata["index_signature"],
@@ -254,7 +254,7 @@ def _scored_chunk(metadata: dict[str, Any], text: str, distance: float) -> Score
         ),
         filename=metadata["filename"],
         format=DocumentFormat(metadata["format"]),
-        score=_similarity(distance),
+        native_score=_similarity(distance),
     )
 
 
