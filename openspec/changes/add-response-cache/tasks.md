@@ -1,10 +1,10 @@
 ## 1. 캐시 도메인 (순수 함수)
 
-- [ ] 1.1 `core/cache.py` 에 `normalize_query` 를 둔다 — NFC → `strip` → 연속 공백 축약 → `casefold`. 그 이상의 의미 변형은 하지 않는다 (design.md 결정 3)
-- [ ] 1.2 `core/cache.py` 에 `derive_cache_key` 를 둔다 — 다섯 재료(정규화 질의·`top_k`·`PROMPT_VERSION`·`index_signature`·모델 식별자)의 정규 JSON → SHA-256. `derive_index_signature` 와 같은 직렬화 규약을 쓴다
-- [ ] 1.3 `core/cache.py` 에 값 객체를 둔다 — `CachedAnswer`(답변·종료 사유·인용·`sources`·`source_versions`), `CacheLayer`(`EXACT`/`SEMANTIC`), `CacheLookup`(히트 여부·층·유사도·항목). I/O 는 없다
-- [ ] 1.4 `core/cache.py` 에 코사인 유사도 계산과 "후보 중 최댓값 하나" 선택을 둔다. 임계값 판정도 여기다 — 어댑터가 정책을 갖지 않게 한다
-- [ ] 1.5 테스트 — 정규화(공백·대소문자·유니코드 NFD/NFC 쌍이 같은 키), 재료 하나만 달라도 키가 달라짐, 키가 질의 문자열을 복원 가능한 형태로 담지 않음 (`response-cache`: 질문과 답변 본문은 로그에 남기지 않는다)
+- [x] 1.1 `core/cache.py` 에 `normalize_query` 를 둔다 — NFC → `strip` → 연속 공백 축약 → `casefold`. 그 이상의 의미 변형은 하지 않는다 (design.md 결정 3)
+- [x] 1.2 `core/cache.py` 에 `derive_cache_key` 를 둔다 — 다섯 재료(정규화 질의·`top_k`·`PROMPT_VERSION`·`index_signature`·모델 식별자)의 정규 JSON → SHA-256. `derive_index_signature` 와 같은 직렬화 규약을 쓴다
+- [x] 1.3 `core/cache.py` 에 값 객체를 둔다 — `CachedAnswer`(답변·종료 사유·인용·`sources`·`source_versions`), `CacheLayer`(`EXACT`/`SEMANTIC`), `CacheLookup`(히트 여부·층·유사도·항목). I/O 는 없다
+- [x] 1.4 `core/cache.py` 에 코사인 유사도 계산과 "후보 중 최댓값 하나" 선택을 둔다. 임계값 판정도 여기다 — 어댑터가 정책을 갖지 않게 한다
+- [x] 1.5 테스트 — 정규화(공백·대소문자·유니코드 NFD/NFC 쌍이 같은 키), 재료 하나만 달라도 키가 달라짐, 키가 질의 문자열을 복원 가능한 형태로 담지 않음 (`response-cache`: 질문과 답변 본문은 로그에 남기지 않는다)
 
 ## 2. 캐시 저장소 계약과 구현 셋
 
