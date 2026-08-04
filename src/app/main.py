@@ -12,7 +12,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from app.adapters.cache.null import NullResponseCache
 from app.adapters.cache.probe import CacheProbe
+from app.adapters.cache.redis import RedisConnection
+from app.adapters.cache.store import RedisResponseCache
 from app.adapters.embedding import SentenceTransformerEmbedder
 from app.adapters.lexical import SqliteLexicalIndex, fts5_is_available
 from app.adapters.llm import AppServerSession, CodexAnswerGenerator, SessionLaunch, SessionPool
@@ -36,6 +39,8 @@ from app.config import Settings, get_settings, llm_environment
 from app.core.chunking import CHUNK_STRATEGY_VERSION
 from app.core.documents import derive_index_signature
 from app.core.lexical import DEFAULT_TOKENIZER
+from app.core.prompting import PROMPT_VERSION
+from app.services.cache import CacheService
 from app.services.health import HealthService
 from app.services.ingestion import IngestionService
 from app.services.qa import QaService
@@ -106,6 +111,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         pool: SessionPool | None = app.state.session_pool
         if pool is not None:
             await pool.aclose()
+        connection: RedisConnection | None = app.state.cache_connection
+        if connection is not None:
+            await connection.aclose()
 
 
 async def _warm_up_embedder(app: FastAPI) -> None:
@@ -147,6 +155,45 @@ def _bind_retrievers(
         )
         for item in settings.retrievers
     ]
+
+
+def _build_cache_service(
+    settings: Settings,
+    app: FastAPI,
+    embedder: Embedder,
+    registry: DocumentRegistry,
+) -> CacheService:
+    """설정에 따라 저장소를 고르고 캐시 계층을 세운다.
+
+    고르는 것은 둘뿐이다 — 꺼짐이면 `Null`, 그 외에는 Redis. 인메모리 분기는 없다."""
+    app.state.cache_connection = None
+    if not settings.cache_enabled:
+        cache = NullResponseCache()
+    else:
+        # 기동 시점에는 접속하지 않는다 — 캐시에 닿지 못해도 서비스가 떠야 한다.
+        connection = RedisConnection(
+            settings.cache_url, timeout_seconds=settings.cache_operation_timeout_seconds
+        )
+        app.state.cache_connection = connection
+        cache = RedisResponseCache(
+            connection,
+            ttl_seconds=settings.cache_ttl_seconds,
+            max_entries=settings.cache_max_entries,
+        )
+    return CacheService(
+        cache,
+        registry,
+        embedder,
+        # 프롬프트를 고치면 캐시가 저절로 갈린다. 모델 이름은 생성기에 넘기는 것과 같은
+        # 설정값이라 진실 원천은 여전히 하나다 (design 결정 14).
+        prompt_version=PROMPT_VERSION,
+        model=settings.qa_llm_model,
+        semantic_threshold=settings.cache_semantic_threshold,
+        semantic_candidates=settings.cache_semantic_candidates,
+        operation_timeout_seconds=settings.cache_operation_timeout_seconds,
+        breaker_failures=settings.cache_circuit_breaker_failures,
+        breaker_cooldown_seconds=settings.cache_circuit_breaker_cooldown_seconds,
+    )
 
 
 def create_app(
@@ -245,6 +292,7 @@ def create_app(
     app.state.qa_service = QaService(
         app.state.retrieval_service,
         generator,
+        _build_cache_service(settings, app, embedder, registry),
         timeout_seconds=settings.qa_llm_timeout_seconds,
         max_attempts=settings.qa_llm_max_attempts,
         retry_backoff_seconds=settings.qa_llm_retry_backoff_seconds,

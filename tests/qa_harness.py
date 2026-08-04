@@ -12,13 +12,18 @@
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
 
+from app.adapters.cache.null import NullResponseCache
+from app.adapters.protocols import Embedder
 from app.core.answers import Citation
+from app.core.prompting import PROMPT_VERSION
+from app.services.cache import CacheService
 from app.services.qa import (
     AnswerEvent,
     DoneEvent,
@@ -28,7 +33,7 @@ from app.services.qa import (
     SourcesEvent,
 )
 from tests.retrieval_harness import Harness, make_harness
-from tests.stubs import GenerationTurn, ScriptedGenerator
+from tests.stubs import GenerationTurn, ScriptedGenerator, StubResponseCache
 
 #: 근거가 붙는 평범한 질문. 페이크 임베더의 벡터에는 의미가 없으므로 문장 자체는 검색
 #: 결과를 바꾸지 않는다 — 하한을 0으로 두어 "문서가 있으면 근거가 있다"만 성립시킨다.
@@ -45,6 +50,9 @@ class QaHarness:
     retrieval: Harness
     generator: ScriptedGenerator
     service: QaService
+    #: 캐시 저장소 대역. 기본 배선은 `NullResponseCache` 라 이 자리가 비어 있다 —
+    #: 캐시를 켠 하네스만 실물 의미를 가진 대역을 든다.
+    cache: StubResponseCache | None = None
     #: 재시도 대기 목록. 실제로 자지 않고 여기에 초 단위 값만 쌓인다.
     sleeps: list[float] = field(default_factory=list)
 
@@ -82,20 +90,52 @@ def make_qa_harness(
     concurrency: int = 2,
     top_k: int = 5,
     min_score: float = 0.0,
+    cached: bool = False,
+    cache: StubResponseCache | None = None,
+    retrieval: Harness | None = None,
+    embedder: Embedder | None = None,
+    semantic_threshold: float = 0.93,
+    operation_timeout_seconds: float = 0.2,
+    breaker_failures: int = 3,
+    breaker_cooldown_seconds: float = 30.0,
+    clock: Callable[[], float] | None = None,
 ) -> QaHarness:
     """대본을 받아 하네스 하나를 만든다.
 
     `monkeypatch` 를 주면 재시도 대기를 **기록만 하고 실제로 자지 않는다.** 백오프가 늘어난다는
     단언은 값 자체를 보면 되는데, 그걸 확인하려고 테스트가 실제로 3초를 자야 할 이유가 없다.
+
+    **캐시는 기본으로 꺼져 있다.** 배포 기본값은 켜짐이지만, 이 하네스를 쓰는 테스트
+    대부분은 "생성기가 몇 번 불렸는가"로 정책을 재는데 캐시가 켜져 있으면 같은 질문의 두
+    번째 요청이 생성기를 부르지 않아 그 단언이 통째로 뜻을 잃는다. 캐시를 재는 테스트만
+    `cached=True` 로 켠다 — 그 상태가 곧 `cache_enabled=false` 배선이기도 하다.
     """
-    retrieval = make_harness(top_k=top_k, min_score=min_score)
+    # 저장소를 그대로 두고 설정만 바꾼 서비스를 세울 수 있어야 한다 — `retrieval_top_k`
+    # 변경이 캐시 항목을 어떻게 가르는지는 같은 저장소 위에서만 재진다.
+    storage = retrieval or make_harness(top_k=top_k, min_score=min_score, embedder=embedder)
+    searching = storage.searching_with(top_k=top_k) if retrieval else storage.retrieval
     generator = ScriptedGenerator(turns=turns or (GenerationTurn(),))
+    store = cache or (StubResponseCache(clock=clock) if cached else None)
     harness = QaHarness(
-        retrieval=retrieval,
+        retrieval=storage,
         generator=generator,
+        cache=store,
         service=QaService(
-            retrieval.retrieval,
+            searching,
             generator,
+            CacheService(
+                store or NullResponseCache(),
+                storage.registry,
+                storage.embedder,
+                prompt_version=PROMPT_VERSION,
+                model="fake-model",
+                semantic_threshold=semantic_threshold,
+                semantic_candidates=200,
+                operation_timeout_seconds=operation_timeout_seconds,
+                breaker_failures=breaker_failures,
+                breaker_cooldown_seconds=breaker_cooldown_seconds,
+                **({"clock": clock} if clock else {}),
+            ),
             timeout_seconds=timeout_seconds,
             max_attempts=max_attempts,
             retry_backoff_seconds=retry_backoff_seconds,

@@ -14,7 +14,7 @@
 - [x] 2.4 `config.py` 에 설정 항목을 더한다 — `cache_enabled`, `cache_ttl_seconds`, `cache_max_entries`, `cache_semantic_threshold`, `cache_semantic_candidates`. 전부 기본값을 갖게 해 환경 변수 없이 기동되게 한다
 - [x] 2.5 `config.py` 에 장애 대비 항목을 더한다 — `cache_operation_timeout_seconds`(기본 0.2), `cache_circuit_breaker_failures`(기본 3), `cache_circuit_breaker_cooldown_seconds`(기본 30). 헬스 프로브의 2초와 값이 다른 이유를 주석으로 남긴다 (design.md 결정 13)
 - [x] 2.6 테스트 — TTL 만료 후 미스, 항목 수 상한 초과 시 오래된 항목부터 밀려나되 저장이 거부되지 않음, 후보 스캔 상한이 지켜짐 (`response-cache`: 캐시 항목에는 수명과 총량 상한이 있다)
-- [ ] 2.7 테스트 — `cache_enabled=false` 로 **같은 질문을 두 번** 보내면 둘 다 미스이고 생성기가 두 번 호출되는지 (`response-cache`: 캐시를 끈 상태에서는 어떤 요청도 히트가 되지 않는다)
+- [x] 2.7 테스트 — `cache_enabled=false` 로 **같은 질문을 두 번** 보내면 둘 다 미스이고 생성기가 두 번 호출되는지 (`response-cache`: 캐시를 끈 상태에서는 어떤 요청도 히트가 되지 않는다)
 - [x] 2.8 테스트 — 배선 코드에 인메모리 구현으로 가는 분기가 없는지 고정한다. 프로덕션 경로가 인메모리로 새면 결정 12 가 막으려던 실패가 그대로 돌아온다
 
 ## 3. Redis 어댑터
@@ -39,28 +39,28 @@
 - [x] 4.5 작업 타임아웃과 차단기를 `services/cache.py` 에 둔다 — 연속 실패 N회면 쿨다운 동안 저장소를 호출하지 않고 즉시 미스, 쿨다운 뒤 첫 요청이 탐침이 되어 자동 회복한다. 상태는 프로세스 메모리다 (design.md 결정 13)
 - [x] 4.6 관측을 구현한다 — 히트 여부·층·유사도·무효화된 항목 수·축소 여부를 로그에 남기되 질문 원문·답변 본문·청크 본문은 남기지 않는다
 - [x] 4.7 로그 빈도를 상태에 맞춘다 — 캐시 꺼짐은 **기동 시 한 줄**, 저장소 가용/불가용 전환은 **전이 시점에만** 경고. 요청마다 경고를 찍으면 로그가 넘쳐 진짜 신호가 묻힌다 (design.md 결정 12)
-- [ ] 4.8 테스트 — L1 히트에서 임베더가 호출되지 않음, L2 히트에서 생성기가 호출되지 않음, 임계값 미달이 미스가 됨, `error` 종료가 캐시되지 않음
+- [x] 4.8 테스트 — L1 히트에서 임베더가 호출되지 않음, L2 히트에서 생성기가 호출되지 않음, 임계값 미달이 미스가 됨, `error` 종료가 캐시되지 않음
 - [x] 4.9 테스트 — 인용 문서가 옛 리비전인 항목이 남아 있을 때 히트가 버려지고 미스로 처리되며, 그 항목이 캐시에서 제거되는지 (`response-cache`: 캐시된 답변은 인용 문서가 지금도 현재일 때만 쓰인다)
 - [x] 4.10 테스트 — 캐시 저장소가 죽은 상태·비활성화 상태에서 `/qa` 가 `200` 으로 끝나고 히트로 표시되지 않는지
 - [x] 4.11 테스트 — 응답하지 않는 저장소에서 조회가 타임아웃 안에 미스로 끝나는지, 연속 실패 뒤에는 저장소를 아예 호출하지 않는지, 쿨다운 뒤 재기동 없이 히트가 다시 나는지 (`response-cache`: 캐시 장애가 응답을 느리게 만들지 않는다)
 
 ## 5. `/qa` 배선
 
-- [ ] 5.1 `RetrievalService` 에 `index_signature` 읽기 전용 프로퍼티와 `resolve_top_k(top_k) -> int` 를 더한다. `search` 가 그 메서드를 쓰게 해 기본값 규칙이 한 곳에만 남게 한다 (design.md 결정 14)
-- [ ] 5.2 `QaService` 가 키 재료 셋을 확보하게 한다 — `effective_k` 와 `index_signature` 는 `RetrievalService` 에서 읽고, `qa_llm_model` 은 배선이 주입한다. **어느 것도 `QaService` 안에서 다시 유도하지 않는다** — 유도 지점이 늘면 캐시가 검색과 다른 세대의 키를 쓴다
-- [ ] 5.3 테스트 — `top_k` 를 생략한 요청과 설정 기본값과 같은 `top_k` 를 명시한 요청이 **같은 캐시 키**를 만드는지. `None` 이 키에 들어가면 여기서 깨진다
-- [ ] 5.4 테스트 — `retrieval_top_k` 설정을 바꾸면 이전 항목이 히트되지 않는지, `index_signature` 가 검색과 캐시에서 같은 값인지
-- [ ] 5.5 `QaContext` 가 캐시 조회 결과와 검색에 실제로 쓰인 질의를 담게 한다. `result` 는 히트일 때 없을 수 있다
-- [ ] 5.6 `QaService.prepare` 가 검색 **앞에서** 캐시를 조회하고, 히트면 검색을 하지 않게 한다. 검색 예외는 지금처럼 그대로 올린다 (design.md 결정 5)
-- [ ] 5.7 `QaService.stream` 에 히트 재생 경로를 더한다 — `sources`(캐시된 근거) → `answer`(**조각 하나**) → `done`. 원래의 조각 경계를 저장하지도 재생하지도 않는다 (design.md 결정 6)
-- [ ] 5.8 히트 경로가 `anyio.CapacityLimiter` 를 잡지 않게 한다 — 히트에는 생성기 프로세스가 없다 (design.md 결정 5)
-- [ ] 5.9 저장 호출을 `done` 을 내보내기 **직전**에 둔다. 실패는 삼키고 로그로 남긴다
-- [ ] 5.10 `api/sse.py` 의 `done` 페이로드에 `cache_hit`·`cache_layer`·`cache_similarity` 를 더한다. 기존 필드의 의미는 바꾸지 않는다 (design.md 결정 11)
-- [ ] 5.11 `main.py` 에서 배선한다 — `cache_enabled` 에 따라 `NullResponseCache` 또는 `RedisResponseCache` 만 고른다(인메모리 분기 없음). Redis 에 닿지 못하는 기동이 실패하지 않는지 확인한다
-- [ ] 5.12 테스트 — 히트의 이벤트 이름 순서가 미스와 같고, `answer` 들을 이어 붙인 것이 `done.answer` 와 같고, `citations` 가 첫 요청의 것과 같은지 (`answer-generation`: 캐시에서 온 답변도 같은 이벤트 시퀀스로 전달된다)
-- [ ] 5.13 테스트 — `elapsed_ms` 가 이번 요청의 값이지 캐시된 복사가 아닌지, 미스/정확 히트/유사 히트에서 `cache_layer` 가 각각 구분되는지
-- [ ] 5.14 테스트 — `no_evidence` 와 `insufficient_evidence` 가 각각 캐시되고 두 번째 요청에서 검색이 다시 돌지 않는지 (`response-cache`: 답하지 못한 종료도 캐시되지만, 문서 내용이 바뀌면 먼저 사라진다)
-- [ ] 5.15 `README.md` 에 캐시 설정 항목과 `cache_hit` 확인 방법을 적는다. **`qa_llm_model` 을 비워 두면 CLI 기본 모델이 바뀌어도 캐시 키가 그대로라는 사실**을 함께 적는다 (design.md 결정 14). `PROMPT_DESIGN.md` 에 프롬프트 버전이 캐시 키에 들어간다는 사실을 적는다 — 프롬프트를 고치면 캐시가 저절로 갈린다
+- [x] 5.1 `RetrievalService` 에 `index_signature` 읽기 전용 프로퍼티와 `resolve_top_k(top_k) -> int` 를 더한다. `search` 가 그 메서드를 쓰게 해 기본값 규칙이 한 곳에만 남게 한다 (design.md 결정 14)
+- [x] 5.2 `QaService` 가 키 재료 셋을 확보하게 한다 — `effective_k` 와 `index_signature` 는 `RetrievalService` 에서 읽고, `qa_llm_model` 은 배선이 주입한다. **어느 것도 `QaService` 안에서 다시 유도하지 않는다** — 유도 지점이 늘면 캐시가 검색과 다른 세대의 키를 쓴다
+- [x] 5.3 테스트 — `top_k` 를 생략한 요청과 설정 기본값과 같은 `top_k` 를 명시한 요청이 **같은 캐시 키**를 만드는지. `None` 이 키에 들어가면 여기서 깨진다
+- [x] 5.4 테스트 — `retrieval_top_k` 설정을 바꾸면 이전 항목이 히트되지 않는지, `index_signature` 가 검색과 캐시에서 같은 값인지
+- [x] 5.5 `QaContext` 가 캐시 조회 결과와 검색에 실제로 쓰인 질의를 담게 한다. `result` 는 히트일 때 없을 수 있다
+- [x] 5.6 `QaService.prepare` 가 검색 **앞에서** 캐시를 조회하고, 히트면 검색을 하지 않게 한다. 검색 예외는 지금처럼 그대로 올린다 (design.md 결정 5)
+- [x] 5.7 `QaService.stream` 에 히트 재생 경로를 더한다 — `sources`(캐시된 근거) → `answer`(**조각 하나**) → `done`. 원래의 조각 경계를 저장하지도 재생하지도 않는다 (design.md 결정 6)
+- [x] 5.8 히트 경로가 `anyio.CapacityLimiter` 를 잡지 않게 한다 — 히트에는 생성기 프로세스가 없다 (design.md 결정 5)
+- [x] 5.9 저장 호출을 `done` 을 내보내기 **직전**에 둔다. 실패는 삼키고 로그로 남긴다
+- [x] 5.10 `api/sse.py` 의 `done` 페이로드에 `cache_hit`·`cache_layer`·`cache_similarity` 를 더한다. 기존 필드의 의미는 바꾸지 않는다 (design.md 결정 11)
+- [x] 5.11 `main.py` 에서 배선한다 — `cache_enabled` 에 따라 `NullResponseCache` 또는 `RedisResponseCache` 만 고른다(인메모리 분기 없음). Redis 에 닿지 못하는 기동이 실패하지 않는지 확인한다
+- [x] 5.12 테스트 — 히트의 이벤트 이름 순서가 미스와 같고, `answer` 들을 이어 붙인 것이 `done.answer` 와 같고, `citations` 가 첫 요청의 것과 같은지 (`answer-generation`: 캐시에서 온 답변도 같은 이벤트 시퀀스로 전달된다)
+- [x] 5.13 테스트 — `elapsed_ms` 가 이번 요청의 값이지 캐시된 복사가 아닌지, 미스/정확 히트/유사 히트에서 `cache_layer` 가 각각 구분되는지
+- [x] 5.14 테스트 — `no_evidence` 와 `insufficient_evidence` 가 각각 캐시되고 두 번째 요청에서 검색이 다시 돌지 않는지 (`response-cache`: 답하지 못한 종료도 캐시되지만, 문서 내용이 바뀌면 먼저 사라진다)
+- [x] 5.15 `README.md` 에 캐시 설정 항목과 `cache_hit` 확인 방법을 적는다. **`qa_llm_model` 을 비워 두면 CLI 기본 모델이 바뀌어도 캐시 키가 그대로라는 사실**을 함께 적는다 (design.md 결정 14). `PROMPT_DESIGN.md` 에 프롬프트 버전이 캐시 키에 들어간다는 사실을 적는다 — 프롬프트를 고치면 캐시가 저절로 갈린다
 
 ## 6. 무효화 (핵심 3경로)
 

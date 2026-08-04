@@ -76,11 +76,24 @@ class RetrievalService:
         self._top_k = top_k
         self._rrf_k = rrf_k
 
+    @property
+    def index_signature(self) -> str:
+        """이 서비스가 묶여 있는 색인 세대.
+
+        캐시가 배선에서 따로 받으면 유도 지점이 셋이 되어 조용히 어긋난다 (design 결정 14)."""
+        return self._index_signature
+
+    def resolve_top_k(self, top_k: int | None) -> int:
+        """요청의 K 를 확정한다 — 생략하면 설정 기본값.
+
+        규칙이 두 벌이면 `retrieval_top_k` 를 바꿨을 때 검색과 캐시가 다른 K 를 믿는다."""
+        return self._top_k if top_k is None else top_k
+
     async def search(self, query: str, *, top_k: int | None = None) -> RetrievalResult:
         """질의 한 건. `top_k` 를 주면 설정 기본값을 대신한다.
 
         유효성은 API 계층이 이미 봤다 — 거부된 요청이 저장소를 건드리지 않게 한다."""
-        effective_k = self._top_k if top_k is None else top_k
+        effective_k = self.resolve_top_k(top_k)
 
         current = await self._current_versions()
         if not current:
