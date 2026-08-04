@@ -16,7 +16,7 @@ __all__ = ["Contribution", "RetrievedChunk", "ScoredChunk"]
 
 @dataclass(frozen=True)
 class ScoredChunk:
-    """검색이 돌려주는 청크 하나 — 정체성·본문·출처·융합 점수·기여 내역.
+    """검색이 돌려주는 청크 하나 — 정체성·본문·출처·점수 둘·기여 내역.
 
     `score` 는 유사도가 아니라 여러 retriever 가 얼마나 같은 것을 꼽았는가다."""
 
@@ -29,6 +29,9 @@ class ScoredChunk:
     filename: str
     format: DocumentFormat
     score: float
+    #: 크로스인코더가 질의와 본문을 함께 읽어 매긴 관련도. 판정이 없으면 `None` 이고,
+    #: 범위를 걸지 않는 것은 척도가 질의마다 달라서다 (`reranking` 스펙).
+    rerank_score: float | None = None
     contributions: tuple[Contribution, ...] = ()
 
     def __post_init__(self) -> None:

@@ -1,28 +1,28 @@
 ## 1. 재정렬 도메인 (순수 함수)
 
-- [ ] 1.1 `core/retrieval.py` 의 `ScoredChunk` 에 `rerank_score: float | None = None` 을 더한다. `score` 의 `(0, 1]` 검사와 의미는 **그대로 둔다** — 리랭킹 점수는 다른 자리에 산다 (design 결정 9)
-- [ ] 1.2 `core/reranking.py` 에 재정렬 순수 함수를 둔다 — 융합 결과와 점수 목록·깊이를 받아, 리랭킹된 후보는 `(-rerank_score, document_id, chunk_index)` 전순서로 앞에, 깊이 밖 후보는 융합 순서 그대로 뒤에 놓는다. I/O 없음, 표준 라이브러리만 (design 결정 4)
-- [ ] 1.3 점수 목록의 길이가 대상 후보 수와 다르면 도메인 오류로 끊는다. 어긋난 채로 `zip` 하면 **다른 청크의 점수가 실린다** — 오류가 아니라 조용한 오답이다
-- [ ] 1.4 테스트 — 순서가 리랭킹 점수 내림차순이고, 동점이 정체성 값 오름차순으로 깨지며, 같은 입력을 열 번 넣어도 순서가 같은지 (`retrieval`: 리랭킹 동점이 순서를 흔들지 않는다)
-- [ ] 1.5 테스트 — 재정렬이 후보를 **걸러내지 않는지**. 입력 집합과 출력 집합이 같고 깊이 밖 후보가 융합 순서를 유지한 채 뒤에 오는지 (`retrieval`: 리랭킹은 결과를 걸러내지 않는다)
-- [ ] 1.6 테스트 — 융합 점수와 기여 내역이 재정렬을 통과해도 그대로인지 (`retrieval`: 리랭킹이 융합 점수를 바꾸지 않는다)
+- [x] 1.1 `core/retrieval.py` 의 `ScoredChunk` 에 `rerank_score: float | None = None` 을 더한다. `score` 의 `(0, 1]` 검사와 의미는 **그대로 둔다** — 리랭킹 점수는 다른 자리에 산다 (design 결정 9)
+- [x] 1.2 `core/reranking.py` 에 재정렬 순수 함수를 둔다 — 융합 결과와 점수 목록·깊이를 받아, 리랭킹된 후보는 `(-rerank_score, document_id, chunk_index)` 전순서로 앞에, 깊이 밖 후보는 융합 순서 그대로 뒤에 놓는다. I/O 없음, 표준 라이브러리만 (design 결정 4)
+- [x] 1.3 점수 목록의 길이가 대상 후보 수와 다르면 도메인 오류로 끊는다. 어긋난 채로 `zip` 하면 **다른 청크의 점수가 실린다** — 오류가 아니라 조용한 오답이다
+- [x] 1.4 테스트 — 순서가 리랭킹 점수 내림차순이고, 동점이 정체성 값 오름차순으로 깨지며, 같은 입력을 열 번 넣어도 순서가 같은지 (`retrieval`: 리랭킹 동점이 순서를 흔들지 않는다)
+- [x] 1.5 테스트 — 재정렬이 후보를 **걸러내지 않는지**. 입력 집합과 출력 집합이 같고 깊이 밖 후보가 융합 순서를 유지한 채 뒤에 오는지 (`retrieval`: 리랭킹은 결과를 걸러내지 않는다)
+- [x] 1.6 테스트 — 융합 점수와 기여 내역이 재정렬을 통과해도 그대로인지 (`retrieval`: 리랭킹이 융합 점수를 바꾸지 않는다)
 
 ## 2. `Reranker` 계약과 크로스인코더 어댑터
 
-- [ ] 2.1 `adapters/protocols.py` 에 `Reranker` 프로토콜을 더한다 — `rerank(query, documents) -> list[float]`, `signature: str`, `warm_up()`. `ScoredChunk` 를 넘기지 않고 정렬도 시키지 않는다 (design 결정 2)
-- [ ] 2.2 `adapters/reranking/local.py` — `CrossEncoderReranker`. 임베더와 같은 모양으로 알려진 모델 프로파일 표(입력 창)를 두고, 표에 없는 이름은 `ConfigurationError` 로 기동을 막는다
-- [ ] 2.3 로딩 시 실제 모델의 입력 창이 선언보다 좁으면 `ConfigurationError` 를 던진다. 임베딩 어댑터의 `_assert_matches_declaration` 과 같은 자리·같은 이유다 (`reranking`: 실제 모델이 선언보다 좁으면 로딩이 실패한다)
-- [ ] 2.4 `trust_remote_code=True` 와 **커밋 해시 고정**(`revision=`)을 함께 넣는다. 값은 실제 빌드에서 받은 커밋으로 채우고, 그 이유를 한 줄 주석으로 남긴다 (design 결정 8)
-- [ ] 2.5 원 로짓에 시그모이드를 씌워 `(0, 1)` 로 내보낸다. 단조 변환이라 순서가 바뀌지 않는다는 것과 **교정된 값이 아니라는 것**을 주석에 남긴다 (design 결정 3)
-- [ ] 2.6 후보 목록이 비면 모델을 부르지 않고 빈 목록을 돌려준다 (`reranking`: 후보가 없으면 모델을 부르지 않는다)
-- [ ] 2.7 인코딩을 `asyncio.to_thread` 로 내보내고, 지연 로딩(`_ensure_model`)을 백스톱으로 둔다. 모델 인스턴스는 하나이고 로딩은 잠금 아래에서 한 번만 일어난다 (design 결정 10)
-- [ ] 2.8 `signature` 를 **가중치를 올리지 않고** 만든다 — 모델 이름과 점수 규약 판 번호로 구성한다 (`reranking`: 가중치를 올리지 않고도 서명을 읽는다)
-- [ ] 2.9 테스트 — 점수 개수·순서가 후보와 대응하고, 같은 입력이 같은 점수를 주며, 후보 0개에서 모델이 불리지 않는지 (`reranking`: 질의와 후보를 함께 읽어 후보별 점수를 돌려준다)
-- [ ] 2.10 테스트 — 모델이 다르면 서명이 다르고, 서명을 읽는 동안 가중치 로딩이 일어나지 않는지
+- [x] 2.1 `adapters/protocols.py` 에 `Reranker` 프로토콜을 더한다 — `rerank(query, documents) -> list[float]`, `signature: str`, `warm_up()`. `ScoredChunk` 를 넘기지 않고 정렬도 시키지 않는다 (design 결정 2)
+- [x] 2.2 `adapters/reranking/local.py` — `CrossEncoderReranker`. 임베더와 같은 모양으로 알려진 모델 프로파일 표(입력 창)를 두고, 표에 없는 이름은 `ConfigurationError` 로 기동을 막는다
+- [x] 2.3 로딩 시 실제 모델의 입력 창이 선언보다 좁으면 `ConfigurationError` 를 던진다. 임베딩 어댑터의 `_assert_matches_declaration` 과 같은 자리·같은 이유다 (`reranking`: 실제 모델이 선언보다 좁으면 로딩이 실패한다)
+- [x] 2.4 **커밋 해시를 고정**한다(`revision=`). 값은 실제로 받은 커밋으로 채운다. `trust_remote_code` 는 켜지 않는다 — 표의 모델은 원격 코드가 없고, 그래야 이 고정이 가중치·설정·토크나이저 전부에 미친다 (design 결정 8)
+- [x] 2.5 원 로짓에 시그모이드를 씌워 `(0, 1)` 로 내보낸다. 단조 변환이라 순서가 바뀌지 않는다는 것과 **교정된 값이 아니라는 것**을 주석에 남긴다 (design 결정 3)
+- [x] 2.6 후보 목록이 비면 모델을 부르지 않고 빈 목록을 돌려준다 (`reranking`: 후보가 없으면 모델을 부르지 않는다)
+- [x] 2.7 인코딩을 `asyncio.to_thread` 로 내보내고, 지연 로딩(`_ensure_model`)을 백스톱으로 둔다. 모델 인스턴스는 하나이고 로딩은 잠금 아래에서 한 번만 일어난다 (design 결정 10)
+- [x] 2.8 `signature` 를 **가중치를 올리지 않고** 만든다 — 모델 이름과 점수 규약 판 번호로 구성한다 (`reranking`: 가중치를 올리지 않고도 서명을 읽는다)
+- [x] 2.9 테스트 — 점수 개수·순서가 후보와 대응하고, 같은 입력이 같은 점수를 주며, 후보 0개에서 모델이 불리지 않는지 (`reranking`: 질의와 후보를 함께 읽어 후보별 점수를 돌려준다)
+- [x] 2.10 테스트 — 모델이 다르면 서명이 다르고, 서명을 읽는 동안 가중치 로딩이 일어나지 않는지
 
 ## 3. 설정과 기동 검증
 
-- [ ] 3.1 `config.py` 에 항목을 더한다 — `reranker_enabled`(기본 `True`), `reranker_model`(기본 `Alibaba-NLP/gte-multilingual-reranker-base`), `rerank_candidates`(기본 30), `reranker_timeout_seconds`. 전부 기본값을 가져 환경변수 없이 기동된다
+- [ ] 3.1 `config.py` 에 항목을 더한다 — `reranker_enabled`(기본 `True`), `reranker_model`(기본 `BAAI/bge-reranker-v2-m3`), `rerank_candidates`(기본 30), `reranker_timeout_seconds`. 전부 기본값을 가져 환경변수 없이 기동된다
 - [ ] 3.2 `rerank_candidates < retrieval_max_top_k` 면 기동을 막는 검증자를 더한다. `_candidate_depth_must_cover_the_k_ceiling` 옆에 같은 모양으로 둔다 (`retrieval`: 리랭크 깊이가 K 상한보다 작으면 기동을 막는다)
 - [ ] 3.3 선언된 입력 창이 `retrieval_max_query_chars` 와 `chunk_size` 를 함께 담지 못하면 기동을 막는다 (`reranking`: 입력 창이 질의와 청크를 담지 못하면 기동을 막는다)
 - [ ] 3.4 테스트 — 위 세 실패가 각각 기동을 세우고, 실패 사유에서 문제가 된 값을 확인할 수 있는지. 기본 설정으로는 기동이 통과하는지
@@ -60,7 +60,7 @@
 ## 7. 컨테이너와 실행
 
 - [ ] 7.1 `Dockerfile` 에서 리랭커 가중치를 임베딩 가중치와 **같은 레이어**에 굽는다. `APP_RERANKER_MODEL` 환경변수가 굽는 모델과 런타임 모델의 유일한 진실 원천이다 (design 결정 8)
-- [ ] 7.2 굽는 단계에서 `trust_remote_code=True` 와 고정 리비전을 함께 쓴다 — 빌드와 런타임이 같은 코드를 실행해야 고정의 뜻이 성립한다
+- [ ] 7.2 굽는 단계가 `KNOWN_RERANKER_PROFILES` 와 **같은 리비전**을 쓰게 하고, 그 일치를 테스트가 고정한다 — `Dockerfile` 은 앱 패키지를 import 할 수 없어 값이 두 곳에 적히고, 어긋나면 런타임에 조용히 다시 받는다 (`docker-compose.yml` 을 읽어 계약을 고정하는 테스트와 같은 방식)
 - [ ] 7.3 `docker compose run --build --rm test` 로 전체 스위트를 돌린다. 리랭커 실물 층이 컨테이너 안에서 실제로 도는지 확인한다(가중치가 구워져 있다)
 - [ ] 7.4 `docker compose up -d --build --wait` 로 `/search` 를 실물로 한 번 친다. `./data` 에 남은 이전 실행 벡터를 지우고 `sample-docs/` 두 건만 올린 뒤 잰다 (`CLAUDE.md` 검증 절차)
 
@@ -83,11 +83,11 @@
 ## 10. 문서
 
 - [ ] 10.1 `ARCHITECTURE.md` 「재랭킹·질의 확장은 여전히 없다」를 **리랭킹 절로 갈아 쓴다.** 파이프라인 그림에 단계를 더하고, 질의 확장·HyDE 가 여전히 없다는 사실은 남긴다
-- [ ] 10.2 모델 후보표와 기각 사유를 적는다 — 기각의 축이 "한국어가 학습 분포 안에 있는가"였다는 것과, 근거가 벤치마크가 아니라 학습 언어 구성이라는 사실을 함께 적는다 (design 결정 1)
+- [ ] 10.2 모델 후보표와 기각 사유를 적는다 — 기각의 축이 둘("한국어가 학습 분포 안에 있는가", "아키텍처가 `transformers` 안에 있는가")이라는 것과, 근거가 벤치마크가 아니라 학습 언어 구성·실물 로딩 결과라는 사실을 함께 적는다 (design 결정 1)
 - [ ] 10.3 순위 신호가 둘인 이유와 `score` 를 갈아치우지 않은 근거를 적는다 (design 결정 9)
 - [ ] 10.4 리랭킹 점수에 하한을 걸지 않은 이유를 적는다 — 「하한이 판정하는 것과 하지 않는 것」 옆에 둔다 (design 결정 5)
 - [ ] 10.5 8장의 실측표(지연·순위 변화·이미지 크기)를 적는다. **품질이 좋아졌다고 말할 근거가 없다는 사실을 함께 적는다** (design 결정 11)
-- [ ] 10.6 `trust_remote_code` 를 받아들인 근거와 리비전 고정을 적는다 (design 결정 8)
+- [ ] 10.6 원격 코드를 쓰는 모델을 피한 근거와 리비전 고정을 적는다 — 첫 후보가 실물에서 깨진 기록(`transformers` 판 비호환, 코드가 다른 저장소라 고정 불가)을 함께 남긴다 (design 결정 1·8)
 - [ ] 10.7 캐시 키에 리랭커 몫만 들어갔고 **retriever 가중치는 여전히 키에 없다**는 사실을 적는다. 적지 않으면 다음 사람이 "검색 구성이 전부 키에 있다"고 읽는다 (design 결정 7)
 - [ ] 10.8 `README.md` 에 리랭커 설정(`APP_RERANKER_ENABLED`·`APP_RERANKER_MODEL`·`APP_RERANK_CANDIDATES`)과 끄는 방법, 첫 빌드가 길어진다는 사실을 적는다
 - [ ] 10.9 새 테스트의 밀려난 설명을 `tests/README.md` 에 파일별로 옮긴다

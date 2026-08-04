@@ -135,6 +135,52 @@ class FakeEmbedder:
         return [value / norm for value in values]
 
 
+class FakeReranker:
+    """주입한 규칙으로 후보를 채점하는 리랭커.
+
+    기본 규칙이 토큰 겹침인 이유는 `tests/README.md` 에 있다."""
+
+    def __init__(
+        self,
+        *,
+        name: str = "fake-reranker",
+        signature: str | None = None,
+        scorer: Callable[[str, str], float] | None = None,
+        delay: float = 0.0,
+        error: Exception | None = None,
+        warm_up_error: Exception | None = None,
+    ) -> None:
+        self.name = name
+        self.signature = signature or f"{name}/none-v1"
+        self._scorer = scorer or _token_overlap
+        self._delay = delay
+        #: 채점 실패를 주입한다 — 축소 경로를 만드는 유일한 방법이다.
+        self.error = error
+        self.warm_up_error = warm_up_error
+        #: 호출 기록. 리랭킹이 요청당 한 번인지, 무엇을 넘겼는지를 본다.
+        self.calls: list[tuple[str, list[str]]] = []
+        self.warm_ups = 0
+
+    async def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        self.calls.append((query, list(documents)))
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self.error is not None:
+            raise self.error
+        return [self._scorer(query, document) for document in documents]
+
+    async def warm_up(self) -> None:
+        self.warm_ups += 1
+        if self.warm_up_error is not None:
+            raise self.warm_up_error
+
+
+def _token_overlap(query: str, document: str) -> float:
+    """질의와 후보가 공유하는 토큰 수. 결정론적이고 순서를 실제로 흔든다."""
+    shared = set(DEFAULT_TOKENIZER.tokenize(query)) & set(DEFAULT_TOKENIZER.tokenize(document))
+    return float(len(shared))
+
+
 class SynonymEmbedder(FakeEmbedder):
     """지정한 질의들을 한 벡터로 묶는 임베더.
 

@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.adapters.protocols import HealthProbe
+from app.adapters.reranking import KNOWN_RERANKER_PROFILES
 from app.adapters.vector_store.client import parse_url
 from app.config import Settings
 from app.main import create_app
@@ -97,12 +98,14 @@ needs_cache = pytest.mark.skipif(
 EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 
 
-def weights_are_cached(model_name: str = EMBEDDING_MODEL) -> bool:
-    """네트워크를 건드리지 않고 캐시만 확인한다."""
+def weights_are_cached(model_name: str = EMBEDDING_MODEL, *, revision: str | None = None) -> bool:
+    """네트워크를 건드리지 않고 캐시만 확인한다.
+
+    커밋으로 받은 캐시에는 `main` 참조가 없어, 고정한 모델은 리비전까지 물어야 찾힌다."""
     try:
         from huggingface_hub import snapshot_download
 
-        snapshot_download(model_name, local_files_only=True)
+        snapshot_download(model_name, revision=revision, local_files_only=True)
     except Exception:
         return False
     return True
@@ -113,6 +116,19 @@ def weights_are_cached(model_name: str = EMBEDDING_MODEL) -> bool:
 needs_weights = pytest.mark.skipif(
     not weights_are_cached(),
     reason=f"{EMBEDDING_MODEL} 가중치가 로컬에 없습니다 (컨테이너 이미지에는 구워져 있습니다)",
+)
+
+
+#: 실물 리랭킹을 쓰는 테스트가 요구하는 모델. `Settings.reranker_model` 의 기본값과 같아야
+#: 하는 이유는 임베딩 쪽과 같다.
+RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+
+#: 어댑터가 고정한 것과 같은 커밋. 표에서 읽어 두 벌이 되지 않게 한다.
+RERANKER_REVISION = KNOWN_RERANKER_PROFILES[RERANKER_MODEL].revision
+
+needs_reranker_weights = pytest.mark.skipif(
+    not weights_are_cached(RERANKER_MODEL, revision=RERANKER_REVISION),
+    reason=f"{RERANKER_MODEL} 가중치가 로컬에 없습니다 (컨테이너 이미지에는 구워져 있습니다)",
 )
 
 
