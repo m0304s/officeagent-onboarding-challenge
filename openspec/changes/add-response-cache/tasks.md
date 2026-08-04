@@ -87,11 +87,8 @@
 - [x] 7.4 `docker compose run --build --rm test` 로 전체 스위트를 돌린다 — LLM 구독도 실제 Redis 도 없이 통과해야 한다
 - [x] 7.5 `docker compose up -d --build --wait` 후 실물 `/qa` 를 두 번 호출해 `cache_hit` 이 `false` → `true` 로 바뀌는지 눈으로 확인한다. `./data` 에 이전 실행의 벡터가 남아 있으면 지우고 `sample-docs/` 두 건만 다시 올린 뒤 잰다
 - [x] 7.6 `docker compose stop redis` 상태에서 `/qa` 응답 시간이 `cache_enabled=false` 와 같은 수준인지 잰다 — 차단기가 실제로 닫히는지 확인하는 유일한 방법이다 (`response-cache`: 캐시 장애가 응답을 느리게 만들지 않는다)
-- [ ] 7.7 `docker compose run --build --rm test ruff check .` 와 `python3 scripts/check_comments.py` 를 통과시킨다
-  - **절반 완료 (2026-08-04).** `ruff check .`(컨테이너) 통과, `check_comments.py src` **위반 0건** — 이 change 가 더한 것뿐 아니라 기존 `config.py` 위반 2건도 함께 정리했다.
-  - **남은 것**: 인자 없는 `check_comments.py`(= `src`+`tests`+`scripts`)가 **539건**을 보고한다. 전부 `tests/` 이고, 이 change 이전 베이스라인이 **459건**, 이번에 더한 테스트 8개가 약 80건이다. 유형은 강조 마크업 257건 · 긴 docstring 200여 건으로, 리포가 처음부터 테스트에 써 온 문서화 스타일 그 자체다(`test_prompting.py`·`test_vector_store.py` 등 기존 파일이 전부 같은 모양).
-  - **결정이 필요하다** — 셋 중 하나를 고른 뒤 이 태스크를 닫는다.
-    1. `scripts/check_comments.py` 의 기본 대상을 `src` 로 좁히고 그 사실을 `CLAUDE.md` 주석 규칙에 적는다 (테스트 문서화 스타일 유지)
-    2. 테스트 49개 파일의 docstring 을 규칙에 맞춘다 (설명 손실이 크고 범위를 넘는다)
-    3. 규칙 대상을 명시하지 않은 채 둔다 (다음 사람이 같은 자리에서 다시 멈춘다)
+- [x] 7.7 `docker compose run --build --rm test ruff check .` 와 `python3 scripts/check_comments.py` 를 통과시킨다
+  - `ruff check .`(컨테이너) 통과. `check_comments.py` 는 인자 없이 **112개 파일 위반 0건** — `src`(기존 위반 2건 포함)와 `tests` 49개 파일을 모두 정리했다.
+  - `tests/` 의 539건은 모듈 docstring 42개·함수 docstring 167개·강조 마크업 257건·선언조 52건·인라인 주석 덩어리 23건이었다. 규칙에서 밀려난 설명은 지우지 않고 `tests/README.md`(831줄, 파일별 절)로 옮겼다 — `CLAUDE.md` 주석 규칙의 "근거가 사라지면 다음 사람이 같은 함정을 다시 밟는다"를 그대로 따른 것이다.
+  - 파일 안에는 한 줄 요약과 가장 무거운 "왜" 하나만 남는다. `CLAUDE.md` 주석 규칙 절에 이 배치와 앞으로의 규약을 적었다.
 - [x] 7.8 문서-코드 일치를 확인한다 — `ARCHITECTURE.md` 9번째 줄의 "**캐싱은 아직 없습니다**"와 1415번째 줄의 "캐시는 아직 없으므로 `cache_hit` 자리를 화면에 두지 않았습니다"를 고친다. 고치지 않으면 문서가 구현을 부정한다
