@@ -88,9 +88,8 @@ class Settings(BaseSettings):
     # ── 검색 ──────────────────────────────────────────────────────────
     # 요청이 덮어쓸 수 있게 연 이유는 K 조정에 재배포가 들지 않게 하려는 것이다.
     retrieval_top_k: int = Field(default=5, gt=0)
-    # 그 열어 둔 문 때문에 상한이 필요하다 — 없으면 `top_k=1000000` 이 저장소를 다 긁는다.
-    # 20 인 이유는 응답 크기가 아니라 융합 여지다 — 상한이 후보 깊이에 가까워질수록
-    # 한 retriever 가 자리를 다 채워 다른 쪽 발견이 들어올 자리가 없어진다 (`candidate_depth`).
+    # 없으면 `top_k=1000000` 이 저장소를 다 긁는다. 20 인 이유는 융합 여지다 — 상한이
+    # 후보 깊이에 가까워질수록 한 retriever 가 자리를 다 채운다 (`candidate_depth`).
     retrieval_max_top_k: int = Field(default=20, gt=0)
     # 0.82 는 계측값이다 — 관련 1위 최솟값 0.8511 / 무관 1위 최댓값 0.8134 사이.
     # 어휘 쪽 하한은 `lexical_min_token_rarity` 라 이 값은 밀집 retriever 만 본다.
@@ -132,8 +131,8 @@ class Settings(BaseSettings):
     # 항목 하나가 근거 청크 본문까지 담아 3~5KB 라 500건이 2.5MB 규모다. 넘으면 저장을
     # 거부하는 대신 오래된 것부터 밀어낸다.
     cache_max_entries: int = Field(default=500, gt=0)
-    # 0.93 은 출발점이고 계측으로 확정한다 (design 결정 9, 태스크 7.3). E5 계열은 무관한
-    # 문장끼리도 0.8 대에 앉아 `retrieval_min_score` 를 그대로 가져오면 전부 히트가 된다.
+    # 계측값이다 — 서로 다른 질문 최대 0.8326 위로 여유를 둔 값. 부정문 쌍(0.9066~0.9979)은
+    # 이 값으로 걸러지지 않는다: 내리기 전에 `ARCHITECTURE.md` 「임계값 0.93」을 읽을 것.
     cache_semantic_threshold: float = Field(default=0.93, ge=0, le=1)
     # 완전 탐색의 비용을 고정하는 값이다 — 없으면 캐시가 커질수록 히트가 미스보다 느려진다.
     cache_semantic_candidates: int = Field(default=200, gt=0)

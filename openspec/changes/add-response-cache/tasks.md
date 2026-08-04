@@ -81,11 +81,17 @@
 
 ## 7. 임계값 계측과 마감
 
-- [ ] 7.1 `sample-docs/` 두 건으로 유사도 분포를 잰다 — 같은 뜻의 다른 표현 쌍, 서로 다른 질문 쌍, 그리고 **부정문 쌍을 반드시 포함한다**(`"환불 정책이 어떻게 되나요?"` ↔ `"환불이 안 되는 경우가 있나요?"` 형태). 각 쌍의 코사인 유사도를 기록한다 (design.md 결정 9)
-- [ ] 7.2 부정문 쌍이 임계값 위에 남는지 확인하고, **남는다는 사실 자체를 계측 결과로 기록한다** — 임계값으로 풀리지 않는 한계라 값을 고르는 근거가 아니라 값의 한계로 남긴다 (design.md Risks 「부정문이 긍정문과 구분되지 않는다」)
-- [ ] 7.3 계측 결과로 `cache_semantic_threshold` 기본값을 정하고, `retrieval_min_score = 0.82` 와 같은 방식으로 근거를 값 옆 주석과 `ARCHITECTURE.md` 에 남긴다. **부정문 한계와 "확신이 없으면 1.0 가까이 올려 L2 를 끈다"는 선택지를 함께 적는다** — 이 한계를 모르는 사람이 값을 내리는 것을 막는다
-- [ ] 7.4 `docker compose run --build --rm test` 로 전체 스위트를 돌린다 — LLM 구독도 실제 Redis 도 없이 통과해야 한다
-- [ ] 7.5 `docker compose up -d --build --wait` 후 실물 `/qa` 를 두 번 호출해 `cache_hit` 이 `false` → `true` 로 바뀌는지 눈으로 확인한다. `./data` 에 이전 실행의 벡터가 남아 있으면 지우고 `sample-docs/` 두 건만 다시 올린 뒤 잰다
-- [ ] 7.6 `docker compose stop redis` 상태에서 `/qa` 응답 시간이 `cache_enabled=false` 와 같은 수준인지 잰다 — 차단기가 실제로 닫히는지 확인하는 유일한 방법이다 (`response-cache`: 캐시 장애가 응답을 느리게 만들지 않는다)
+- [x] 7.1 `sample-docs/` 두 건으로 유사도 분포를 잰다 — 같은 뜻의 다른 표현 쌍, 서로 다른 질문 쌍, 그리고 **부정문 쌍을 반드시 포함한다**(`"환불 정책이 어떻게 되나요?"` ↔ `"환불이 안 되는 경우가 있나요?"` 형태). 각 쌍의 코사인 유사도를 기록한다 (design.md 결정 9)
+- [x] 7.2 부정문 쌍이 임계값 위에 남는지 확인하고, **남는다는 사실 자체를 계측 결과로 기록한다** — 임계값으로 풀리지 않는 한계라 값을 고르는 근거가 아니라 값의 한계로 남긴다 (design.md Risks 「부정문이 긍정문과 구분되지 않는다」)
+- [x] 7.3 계측 결과로 `cache_semantic_threshold` 기본값을 정하고, `retrieval_min_score = 0.82` 와 같은 방식으로 근거를 값 옆 주석과 `ARCHITECTURE.md` 에 남긴다. **부정문 한계와 "확신이 없으면 1.0 가까이 올려 L2 를 끈다"는 선택지를 함께 적는다** — 이 한계를 모르는 사람이 값을 내리는 것을 막는다
+- [x] 7.4 `docker compose run --build --rm test` 로 전체 스위트를 돌린다 — LLM 구독도 실제 Redis 도 없이 통과해야 한다
+- [x] 7.5 `docker compose up -d --build --wait` 후 실물 `/qa` 를 두 번 호출해 `cache_hit` 이 `false` → `true` 로 바뀌는지 눈으로 확인한다. `./data` 에 이전 실행의 벡터가 남아 있으면 지우고 `sample-docs/` 두 건만 다시 올린 뒤 잰다
+- [x] 7.6 `docker compose stop redis` 상태에서 `/qa` 응답 시간이 `cache_enabled=false` 와 같은 수준인지 잰다 — 차단기가 실제로 닫히는지 확인하는 유일한 방법이다 (`response-cache`: 캐시 장애가 응답을 느리게 만들지 않는다)
 - [ ] 7.7 `docker compose run --build --rm test ruff check .` 와 `python3 scripts/check_comments.py` 를 통과시킨다
-- [ ] 7.8 문서-코드 일치를 확인한다 — `ARCHITECTURE.md` 9번째 줄의 "**캐싱은 아직 없습니다**"와 1415번째 줄의 "캐시는 아직 없으므로 `cache_hit` 자리를 화면에 두지 않았습니다"를 고친다. 고치지 않으면 문서가 구현을 부정한다
+  - **절반 완료 (2026-08-04).** `ruff check .`(컨테이너) 통과, `check_comments.py src` **위반 0건** — 이 change 가 더한 것뿐 아니라 기존 `config.py` 위반 2건도 함께 정리했다.
+  - **남은 것**: 인자 없는 `check_comments.py`(= `src`+`tests`+`scripts`)가 **539건**을 보고한다. 전부 `tests/` 이고, 이 change 이전 베이스라인이 **459건**, 이번에 더한 테스트 8개가 약 80건이다. 유형은 강조 마크업 257건 · 긴 docstring 200여 건으로, 리포가 처음부터 테스트에 써 온 문서화 스타일 그 자체다(`test_prompting.py`·`test_vector_store.py` 등 기존 파일이 전부 같은 모양).
+  - **결정이 필요하다** — 셋 중 하나를 고른 뒤 이 태스크를 닫는다.
+    1. `scripts/check_comments.py` 의 기본 대상을 `src` 로 좁히고 그 사실을 `CLAUDE.md` 주석 규칙에 적는다 (테스트 문서화 스타일 유지)
+    2. 테스트 49개 파일의 docstring 을 규칙에 맞춘다 (설명 손실이 크고 범위를 넘는다)
+    3. 규칙 대상을 명시하지 않은 채 둔다 (다음 사람이 같은 자리에서 다시 멈춘다)
+- [x] 7.8 문서-코드 일치를 확인한다 — `ARCHITECTURE.md` 9번째 줄의 "**캐싱은 아직 없습니다**"와 1415번째 줄의 "캐시는 아직 없으므로 `cache_hit` 자리를 화면에 두지 않았습니다"를 고친다. 고치지 않으면 문서가 구현을 부정한다
