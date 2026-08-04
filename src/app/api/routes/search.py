@@ -45,6 +45,13 @@ class SearchResponse(BaseModel):
     top_k: int
     results: list[SearchResultView]
     count: int
+    retrievers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "이번 검색에 실제로 기여한 retriever 이름."
+            " 설정에서 빠졌거나 이번 요청에서 실패한 것은 여기 나타나지 않는다"
+        ),
+    )
 
 
 @router.post("/search", response_model=SearchResponse, summary="근거 청크 검색")
@@ -55,7 +62,7 @@ async def search(
     embedder: EmbedderDep,
     settings: SettingsDep,
 ) -> SearchResponse:
-    """질의와 가까운 청크를 유사도 내림차순으로 최대 K개.
+    """활성 retriever 들의 융합 결과를 점수 내림차순으로 최대 K개.
 
     대상은 지금 유효한 청크뿐이고, 하한에 걸린 빈 결과는 오류가 아니라 `200` 이다."""
     await enforce_query_limits(body.query, body.top_k, embedder, settings)
@@ -68,6 +75,7 @@ async def search(
         top_k=result.top_k,
         results=[SearchResultView.of(chunk) for chunk in result.chunks],
         count=result.count,
+        retrievers=list(result.retrievers),
     )
 
 
@@ -81,7 +89,11 @@ def _log_search(request: Request, result: RetrievalResult) -> None:
             "request_id": getattr(request.state, "request_id", None),
             "top_k": result.top_k,
             "result_count": result.count,
-            "top_score": result.top_score,
+            # 유사도가 아니라 합의 정도라 이름을 맞춰 둔다 — `top_score` 로 두면 값이 낮은
+            # 것을 관련성이 낮다고 읽고 하한을 여기에 거는 사람이 나온다.
+            "top_fusion_score": result.top_score,
+            # 이름 하나가 빠진 것이 하이브리드가 꺼진 배포의 유일한 신호다.
+            "contributing_retrievers": list(result.retrievers),
             "target_documents": result.target_documents,
         },
     )

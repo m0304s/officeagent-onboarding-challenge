@@ -161,7 +161,7 @@ curl -s -X POST http://127.0.0.1:8000/documents -F "file=@sample-docs/company-po
 
 | 메서드 | 경로 | 하는 일 |
 |---|---|---|
-| `POST` | `/search` | 질의와 가까운 근거 청크를 유사도 내림차순으로 최대 K개 |
+| `POST` | `/search` | 활성 retriever 들의 융합 결과를 점수 내림차순으로 최대 K개 |
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/search \
@@ -170,27 +170,34 @@ curl -s -X POST http://127.0.0.1:8000/search \
 ```
 
 ```json
-{"query":"교육비는 얼마까지 지원되나요?","top_k":3,"count":1,
+{"query":"교육비는 얼마까지 지원되나요?","top_k":3,"count":1,"retrievers":["dense","lexical"],
  "results":[{"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt","format":"txt",
-             "revision":"2ccbdc608106...","chunk_index":0,
+             "revision":"5baf958963e1...","chunk_index":0,
              "text":"[사내 복리후생 안내]\n\n1. 교육비 지원\n임직원은 연간 최대 200만원까지 직무 관련 교육비를 지원받을 수 있습니다.\n신청은 매월 15일까지 HR팀에 신청서를 제출해야 하며, 승인 후 비용이 환급됩니다. ...",
-             "score":0.8609192999999999,"char_start":0,"char_end":527,"page":null}]}
+             "score":1.0,"char_start":0,"char_end":527,"page":null,
+             "contributions":[{"retriever":"dense","rank":1,"native_score":0.86091968},
+                              {"retriever":"lexical","rank":1,"native_score":0.6117184199523331}]}]}
 ```
 
-문서 둘을 올렸는데 결과가 하나인 것은 오류가 아닙니다. 기본 청크 크기(600자)에서 `company-policy.txt`는 청크 하나가 되고, `development-guide.md`의 청크 둘은 이 질의에서 **유사도 하한에 걸려 떨어집니다.** 검색이 하는 판정이 바로 이것입니다.
+문서 둘을 올렸는데 결과가 하나인 것은 오류가 아닙니다. 기본 청크 크기(600자)에서 `company-policy.txt`는 청크 하나가 되고, `development-guide.md`의 청크 둘은 이 질의에서 **양쪽 하한에 모두 걸려 떨어집니다** — 밀집 쪽은 코사인 하한, 어휘 쪽은 변별력 판정입니다. 검색이 하는 판정이 바로 이것입니다.
 
-**검색은 답변을 만들지 않습니다.** 응답에 답변 필드도 거절 문구도 없습니다 — "이 근거로 답할 수 있는가"는 본문을 읽어야 하는 판정이라 [답변 생성](#답변-api-sse)의 몫이고, 검색이 하는 판정은 "이 청크를 다음 단계에 보여줄 가치가 있는가"(유사도 하한)까지입니다. 그래서 이 엔드포인트는 `/qa`가 생긴 뒤에도 남습니다. **답이 이상할 때 원인이 검색인지 생성인지 가르는 관측 지점**이 이것입니다 — 근거가 애초에 안 잡혔는지, 잡혔는데 답이 틀렸는지가 여기서 갈립니다.
+점수가 정확히 `1.0`인 것도 오류가 아닙니다. **이 값은 유사도가 아니라 합의의 정도**라서, 활성 retriever 둘이 모두 이 청크를 1위로 꼽으면 정의상 최댓값이 됩니다. 실제로 각자가 매긴 원점수는 `contributions`에 그대로 남아 있습니다(밀집 0.861, 어휘 0.612).
+
+**검색은 답변을 만들지 않습니다.** 응답에 답변 필드도 거절 문구도 없습니다 — "이 근거로 답할 수 있는가"는 본문을 읽어야 하는 판정이라 [답변 생성](#답변-api-sse)의 몫이고, 검색이 하는 판정은 "이 청크를 다음 단계에 보여줄 가치가 있는가"(각 retriever의 하한)까지입니다. 그래서 이 엔드포인트는 `/qa`가 생긴 뒤에도 남습니다. **답이 이상할 때 원인이 검색인지 생성인지 가르는 관측 지점**이 이것입니다 — 근거가 애초에 안 잡혔는지, 잡혔는데 답이 틀렸는지가 여기서 갈립니다.
 
 결과 하나가 스스로 출처를 말합니다. 인용 한 줄을 만들려고 문서를 다시 조회할 필요가 없습니다.
 
 | 필드 | 의미 |
 |---|---|
-| `score` | 유사도. `[0, 1]`이고 **클수록 가깝습니다**(저장소의 거리 지표는 어댑터가 뒤집어 둡니다) |
+| `score` | **융합 점수**. `0`보다 크고 `1` 이하이며 클수록 상위입니다. **유사도가 아닙니다** — 활성 retriever들이 이 청크를 얼마나 나란히 상위로 꼽았는가를 뜻하지, 질의와 얼마나 가까운지를 뜻하지 않습니다. 여기에 관련성 하한을 걸면 안 됩니다 |
+| `contributions` | 이 청크를 올린 retriever별 `retriever`·`rank`(1이 최상위)·`native_score`. **항상 한 건 이상**이고, 못 찾은 retriever는 여기 없습니다. `native_score`는 retriever마다 척도가 달라 서로 비교하거나 합산해서는 안 됩니다 |
 | `char_start` · `char_end` | 원문 문자 오프셋 구간. `text`는 언제나 추출된 원문의 그 구간과 같습니다 |
 | `page` | PDF에서 온 청크만 채워집니다. 이때 오프셋은 **그 쪽 안의** 위치입니다 |
 | `revision` · `chunk_index` | 근거가 어느 세대 문서의 몇 번째 청크인지 |
 
-검색 대상은 **지금 유효한 청크뿐**입니다. 이전 리비전·이전 색인 구성·삭제된 문서·[`stale`](#index_status--그-문서가-지금-검색-가능한가) 문서의 청크는 저장소에 남아 있더라도 결과에 나타나지 않습니다. 유사도 하한에 걸려 결과가 비는 것은 오류가 아니라 `200`과 빈 목록입니다.
+응답 최상위의 `retrievers`는 **이번 검색에 실제로 기여한 retriever의 이름**입니다. 설정에서 빠졌거나 이번 요청에서 실패한 것은 여기 나타나지 않습니다 — 설정 오타 하나로 어휘 색인이 빠진 배포와 정상 배포를 구별하는 유일한 신호가 이 목록입니다. 둘 다 `200`을 내고 둘 다 그럴듯한 근거를 돌려주기 때문입니다.
+
+검색 대상은 **지금 유효한 청크뿐**입니다. 이전 리비전·이전 색인 구성·삭제된 문서·[`stale`](#index_status--그-문서가-지금-검색-가능한가) 문서의 청크는 저장소에 남아 있더라도 결과에 나타나지 않습니다. 하한에 걸려 결과가 비는 것은 오류가 아니라 `200`과 빈 목록입니다.
 
 거절되는 경우:
 
@@ -200,9 +207,12 @@ curl -s -X POST http://127.0.0.1:8000/search \
 | 질의 길이 상한 초과 (문자 수 또는 토큰 수) | 422 | `query_too_long` (두 상한 동봉) |
 | `top_k`가 `1` 미만 | 422 | `validation_error` (요청 스키마가 판정) |
 | `top_k`가 설정 상한 초과 | 422 | `invalid_top_k` (적용된 상한 동봉) |
-| 벡터 스토어 접근 실패 | 503 | `storage_unavailable` |
+| **필수** retriever의 저장소 접근 실패 | 503 | `storage_unavailable` |
+| 활성 retriever **전부**의 실패 (전부 선택이더라도) | 503 | `storage_unavailable` |
 
 거절된 질의는 **임베딩 계산도 저장소 접근도 유발하지 않습니다.** 저장소 장애를 빈 결과로 위장하지도 않습니다 — 뭉개면 벡터 스토어가 죽은 동안 서비스가 "근거를 찾지 못했습니다"라고 답하고 아무도 장애를 눈치채지 못합니다.
+
+**선택** retriever 하나가 실패하면 나머지로 융합을 마치고 `200`을 냅니다. 어휘 색인이 죽었다고 검색 전체를 세우면 retriever를 늘릴수록 가용성이 떨어지기 때문입니다. 대신 실패는 두 곳에 드러납니다 — 응답의 `retrievers`에서 그 이름이 빠지고, 경고 로그가 남습니다. 실패한 목록은 **빈 목록으로도 융합에 넘기지 않습니다**: "하한이 걸러 비운 목록"은 판정이라 점수 척도에 남아야 하고, 실패한 retriever는 판정을 내린 적이 없기 때문입니다.
 
 **질의 길이 제한은 두 겹이고 목적이 다릅니다.**
 
@@ -216,10 +226,10 @@ curl -s -X POST http://127.0.0.1:8000/search \
 검색 로그도 한 줄입니다. **질의 문자열과 청크 본문은 싣지 않습니다.**
 
 ```json
-{"level":"INFO","logger":"app.api.routes.search","message":"검색 요청을 처리했습니다","request_id":"0cb02e2d63e6...","top_k":5,"result_count":1,"top_score":0.8609192999999999,"target_documents":2}
+{"level":"INFO","logger":"app.api.routes.search","message":"검색 요청을 처리했습니다","request_id":"212efc995dd4...","top_k":3,"result_count":1,"top_fusion_score":1.0,"contributing_retrievers":["dense","lexical"],"target_documents":2}
 ```
 
-`target_documents`가 있어야 빈 결과의 이유가 갈립니다 — `0`이면 올린 문서가 없거나 전부 `stale`인 것이고, 대상이 있는데 결과가 `0`이면 유사도 하한에 걸린 것입니다.
+`target_documents`가 있어야 빈 결과의 이유가 갈립니다 — `0`이면 올린 문서가 없거나 전부 `stale`인 것이고, 대상이 있는데 결과가 `0`이면 각 retriever의 하한에 걸린 것입니다. `contributing_retrievers`는 하이브리드가 실제로 돌았는지를 로그만으로 확인하는 자리입니다.
 
 ### 답변 API (SSE)
 
@@ -517,9 +527,10 @@ docker compose run --build --rm test ruff format --check .
 | `APP_EMBEDDING_BATCH_SIZE` | 임베딩·저장 배치 크기 | `64` |
 | `APP_MAX_UPLOAD_BYTES` | 업로드 크기 상한 | `20971520` (20 MiB) |
 | `APP_INGESTION_CONCURRENCY` | 동시 수집 상한 | `2` |
+| `APP_RETRIEVAL_RRF_K` | RRF 상수. 클수록 상위 순위의 우대가 약해집니다 | `60` |
 | `APP_RETRIEVAL_TOP_K` | 검색 기본 상위 K. 요청의 `top_k`가 덮어씁니다 | `5` |
-| `APP_RETRIEVAL_MAX_TOP_K` | 요청이 지정할 수 있는 `top_k`의 상한 | `50` |
-| `APP_RETRIEVAL_MIN_SCORE` | 유사도 하한. 이 값 미만인 청크는 반환되지 않습니다 | `0.82` |
+| `APP_RETRIEVAL_MAX_TOP_K` | 요청이 지정할 수 있는 `top_k`의 상한. 후보 깊이와 함께 봅니다(아래) | `20` |
+| `APP_RETRIEVAL_MIN_SCORE` | **밀집 retriever의** 코사인 유사도 하한. 이 값 미만인 청크는 그 목록에 실리지 않습니다 | `0.82` |
 | `APP_RETRIEVAL_MAX_QUERY_CHARS` | 질의 문자 수 상한 | `1000` |
 | `APP_QA_LLM_TIMEOUT_SECONDS` | 생성 **한 시도**의 시간 상한(초) | `60.0` |
 | `APP_QA_LLM_MAX_ATTEMPTS` | 최대 시도 횟수. `1`이면 재시도하지 않음 | `3` |
@@ -533,6 +544,52 @@ docker compose run --build --rm test ruff format --check .
 구현되지 않은 `APP_CHUNK_STRATEGY` 값(현재 구현된 것은 `recursive` 하나입니다)이나 청크 크기 이상의 겹침을 넣으면 **기동에 실패합니다.** 잘못된 색인 구성으로 조용히 뜨는 것보다 낫기 때문입니다.
 
 같은 이유로 **`APP_RETRIEVAL_TOP_K`와 `APP_RETRIEVAL_MAX_TOP_K`는 함께 검증됩니다** — 기본 K가 상한보다 크면 어떤 요청도 통과할 수 없으므로 기동을 막습니다. 두 값이 각각은 멀쩡한데 조합이 성립하지 않는 자리라, 첫 검색 요청이 아니라 기동에서 드러나야 합니다.
+
+**활성 retriever 목록만은 이 표에 없습니다.** 값이 항목 넷을 가진 목록이라 환경변수 한 줄로 적기에 맞지 않아, `config.py`에 두고 아래처럼 바꿉니다.
+
+### retriever 구성
+
+검색 한 건은 **활성 retriever 전부**에게 같은 질의를 보내고, 각자가 돌려준 순위 목록을 [RRF](./ARCHITECTURE.md)로 하나로 합칩니다. 조합·가중치·후보 깊이를 바꾸는 데 **검색 코드를 고칠 필요는 없습니다** — 구성은 [`src/app/config.py`](./src/app/config.py)의 `_default_retrievers()` 한 곳에 있습니다.
+
+```python
+def _default_retrievers() -> list[RetrieverSettings]:
+    return [
+        RetrieverSettings(name="dense", required=True),
+        RetrieverSettings(name="lexical", required=False),
+    ]
+```
+
+바꾸려면 이 목록을 고치고 이미지를 다시 굽습니다. **`--build`가 없으면 직전 이미지의 구성으로 뜹니다.**
+
+```python
+# 어휘 retriever만 켜기 — 이 구성에서는 임베딩을 한 번도 계산하지 않습니다
+return [RetrieverSettings(name="lexical", required=True)]
+
+# 어휘에 비중을 더 주고 후보를 더 깊이 받기
+return [
+    RetrieverSettings(name="dense", required=True),
+    RetrieverSettings(name="lexical", weight=1.5, candidate_depth=80, required=False),
+]
+```
+
+```bash
+docker compose up -d --build api
+```
+
+구성이 실제로 바뀌었는지는 검색 한 번으로 확인됩니다 — 응답의 `retrievers`가 그것입니다. 위의 첫 구성에서는 `"retrievers":["lexical"]`이 오고, 모든 결과의 `contributions`에 `dense`가 없습니다.
+
+| 항목 | 의미 |
+|---|---|
+| `name` | 등록된 retriever 이름. 현재 `dense`(임베딩 + Chroma)와 `lexical`(SQLite FTS5 BM25) |
+| `weight` | 융합에서의 비중. **양수여야 합니다** — `0`이나 음수는 그 목록이 순위에 기여하지 않거나 순서를 뒤집는다는 뜻입니다 |
+| `candidate_depth` | 융합 **전에** 그 retriever에게 받아 오는 후보 수(기본 `100`). `APP_RETRIEVAL_MAX_TOP_K` 이상이어야 합니다 |
+| `required` | `true`면 이 retriever의 실패가 `503`, `false`면 나머지로 진행하고 `200` |
+
+**네 경우가 기동을 막습니다**: 목록이 비었을 때, 등록되지 않은 이름을 적었을 때(실패 사유에 그 이름이 나옵니다), 가중치가 양수가 아닐 때, `candidate_depth`가 `APP_RETRIEVAL_MAX_TOP_K`보다 작을 때. 마지막 것의 비교 대상이 K의 **기본값**이 아니라 **상한**인 이유는 요청이 `top_k`를 상한까지 올릴 수 있기 때문입니다 — 기본값으로만 검증하면 기동을 통과한 구성에서 큰 `top_k` 요청 하나가 곧바로 깊이를 넘어섭니다.
+
+**깊이와 K 상한 사이의 여유가 곧 융합의 여지입니다.** 한 retriever가 K칸을 혼자 채워 오면 다른 쪽의 발견이 들어올 자리가 없기 때문입니다. 기동 검증이 요구하는 것은 `깊이 >= 상한`이라는 **하한**뿐이라, 둘을 같게 두어도(예: 50/50) 기동은 통과하지만 `top_k=50` 요청에서는 융합할 재료가 남지 않습니다. 그래서 기본값을 **깊이 100 · 상한 20 — 다섯 배**로 잡았습니다. 상한을 응답 크기가 아니라 이 비율로 정한 이유는, 청크 50개는 어차피 프롬프트 예산상 문맥에 들어가지 못해 상한 50이 실효가 없기 때문입니다.
+
+이 비율을 규칙으로 못 박지 않은 것은 의도한 것입니다. 배수를 기동 검증에 넣으면 아직 큰 코퍼스로 재 보지 않은 값이 제약이 됩니다 — 현재 `sample-docs`는 문서 2건·청크 3개뿐이라 깊이의 비용도 효과도 이 표본에서는 관측되지 않습니다.
 
 `APP_RETRIEVAL_MIN_SCORE`의 기본값 `0.82`는 감으로 적은 값이 아니라 **계측값**입니다 — `sample-docs`의 두 문서로 관련 질의 4개와 무관 질의 3개의 점수 분포를 실제로 재서 그 사이에 놓았습니다(관련 1위 최솟값 0.8511 / 무관 1위 최댓값 0.8134). 표본이 문서 2개·질의 7개뿐이라는 한계와 계측 절차는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)에 적어 두었습니다. 임베딩 모델을 바꾸면 점수 분포가 통째로 이동하므로 이 값도 다시 재야 합니다.
 

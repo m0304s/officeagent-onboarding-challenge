@@ -8,13 +8,13 @@ import asyncio
 from typing import Annotated
 
 from fastapi import Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.adapters.protocols import Embedder
 from app.config import Settings
 from app.core.documents import DocumentFormat
 from app.core.exceptions import EmptyQuery, InvalidTopK, QueryTooLong
-from app.core.retrieval import ScoredChunk
+from app.core.retrieval import Contribution, ScoredChunk
 from app.services.qa import QaService
 from app.services.retrieval import RetrievalService
 
@@ -45,8 +45,29 @@ EmbedderDep = Annotated[Embedder, Depends(get_embedder)]
 SettingsDep = Annotated[Settings, Depends(get_settings_of)]
 
 
+class ContributionView(BaseModel):
+    """이 청크를 어느 retriever 가 몇 위로 올렸고 그때 매긴 점수는 얼마였는가."""
+
+    retriever: str = Field(description="이 청크를 찾아낸 retriever 이름")
+    rank: int = Field(description="그 retriever 의 목록에서의 순위. 1 이 가장 위다")
+    native_score: float = Field(
+        description=(
+            "그 retriever 가 자기 척도로 매긴 원래 점수."
+            " 척도가 retriever 마다 달라 서로 비교하거나 합산해서는 안 된다"
+        )
+    )
+
+    @classmethod
+    def of(cls, contribution: Contribution) -> "ContributionView":
+        return cls(
+            retriever=contribution.retriever,
+            rank=contribution.rank,
+            native_score=contribution.native_score,
+        )
+
+
 class SearchResultView(BaseModel):
-    """근거 청크 하나 — 정체성·본문·출처·점수.
+    """근거 청크 하나 — 정체성·본문·출처·융합 점수·기여 내역.
 
     출처를 함께 싣는 것은 인용에 문서를 다시 조회하지 않게 하려는 것이다."""
 
@@ -56,10 +77,23 @@ class SearchResultView(BaseModel):
     revision: str
     chunk_index: int
     text: str
-    score: float
+    score: float = Field(
+        gt=0,
+        le=1,
+        description=(
+            "융합 점수 — 유사도가 아니다."
+            " 활성 retriever 들이 이 청크를 얼마나 나란히 상위로 꼽았는가를 뜻하며,"
+            " 질의와 청크가 얼마나 가까운지를 뜻하지 않는다."
+            " 관련성 판정은 각 retriever 가 융합 전에 자기 점수 단위로 끝냈다"
+        ),
+    )
     char_start: int
     char_end: int
     page: int | None = None
+    contributions: list[ContributionView] = Field(
+        default_factory=list,
+        description="이 청크를 올린 retriever 별 순위·원점수. 항상 한 건 이상이다",
+    )
 
     @classmethod
     def of(cls, chunk: ScoredChunk) -> "SearchResultView":
@@ -74,6 +108,9 @@ class SearchResultView(BaseModel):
             char_start=chunk.location.char_start,
             char_end=chunk.location.char_end,
             page=chunk.location.page,
+            contributions=[
+                ContributionView.of(contribution) for contribution in chunk.contributions
+            ],
         )
 
 

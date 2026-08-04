@@ -23,11 +23,7 @@ class RetrieverSettings(BaseModel):
     name: str
     # 0 이나 음수는 그 목록이 순위에 아무것도 기여하지 않거나 순서를 뒤집는다는 뜻이다.
     weight: float = Field(default=1.0, gt=0)
-    # 상위 K 상한과 같은 값이다. 깊이를 K 에 맞춰 두면 한 retriever 가 자리를 다 채워
-    # 다른 쪽의 발견이 들어올 자리가 없어진다 — 상한과의 대조는 `Settings` 가 한다.
-    candidate_depth: int = Field(default=50, gt=0)
-    # 어휘 색인은 선택이다 — 죽었다고 검색 전체를 세우면 retriever 를 늘릴수록
-    # 가용성이 떨어진다. 실패 사실은 응답의 기여 목록에서 드러난다.
+    candidate_depth: int = Field(default=100, gt=0)
     required: bool = False
 
     @field_validator("name")
@@ -58,19 +54,12 @@ class Settings(BaseSettings):
     app_name: str = "document-qa-api"
     log_level: str = "INFO"
 
-    # 캐시 저장소 (별도 컨테이너)
     cache_url: str = "redis://localhost:6379/0"
-
-    # 8001 인 이유는 Chroma 기본값(8000)이 이 API 포트와 겹치기 때문이다. compose 가
-    # 호스트 8001 을 컨테이너 8000 에 연결해 안팎에서 같은 주소가 쓰인다.
     vector_store_url: str = "http://localhost:8001"
 
-    # 의존성별·전체 상한을 따로 둔다 — 하나가 매달려도 나머지 결과가 나와야 한다.
     probe_timeout_seconds: float = Field(default=2.0, gt=0)
     health_total_timeout_seconds: float = Field(default=5.0, gt=0)
 
-    # ── 문서 수집 ──────────────────────────────────────────────────────
-    # 표준 라이브러리 SQLite 파일이라 컨테이너가 늘지 않는다.
     registry_path: Path = Path("./data/registry.sqlite3")
 
     # 어휘 색인(FTS5)도 파일 하나다. 레지스트리와 나누는 이유는 검색용 테이블이 섞이면
@@ -88,14 +77,9 @@ class Settings(BaseSettings):
     # 크기가 문자 기준인 이유는 토큰 기준이면 `core/` 가 임베딩 라이브러리를 알게 되어서다.
     chunk_strategy: ChunkStrategy = ChunkStrategy.RECURSIVE
     chunk_size: int = Field(default=600, gt=0)
-    # 0 을 허용하지 않는다 — 겹치지 않으면 경계에 걸친 문장이 양쪽 어디에서도
-    # 온전히 읽히지 않는다.
     chunk_overlap: int = Field(default=100, gt=0)
 
-    # 메모리가 문서 크기가 아니라 배치 크기에 비례하게 만드는 값이다.
     embedding_batch_size: int = Field(default=64, gt=0)
-
-    # 업로드 크기 상한. 본문을 읽으면서 누적 바이트로 강제한다.
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
 
     # 상한에 걸린 요청은 실패하지 않고 대기한다. 같은 문서의 직렬화는 별도 잠금이 맡는다.
@@ -105,8 +89,9 @@ class Settings(BaseSettings):
     # 요청이 덮어쓸 수 있게 연 이유는 K 조정에 재배포가 들지 않게 하려는 것이다.
     retrieval_top_k: int = Field(default=5, gt=0)
     # 그 열어 둔 문 때문에 상한이 필요하다 — 없으면 `top_k=1000000` 이 저장소를 다 긁는다.
-    # 50 은 기본값의 열 배이자 최악 응답 600자 × 50 ≈ 30 KB.
-    retrieval_max_top_k: int = Field(default=50, gt=0)
+    # 20 인 이유는 응답 크기가 아니라 융합 여지다 — 상한이 후보 깊이에 가까워질수록
+    # 한 retriever 가 자리를 다 채워 다른 쪽 발견이 들어올 자리가 없어진다 (`candidate_depth`).
+    retrieval_max_top_k: int = Field(default=20, gt=0)
     # 0.82 는 계측값이다 — 관련 1위 최솟값 0.8511 / 무관 1위 최댓값 0.8134 사이.
     # 어휘 쪽 하한은 `lexical_min_token_rarity` 라 이 값은 밀집 retriever 만 본다.
     retrieval_min_score: float = Field(default=0.82, ge=0, le=1)

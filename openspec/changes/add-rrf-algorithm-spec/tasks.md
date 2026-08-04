@@ -54,11 +54,11 @@
 
 ## 7. API 표면
 
-- [ ] 7.1 `api/queries.py` 의 `SearchResultView` 에 기여 내역을 더한다. `score` 의 의미를 설명하는 필드 문서를 고친다
-- [ ] 7.2 `api/routes/search.py` 응답에 기여 retriever 목록을 더하고, 로그의 `top_score` 가 무엇을 뜻하는지 맞춘다
-- [ ] 7.3 `tests/test_search_api.py` 확장 — 점수 범위 `(0, 1]`, 내림차순, 모든 결과에 기여 내역 1건 이상, 기여 목록에 실패한 선택 retriever가 없는 것, 설정으로 어휘를 끄면 목록·내역에서 사라지는 것
-- [ ] 7.4 `demo-ui` 의 점수 표기를 "유사도"에서 융합 점수로 고친다
-- [ ] 7.5 `README.md` 에 retriever 설정 방법(`APP_RETRIEVERS` 예시)과 응답 필드 설명을 적는다
+- [x] 7.1 `api/queries.py` 의 `SearchResultView` 에 기여 내역을 더한다. `score` 의 의미를 설명하는 필드 문서를 고친다
+- [x] 7.2 `api/routes/search.py` 응답에 기여 retriever 목록을 더하고, 로그의 `top_score` 가 무엇을 뜻하는지 맞춘다
+- [x] 7.3 `tests/test_search_api.py` 확장 — 점수 범위 `(0, 1]`, 내림차순, 모든 결과에 기여 내역 1건 이상, 기여 목록에 실패한 선택 retriever가 없는 것, 설정으로 어휘를 끄면 목록·내역에서 사라지는 것
+- [x] 7.4 `demo-ui` 의 점수 표기를 "유사도"에서 융합 점수로 고친다
+- [x] 7.5 `README.md` 에 retriever 설정 방법(`APP_RETRIEVERS` 예시)과 응답 필드 설명을 적는다
 
 ## 8. 검색 결과 캐시
 

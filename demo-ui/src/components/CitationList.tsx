@@ -21,7 +21,7 @@ export function CitationList({ citations }: { citations: CitationView[] }) {
             <div className={styles.body}>
               <span className={styles.filename}>{citation.filename}</span>
               <span className={styles.meta}>
-                {formatLocation(citation)} · 유사도 {formatScore(citation.score)}
+                {formatLocation(citation)} · 융합 점수 {formatScore(citation.score)}
               </span>
             </div>
           </li>

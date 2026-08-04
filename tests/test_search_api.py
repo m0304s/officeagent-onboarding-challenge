@@ -12,9 +12,10 @@ HTTP 경계에서만 확인되는 것들을 덮는다. 무엇을 대상으로 �
 
 import pytest
 
+from app.config import RetrieverSettings
 from tests.api_harness import LONG_KOREAN, upload
 from tests.pdf_fixtures import make_pdf
-from tests.stubs import FakeEmbedder, StubVectorStore
+from tests.stubs import FakeEmbedder, StubLexicalIndex, StubVectorStore
 
 DATA = LONG_KOREAN.encode("utf-8")
 
@@ -56,7 +57,7 @@ async def test_a_query_answers_with_the_four_field_envelope(client):
     status, body = await search(client)
 
     assert status == 200
-    assert set(body) == {"query", "top_k", "results", "count"}
+    assert set(body) == {"query", "top_k", "results", "count", "retrievers"}
     assert body["query"] == NORMAL_QUERY
     assert body["count"] == len(body["results"])
     assert body["results"], "수집된 문서가 있는데 근거가 하나도 나오지 않았다"
@@ -71,15 +72,17 @@ async def test_the_response_carries_no_answer_field(client):
     assert "answer" not in body
 
 
-async def test_scores_are_similarities_in_descending_order(client):
-    """점수는 **클수록 가깝다.** 거리를 그대로 흘리면 이 단언이 뒤집힌다."""
+async def test_fusion_scores_land_in_the_unit_interval_in_descending_order(client):
+    """점수는 클수록 상위이고 `0` 이 나올 수 없다.
+
+    `0` 은 어느 목록에도 없는 항목이라는 뜻이라, 정규화 분모가 입력 집합과 어긋난 신호다."""
     await ingest(client)
 
     _, body = await search(client)
 
     scores = [result["score"] for result in body["results"]]
     assert len(scores) > 1, "정렬을 재려면 결과가 둘 이상이어야 한다"
-    assert all(0 <= score <= 1 for score in scores)
+    assert all(0 < score <= 1 for score in scores)
     assert scores == sorted(scores, reverse=True)
 
 
@@ -97,8 +100,88 @@ async def test_nothing_collected_is_an_empty_result_not_an_error(client, vector_
     status, body = await search(client)
 
     assert status == 200
-    assert body == {"query": NORMAL_QUERY, "top_k": 5, "results": [], "count": 0}
+    assert body == {
+        "query": NORMAL_QUERY,
+        "top_k": 5,
+        "results": [],
+        "count": 0,
+        # 아무도 돌지 않았으니 기여 목록도 비어 있다 — 실패와 구별되는 것은 상태 코드다.
+        "retrievers": [],
+    }
     assert vector_store.queries == [], "대상이 없는데 저장소에 질의가 갔다"
+
+
+# ── 기여 내역 (7.3) ──────────────────────────────────────────────────────
+#
+# 어느 retriever 가 돌았는지가 응답에 없으면, 설정 오타 하나로 어휘 색인이 빠진 배포와
+# 정상 배포를 HTTP 로는 구별할 수 없다. 둘 다 `200` 이고 둘 다 그럴듯한 근거를 돌려준다.
+
+
+async def test_both_retrievers_appear_in_the_contributing_list(client):
+    await ingest(client)
+
+    _, body = await search(client)
+
+    assert set(body["retrievers"]) == {"dense", "lexical"}
+
+
+async def test_every_result_says_who_put_it_there(client):
+    """내역이 비면 그 결과는 어느 목록에도 없던 것이 된다 — 융합이 만들 수 없는 상태다."""
+    await ingest(client)
+
+    _, body = await search(client)
+
+    assert body["results"]
+    for result in body["results"]:
+        contributions = result["contributions"]
+        assert contributions, f"기여 내역이 빈 결과가 있다 — {result['chunk_index']}"
+        assert {item["retriever"] for item in contributions} <= set(body["retrievers"])
+        for item in contributions:
+            assert item["rank"] >= 1
+            assert isinstance(item["native_score"], float)
+
+
+async def test_a_failed_optional_retriever_never_claims_a_contribution(
+    make_client, searchable_settings
+):
+    """선택 retriever 의 실패는 `200` 으로 넘어가되 이름이 빠진 것으로 드러난다.
+
+    조용히 넘기면 하이브리드가 꺼진 것을 아무도 모르고, 세우면 가용성이 떨어진다."""
+    broken = StubLexicalIndex(fail_search=True)
+
+    async with make_client(settings=searchable_settings, lexical_index=broken) as client:
+        await ingest(client)
+        status, body = await search(client)
+
+    assert status == 200
+    assert body["results"], "밀집 retriever 는 살아 있는데 결과가 비었다"
+    assert body["retrievers"] == ["dense"]
+    assert all(
+        item["retriever"] != "lexical"
+        for result in body["results"]
+        for item in result["contributions"]
+    )
+
+
+async def test_turning_the_lexical_retriever_off_removes_it_from_both_lists(
+    make_client, searchable_settings
+):
+    """코드를 바꾸지 않고 설정만으로 조합이 바뀐다 — 그 사실이 응답에 드러난다."""
+    dense_only = searchable_settings.model_copy(
+        update={"retrievers": [RetrieverSettings(name="dense", required=True)]}
+    )
+
+    async with make_client(settings=dense_only) as client:
+        await ingest(client)
+        status, body = await search(client)
+
+    assert status == 200
+    assert body["retrievers"] == ["dense"]
+    assert all(
+        item["retriever"] == "dense"
+        for result in body["results"]
+        for item in result["contributions"]
+    )
 
 
 # ── 출처 (6.7) ───────────────────────────────────────────────────────────

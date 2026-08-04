@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import type { SourcesPayload } from "../api/types";
-import { formatLocation, formatScore } from "../lib/format";
+import { formatContributions, formatLocation, formatScore } from "../lib/format";
 import { Badge } from "./ui/Badge";
 import styles from "./SourceList.module.css";
 
@@ -38,11 +38,19 @@ function SourceItem({ chunk }: { chunk: SourcesPayload["results"][number] }) {
         <span className={styles.filename} title={chunk.filename}>
           {chunk.filename}
         </span>
-        <span className={styles.score}>유사도 {formatScore(chunk.score)}</span>
+        <span
+          className={styles.score}
+          title="활성 retriever 들이 이 청크를 얼마나 나란히 상위로 꼽았는가. 유사도가 아니다"
+        >
+          융합 점수 {formatScore(chunk.score)}
+        </span>
       </div>
       <p className={styles.text}>{shown}</p>
       <div className={styles.itemFoot}>
-        <span className={styles.meta}>{formatLocation(chunk)}</span>
+        <span className={styles.meta}>
+          {formatLocation(chunk)}
+          {chunk.contributions.length > 0 ? ` · ${formatContributions(chunk.contributions)}` : ""}
+        </span>
         {long ? (
           <button
             type="button"
