@@ -195,6 +195,12 @@ class ResponseCache(Protocol):
 
     async def lookup_exact(self, fingerprint: str) -> CacheLookup: ...
 
+    async def count_candidates(self, scope: str) -> int:
+        """유사 매치가 훑을 항목 수. 0 이면 호출부가 질의 임베딩을 만들지 않는다.
+
+        이 값을 묻지 않으면 캐시가 빈 상태에서도 미스마다 임베딩이 두 번 돈다 (결정 10)."""
+        ...
+
     async def lookup_semantic(
         self,
         embedding: Sequence[float],

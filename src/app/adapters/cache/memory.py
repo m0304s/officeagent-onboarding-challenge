@@ -52,6 +52,9 @@ class InMemoryResponseCache:
             return CacheLookup.miss()
         return CacheLookup.exact(fingerprint, entry.answer)
 
+    async def count_candidates(self, scope: str) -> int:
+        return sum(1 for _ in self._candidates(scope, self._max_entries))
+
     async def lookup_semantic(
         self,
         embedding: Sequence[float],

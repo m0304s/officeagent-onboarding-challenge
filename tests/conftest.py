@@ -21,6 +21,7 @@ import socket
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 import pytest
 from fastapi import FastAPI
@@ -72,6 +73,42 @@ needs_vector_store = pytest.mark.skipif(
     reason=(
         f"Chroma 서버({VECTOR_STORE_URL})가 떠 있지 않습니다 — "
         "`docker compose run --build --rm test` 로 돌리면 함께 뜹니다"
+    ),
+)
+
+
+#: 계약 테스트 전용 데이터베이스 번호. 0 이 아니면 실행 환경의 캐시와 섞이지 않는다.
+CACHE_TEST_DB = 15
+
+
+def _isolated_db(url: str) -> str:
+    parsed = urlparse(url)
+    return urlunparse(parsed._replace(path=f"/{CACHE_TEST_DB}"))
+
+
+#: 실물 Redis 를 보는 테스트가 쓰는 주소. `docker compose run --build --rm test` 안에서는
+#: 환경변수가 서비스 이름을 준다 — `VECTOR_STORE_URL` 과 같은 이유다.
+#:
+#: **데이터베이스 번호를 갈아 끼운다.** 계약 테스트가 키를 지우고 세는데, 그것이 개발자가
+#: 띄워 둔 캐시와 같은 db 면 눈으로 보던 상태가 테스트 한 번에 사라진다.
+CACHE_URL = _isolated_db(os.environ.get("APP_CACHE_URL") or "redis://localhost:6379/0")
+
+
+def cache_is_reachable(url: str = CACHE_URL) -> bool:
+    """TCP 연결만 해 본다. 여기서 알고 싶은 것은 존재 여부뿐이다."""
+    parsed = urlparse(url)
+    with socket.socket() as probe:
+        probe.settimeout(0.3)
+        return probe.connect_ex((parsed.hostname or "localhost", parsed.port or 6379)) == 0
+
+
+#: Redis 계약 테스트의 공통 스킵. 마커가 기본 실행에서 이 층을 빼고, 이 조건은
+#: `-m redis` 로 명시적으로 부른 실행이 저장소 없이 실패하지 않게 한다.
+needs_cache = pytest.mark.skipif(
+    not cache_is_reachable(),
+    reason=(
+        f"Redis({CACHE_URL})가 떠 있지 않습니다 — "
+        "`docker compose run --build --rm test pytest -m redis` 로 돌리면 함께 뜹니다"
     ),
 )
 

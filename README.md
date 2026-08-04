@@ -478,9 +478,21 @@ docker compose run --build --rm test
 | 구조 층 (필터·순서·경계·오류) | ✅ |
 | 실물 Chroma 어댑터 | ✅ (`depends_on`이 띄웁니다) |
 | 검색 품질 (임베딩 실물) | ✅ (가중치가 이미지에 있습니다) |
+| 캐시 의미 (TTL·상한·유사 매치·무효화) | ✅ (인메모리 구현으로 돕니다) |
+| **실물 Redis 어댑터** | ❌ — 저장소가 필요해 기본 실행에서 뺍니다 (바로 아래) |
 | **실물 CLI (답변 생성)** | ❌ — 구독이 필요해 기본 실행에서 뺍니다 (바로 아래) |
 
 **LLM 구독도 API 키도 필요 없습니다.** 건너뛴 항목이 있으면 실행 결과에 사유와 함께 표시됩니다.
+
+### 실물 Redis 층
+
+캐시의 **의미**(수명·총량 상한·유사 매치·태그 무효화)는 인메모리 구현으로 기본 실행에서 검증합니다. 평가자의 한 줄이 저장소에 묶이면 안 되기 때문입니다. Redis에서만 존재하는 것들 — TTL이 실제로 걸리는가, 만료된 지문이 순서 인덱스에서 걷히는가, 용량 상한이 페이로드 키까지 지우는가 — 은 `redis` 마커 뒤에 두었습니다.
+
+```bash
+docker compose run --build --rm test pytest -m redis
+```
+
+위 명령이 `depends_on`으로 Redis를 함께 띄웁니다. 계약 테스트는 **15번 데이터베이스**를 쓰고 시작과 끝에 비웁니다 — 개발 중에 띄워 둔 캐시(0번)를 건드리지 않습니다.
 
 ### 실물 CLI 층
 
@@ -490,7 +502,7 @@ docker compose run --build --rm test
 docker compose run --build --rm test python -m pytest -m llm
 ```
 
-**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`660 passed, 2 deselected`).
+**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`861 passed, 23 deselected` — 제외된 23건은 실물 CLI 2건과 실물 Redis 21건입니다).
 
 호스트에서 직접 돌리고 싶다면 아래도 됩니다. 이때 실물 Chroma 층은 `docker compose up -d --wait vector-store`로 서버를 띄워야 실행되고, 검색 품질 층은 임베딩 가중치가 캐시돼 있어야 실행됩니다.
 
