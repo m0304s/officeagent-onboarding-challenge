@@ -1,14 +1,7 @@
 """기동 경로 — 무엇이 기동 조건이고 무엇이 아닌가.
 
-두 묶음이다. **LLM 제공자 자격증명**은 기동 경로가 아예 건드리지 않아야 하고(specs
-"서비스는 외부 LLM 제공자 인증 없이 기동한다"), **임베딩 모델 선로딩**은 기동 경로에
-있지만 실패해도 기동을 막지 않아야 한다.
-
-앞 묶음: 인증 정보가 없거나 손상되어 있어도 기동과 헬스 보고가 성립해야 한다.
-
-자격증명을 **읽을 수 없는 상태**로 만들어 두는 것이 이 테스트의 핵심이다. 누군가 나중에
-부팅 경로에 자격증명 파싱을 끼워 넣으면 여기서 터진다. "지금은 안 읽는다"를 눈으로
-확인하는 것과, 앞으로도 안 읽는 것을 강제하는 것은 다르다.
+자격증명은 기동 경로가 건드리지 않고, 임베딩 선로딩은 실패해도 기동을 막지 않는다.
+자격증명을 읽을 수 없는 상태로 두는 것이 "앞으로도 안 읽는다"를 강제하는 수단이다.
 """
 
 import json
@@ -75,9 +68,7 @@ async def test_헬스는_LLM_제공자를_의존성으로_보고하지_않는다
 ):
     """자격증명이 손상되어 있어도 헬스가 그것을 근거로 불가용을 보고하지 않는다.
 
-    LLM 제공자는 답변 생성 시점에만 필요하다. 헬스 의존성 목록에 끼면 인증이 없는 평가자
-    환경에서 서비스가 항상 불가용으로 보인다.
-    """
+    헬스 목록에 끼면 인증 없는 평가자 환경에서 서비스가 항상 불가용으로 보인다."""
     _, body = await _get_health(settings, healthy_probes)
 
     assert set(body["dependencies"]) == {"cache", "vector_store"}
@@ -87,9 +78,7 @@ async def test_헬스는_LLM_제공자를_의존성으로_보고하지_않는다
 async def test_기동_중에는_생성기가_불리지_않는다(make_app, request, home):
     """자격증명 상태가 어느 쪽이든 기동 경로는 생성기에 닿지 않는다.
 
-    닿으면 인증이 없는 평가자 환경에서 기동이 실패하거나 느려진다 — 그 실패는 답변
-    기능 하나가 아니라 서비스 전체를 잃는 형태로 나타난다.
-    """
+    닿으면 인증 없는 환경에서 답변 하나가 아니라 서비스 전체를 잃는다."""
     request.getfixturevalue(home)
     generator = ScriptedGenerator()
 
@@ -103,11 +92,9 @@ async def test_기동_중에는_생성기가_불리지_않는다(make_app, reque
 async def test_기본_배선의_풀은_첫_요청까지_세션을_띄우지_않는다(
     settings, healthy_probes, home_without_credentials, monkeypatch
 ):
-    """지연 기동을 **세션 기동 자체를 금지해** 확인한다.
+    """지연 기동을 세션 기동 자체를 금지해 확인한다.
 
-    대역을 주입하면 "우리가 준 대역을 안 불렀다"까지만 확인되고, 기본 배선이 무엇을
-    하는지는 미확인으로 남는다 — 정작 평가자 환경에서 도는 것은 그쪽이다.
-    """
+    대역을 주입하면 기본 배선이 무엇을 하는지가 미확인으로 남는다."""
 
     async def refuse(_launch):
         raise AssertionError("기동 경로가 app-server 세션을 띄웠다")
@@ -126,8 +113,7 @@ async def test_기본_배선의_풀은_첫_요청까지_세션을_띄우지_않�
 async def test_종료가_세션_풀을_회수한다(settings, healthy_probes, home_without_credentials):
     """회수하지 않으면 컨테이너에 자식 프로세스가 남는다.
 
-    닫힌 풀이 세션을 더 빌려주지 않는다는 사실로 관측한다 — 프로세스가 뜬 적 없는
-    상태에서도 성립하는 유일한 창이다."""
+    닫힌 풀이 세션을 더 빌려주지 않는다는 사실이 프로세스 없이도 성립하는 창이다."""
     app = create_app(settings=settings, probes=healthy_probes)
     async with booted(app) as client:
         assert (await client.get("/health")).status_code == 200
@@ -137,31 +123,25 @@ async def test_종료가_세션_풀을_회수한다(settings, healthy_probes, ho
 
 
 async def test_기본_배선은_외부_서비스가_없어도_헬스에_응답한다(settings, home_without_credentials):
-    """대역이 아니라 **실제 프로브**로 배선한 앱을, 아무 외부 서비스 없이 띄운다.
+    """대역이 아니라 실제 프로브로 배선한 앱을, 아무 외부 서비스 없이 띄운다.
 
-    프로브가 생성자에서 연결을 맺으면 캐시가 뜨기 전에는 앱이 만들어지지 않는다. 그러면
-    "의존성이 불능이어도 헬스는 응답한다"는 요구사항 자체가 성립할 수 없다. 나머지
-    헬스 테스트는 전부 대역을 쓰므로, 실제 배선을 확인하는 곳은 여기뿐이다.
-    """
+    프로브가 생성자에서 연결을 맺으면 캐시가 뜨기 전에는 앱조차 만들어지지 않는다."""
     status_code, body = await _get_health(settings, probes=None)
 
-    # 캐시가 없으므로 불가용이다. 중요한 것은 **응답이 돌아왔다는 사실**이다.
+    # 캐시가 없으므로 불가용이다. 중요한 것은 응답이 돌아왔다는 사실이다.
     assert status_code == 503
     assert set(body["dependencies"]) == {"cache", "vector_store"}
     assert body["dependencies"]["cache"]["status"] == "unavailable"
 
 
 # ── 임베딩 모델 선로딩 ───────────────────────────────────────────────────
-#
-# 미리 올리지 않으면 비용이 사라지는 게 아니라 **첫 업로드에게 청구된다.** 다만 선로딩은
-# 기동 *조건*이 아니다 — 실패해도 서비스는 뜨고, 지연 로딩이 백스톱으로 남는다.
+# 미리 올리지 않으면 비용이 첫 업로드에 청구된다. 다만 기동 조건은 아니다.
 
 
 async def test_startup_warms_up_the_embedder(make_app):
     """`isinstance` 로 구체 어댑터를 확인해 부르면 배선이 구현체를 알게 된다.
 
-    프로토콜 메서드로 두었으므로 대역도 같은 요청을 받는다. 그 사실을 여기서 고정한다.
-    """
+    프로토콜 메서드로 두었으므로 대역도 같은 요청을 받는다. 그 사실을 여기서 고정한다."""
     embedder = FakeEmbedder()
 
     async with booted(make_app(embedder=embedder)) as client:
@@ -174,11 +154,7 @@ async def test_startup_warms_up_the_embedder(make_app):
 def capture(logger_name: str):
     """지정한 로거의 레코드를 모은다.
 
-    `caplog` 를 쓰지 않는 이유: `create_app` 이 `configure_logging` 으로 루트 핸들러를
-    **비우므로**, 테스트 본문에서 앱을 만드는 순간 캡처 핸들러가 함께 걷힌다. 앱을
-    픽스처에서 만드는 다른 테스트들은 그 영향을 받지 않지만, 여기서는 임베더를 바꿔
-    앱을 직접 만들어야 한다.
-    """
+    `caplog` 를 못 쓰는 이유는 `create_app` 이 루트 핸들러를 비우기 때문이다."""
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
     handler.emit = records.append  # type: ignore[method-assign]
@@ -191,12 +167,9 @@ def capture(logger_name: str):
 
 
 async def test_a_failing_warm_up_does_not_stop_startup(make_app):
-    """가중치가 없거나 디스크가 부족해도 서비스는 떠야 한다.
+    """가중치가 없거나 디스크가 부족해도 서비스는 뜬다.
 
-    `openspec/specs/service-health/spec.md` 의 "설정을 전혀 제공하지 않아도 기동에
-    성공한다"가 선로딩이 생겼다고 약해지지 않는다. 그리고 **첫 업로드는 여전히
-    성공해야 한다** — 지연 로딩이 백스톱이기 때문이다.
-    """
+    첫 업로드도 여전히 성공한다 — 지연 로딩이 백스톱이다."""
     embedder = FakeEmbedder(warm_up_error=RuntimeError("가중치를 찾지 못했습니다"))
     # 앱을 먼저 만든다 — `create_app` 이 로깅을 다시 구성하므로, caplog 안에서 만들면
     # 캡처 핸들러가 그 자리에서 걷힌다.
@@ -244,9 +217,7 @@ pytestmark_posix = pytest.mark.skipif(
 def _run_sync(tmp_path: Path, host_auth: str | None, existing_copy: str | None):
     """동기화 스크립트를 컨테이너와 같은 모양으로 돌린다.
 
-    스크립트는 `/host-codex`·`/secrets` 절대경로를 쓰므로 임시 디렉터리를 그대로 줄 수
-    없다. 두 상수만 임시 경로로 치환한 사본을 만들어 돌린다 — 로직은 손대지 않는다.
-    """
+    고정된 경로 상수 둘만 임시 경로로 치환한 사본을 돌린다 — 로직은 손대지 않는다."""
     host_dir = tmp_path / "host-codex"
     secrets_dir = tmp_path / "secrets"
     host_dir.mkdir()
@@ -282,11 +253,9 @@ def test_동기화는_호스트의_기존_자격증명을_꺼내온다(tmp_path:
 
 @pytestmark_posix
 def test_동기화는_자격증명이_없어도_기동을_막지_않는다(tmp_path: Path):
-    """인증 부재가 기동을 막으면 안 된다.
+    """인증 부재가 기동을 막지 않는다.
 
-    `api` 가 `service_completed_successfully` 로 `auth` 에 의존한다. 스크립트가 0이 아닌
-    코드로 끝나면 자격증명이 없는 평가자 환경에서 **서비스가 아예 뜨지 않는다.**
-    """
+    `api` 가 `service_completed_successfully` 로 의존해, 0 이 아닌 종료가 곧 기동 실패다."""
     result, secrets_dir = _run_sync(tmp_path, host_auth=None, existing_copy=None)
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -297,11 +266,9 @@ def test_동기화는_자격증명이_없어도_기동을_막지_않는다(tmp_p
 
 @pytestmark_posix
 def test_동기화는_호스트에_파일이_없다고_기존_사본을_지우지_않는다(tmp_path: Path):
-    """호스트에서 로그아웃했거나 홈 경로가 안 잡힌 경우까지 인증을 잃으면 안 된다.
+    """호스트에서 로그아웃해도 이미 꺼내 둔 자격증명은 남는다.
 
-    "없으면 지운다"로 짜기 쉬운 자리다. 한 번 성공한 뒤 호스트 상태가 바뀌었다는 이유로
-    돌던 서비스의 LLM 기능이 죽는 것은 회귀다.
-    """
+    "없으면 지운다"로 짜기 쉬운 자리이고, 그러면 돌던 서비스의 LLM 기능이 죽는다."""
     result, secrets_dir = _run_sync(tmp_path, host_auth=None, existing_copy=SAMPLE_BLOB)
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -311,9 +278,7 @@ def test_동기화는_호스트에_파일이_없다고_기존_사본을_지우�
 def test_동기화는_새_토큰을_발급하지_않는다():
     """design 결정 5-1의 제약을 스크립트 본문에 고정한다.
 
-    `codex login` 은 새 토큰을 발급하므로 "기존 자격증명 재사용" 제약을 어긴다. 편의를
-    위해 슬쩍 들어가기 쉬운 명령이라 회귀로 막아둔다.
-    """
+    `codex login` 은 새 토큰을 발급해 "기존 자격증명 재사용"을 어긴다."""
     body = SYNC_SCRIPT.read_text(encoding="utf-8")
     executable_lines = [
         line for line in body.splitlines() if line.strip() and not line.strip().startswith("#")
@@ -329,12 +294,9 @@ def _compose() -> dict:
 
 
 def test_compose_는_자격증명_경로를_api_까지_연결한다():
-    """자격증명이 붙는 경로는 파이썬 코드가 아니라 이 YAML 에만 적혀 있다.
+    """자격증명이 붙는 경로는 파이썬이 아니라 이 YAML 에만 적혀 있다.
 
-    `auth` 가 꺼내 둔 `.secrets/codex` 를 `api` 가 Codex CLI 의 홈으로 마운트하지 않으면,
-    동기화는 성공하는데 CLI 는 인증되지 않은 상태로 뜬다. 어느 파이썬 테스트도 그걸
-    알아채지 못하는 자리라 여기서 계약으로 고정한다.
-    """
+    마운트가 빠지면 동기화는 성공하는데 CLI 는 인증되지 않은 채 뜬다."""
     services = _compose()
 
     auth_mounts = services["auth"]["volumes"]

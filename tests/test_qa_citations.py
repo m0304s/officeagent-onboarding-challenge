@@ -1,10 +1,7 @@
-"""인용 검증 — 모델이 만든 마커를 그대로 믿지 않는다.
+"""인용 검증 — 조립된 `citations` 가 근거와 어긋나지 않는가.
 
-마커 추출·중복 제거·범위 검증의 **규칙 자체**는 `test_prompting.py` 가 순수 함수로 덮는다.
-여기서 보는 것은 그 결과가 `done` 이벤트의 `citations` 로 조립될 때 **근거와 어긋나지
-않는가**다 — 마커는 1부터 세는 라벨이고 근거 목록은 0부터 세는 배열이라, 그 변환이 한 칸
-어긋나도 형식은 멀쩡한 채 인용이 옆 청크를 가리킨다. 출처 표기가 오히려 신뢰를 만들어
-내는 자리라 값 대조를 여기서 한다.
+마커는 1부터 세는 라벨이고 근거 목록은 0부터 세는 배열이라, 그 변환이 한 칸 어긋나도
+형식은 멀쩡한 채 인용이 옆 청크를 가리킨다. 규칙 자체는 `test_prompting.py` 가 덮는다.
 """
 
 from app.core.answers import FinishReason
@@ -78,8 +75,7 @@ async def test_a_marker_outside_the_source_range_is_dropped_and_counted():
 async def test_a_repeated_out_of_range_marker_counts_once():
     """세는 대상이 "잘못 가리킨 근거"이지 "잘못 적은 글자"가 아니다.
 
-    뒤집으면 그 수가 답변 길이에 비례해 흔들려 프롬프트 열화를 재는 신호로 쓸 수 없다.
-    """
+    뒤집으면 그 수가 답변 길이에 비례해 흔들려 프롬프트 열화를 재는 신호로 쓸 수 없다."""
     harness = make_qa_harness(
         answering("[9] 그리고 [9] 그리고 또 [9]. 근거 [1] 도 있습니다."), top_k=2
     )

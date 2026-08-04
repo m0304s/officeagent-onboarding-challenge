@@ -1,12 +1,7 @@
-"""수집 파이프라인 — 저장까지 이어지는 경로.
+"""수집 파이프라인 — 저장까지 이어지는 경로의 순서와 판정.
 
-여기서 고정하는 것은 **순서와 판정**이다.
-
-- 새로 쓰고 → 커밋 → 지우기. 실패하면 같은 요청 안에서 되돌린다.
-- 단축(`unchanged`)의 조건은 `revision` 과 `index_signature` **둘 다**.
-- 기동 정리는 레지스트리가 가리키지 않는 청크를 지우고, 구성이 바뀐 문서를 `stale` 로 만든다.
-
-저장소 어댑터 자체의 성질은 `test_registry.py`·`test_vector_store.py` 가 실물로 덮는다.
+새로 쓰고 → 커밋 → 지우기, 실패하면 같은 요청 안에서 되돌리기, `unchanged` 단축의 조건,
+기동 정리. 저장소 어댑터 자체는 `test_registry.py`·`test_vector_store.py` 가 실물로 덮는다.
 """
 
 import asyncio
@@ -124,10 +119,8 @@ async def test_chunks_are_embedded_and_written_in_batches(store, registry):
 async def test_chunks_over_the_token_window_are_resplit(store, registry):
     """문자 기준 청크는 토큰 수를 보장하지 못한다.
 
-    상한을 넘는 청크를 그대로 넘기면 뒷부분이 **조용히 잘린다** — 벡터에는 반영되지
-    않으면서 청크 본문에는 남아, 저장은 됐는데 검색되지 않는 텍스트가 생긴다.
-    """
-    # 문자 하나가 토큰 하나. 200자 청크는 64토큰 상한을 반드시 넘는다.
+    그대로 넘기면 뒷부분이 잘려, 저장은 됐는데 검색되지 않는 텍스트가 생긴다."""
+    # 문자 하나가 토큰 하나. 200자 청크는 64토큰 상한을 넘는다.
     embedder = FakeEmbedder(chars_per_token=1, max_input_tokens=64)
     service = make_service(vector_store=store, registry=registry, embedder=embedder, size=200)
 
@@ -477,7 +470,7 @@ async def test_a_stale_document_is_recovered_by_reuploading_it(store, registry):
 
 
 async def test_reconciliation_never_fails_startup(store, registry, caplog):
-    """평가자가 설정을 한 번 만져 본 순간 "한 줄 실행"이 깨지면 안 된다."""
+    """평가자가 설정을 한 번 만져 본 순간 "한 줄 실행"이 깨지지 않는다."""
     await make_service(vector_store=store, registry=registry, size=200).ingest(POLICY, DATA)
     # 구성이 바뀌어 정리할 일이 생겼는데, 그 정리가 실패하는 상태.
     reconfigured = make_service(vector_store=store, registry=registry, size=400)
@@ -494,11 +487,7 @@ async def test_reconciliation_never_fails_startup(store, registry, caplog):
 
 
 # ── 두 색인은 한 트랜잭션의 두 면이다 ───────────────────────────────────
-#
-# 두 색인이 어긋나도 오류는 나지 않는다. 검색은 계속 `200` 을 내고, 다만 retriever 마다
-# 다른 세대의 문장을 근거로 올린다. 융합은 그 둘을 정상 입력으로 받으므로 한 응답 안에
-# 두 세대가 섞인다 — `retrieval` 이 보증하는 "한 문서의 결과는 전부 같은 리비전"이
-# 저장 단계에서 이미 깨져 있는 상태다. 그래서 아래 단언은 전부 **양쪽**을 함께 본다.
+# 어긋나도 오류는 안 나고 한 응답에 두 세대가 섞인다 — 아래 단언은 전부 양쪽을 본다.
 
 
 async def test_ingested_chunks_land_in_both_indexes(service, store, lexical):
@@ -682,8 +671,7 @@ async def test_a_tokenizer_change_makes_existing_documents_stale(store, lexical,
 async def test_concurrent_uploads_of_the_same_document_are_serialized(store, registry):
     """`get → 저장 → 커밋 → 삭제` 가 인터리빙되면 두 리비전의 청크가 함께 남는다.
 
-    어느 쪽이 이기는지는 단언하지 않는다 — 비결정적이다. 최종 상태만 본다.
-    """
+    어느 쪽이 이기는지는 단언하지 않는다 — 비결정적이다. 최종 상태만 본다."""
     service = make_service(
         parsers=[StubParser(delay=0.05, text=LONG_KOREAN)],
         vector_store=store,
@@ -738,12 +726,9 @@ async def test_the_concurrency_limit_holds(store, registry):
 
 
 async def test_reconciling_twice_does_not_write_twice(store, registry):
-    """아무것도 바뀌지 않은 기동이 쓰기를 만들면 안 된다.
+    """아무것도 바뀌지 않은 기동은 쓰기를 만들지 않는다.
 
-    `stale` 문서의 서명은 그대로 두므로(그래야 재업로드가 재색인으로 이어진다) 매 기동
-    마다 같은 문서가 다시 걸린다. 경고는 계속 남아야 하지만 — 여전히 다시 올려야 하는
-    문서다 — 삭제와 커밋을 반복할 이유는 없다.
-    """
+    `stale` 서명을 그대로 두므로 매 기동 같은 문서가 걸린다 — 경고는 남기되 쓰기는 없다."""
     first = await make_service(vector_store=store, registry=registry, size=200).ingest(POLICY, DATA)
     reconfigured = make_service(vector_store=store, registry=registry, size=400)
 

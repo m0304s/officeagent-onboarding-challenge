@@ -1,20 +1,7 @@
-"""벡터 스토어 (Chroma) — 쓰기·삭제·집계·질의.
+"""벡터 스토어 (Chroma) — 쓰기·삭제·집계·질의. 실물 서버가 필요하다.
 
-가장 중요한 단언은 **같은 `revision` 의 서로 다른 서명 청크가 공존한다**는 것이다.
-재색인은 `revision` 이 그대로인 채 일어나므로, 청크 id 에 서명이 없으면 새 청크가
-이전 청크를 그 자리에서 덮어쓴다. 그러면 "새로 쓰고 → 커밋 → 지우기" 순서가 무너져
-쓰는 도중에 이미 이전 벡터가 사라지고, 실패해도 되돌릴 원본이 없다.
-
-질의 쪽에서 가장 중요한 것은 **빈 대상 목록이 전체 검색으로 뒤집히지 않는다**는 단언이다.
-저장소 필터 API 에서 "조건 없음 = 전체"가 흔한 관습이라 실수하기 쉬운 자리이고, 뒤집히면
-사용자가 지운 문서가 검색된다. 검색 품질(무엇이 1위인가)은 여기서 재지 않는다 — 그건
-임베딩의 성질이라 실물 모델로 따로 본다.
-
-**실물 서버가 필요하다.** Chroma 를 서버 모드로 쓰므로 이 파일은 대역으로 대체할 수 없다 —
-대역으로 바꾸는 순간 확인하려는 것(우리 메타데이터·필터·id 규약이 *실제 Chroma* 에서
-성립하는가)이 사라진다. 서버가 없으면 파일 전체를 건너뛰고, 나머지 스위트는 그대로 돈다.
-`docker compose run --build --rm test` 로 돌리면 서버가 함께 뜨므로 이 파일도 실행된다. 호스트에서
-직접 `pytest` 를 돌릴 때는 `docker compose up -d --wait vector-store` 로 먼저 띄운다.
+무게가 실린 단언 둘: 같은 리비전의 서로 다른 서명 청크가 공존하는가, 빈 대상 목록이
+전체 검색으로 뒤집히지 않는가. 근거는 `tests/README.md` 에 있다.
 """
 
 import asyncio
@@ -51,11 +38,9 @@ def _drop(collection_name: str) -> None:
 
 @pytest.fixture
 async def collection_name():
-    """테스트마다 **자기 컬렉션**을 쓴다.
+    """테스트마다 자기 컬렉션을 쓴다.
 
-    서버는 하나뿐이라 임시 디렉터리 같은 격리가 없다. 컬렉션을 공유하면 테스트 순서가
-    결과를 바꾸고, 한 테스트의 잔여물이 다음 테스트의 개수 단언을 깨뜨린다.
-    """
+    서버가 하나라 공유하면 한 테스트의 잔여물이 다음 테스트의 개수 단언을 깨뜨린다."""
     name = f"test_{uuid4().hex}"
     yield name
     await asyncio.to_thread(_drop, name)
@@ -96,12 +81,9 @@ QUERY_VECTOR = [1.0, 0.0, 0.0, 0.0]
 
 
 def make_query_vectors(count: int, *, offset: float = 0.0) -> list[list[float]]:
-    """`QUERY_VECTOR` 에서 **뒤로 갈수록 멀어지는** 벡터.
+    """`QUERY_VECTOR` 에서 뒤로 갈수록 멀어지는 벡터.
 
-    `make_vectors` 를 질의에 쓸 수 없다 — 첫 벡터가 영벡터라 코사인 거리가 정의되지
-    않는다. 순서를 미리 알 수 있게 만들어야 "내림차순인가"가 우연이 아닌 단언이 된다.
-    `offset` 은 두 문서·두 리비전을 섞을 때 서로 다른 거리대에 놓는 데 쓴다.
-    """
+    첫 벡터가 영벡터인 `make_vectors` 는 질의에 쓸 수 없다 — 코사인 거리가 정의되지 않는다."""
     return [[1.0, 0.3 * (index + offset), 0.0, 0.0] for index in range(count)]
 
 
@@ -198,9 +180,7 @@ async def test_storing_nothing_is_not_an_error(store):
 async def test_the_same_revision_under_two_signatures_coexists(store):
     """id 에 서명이 없으면 재색인이 이전 청크를 그 자리에서 덮어쓴다.
 
-    그러면 "새로 쓰고 → 커밋 → 지우기" 순서가 성립하지 않는다 — 쓰는 도중에 이미
-    이전 벡터가 사라지고, 실패해도 되돌릴 원본이 없다.
-    """
+    쓰는 도중에 이미 이전 벡터가 사라져, 실패해도 되돌릴 원본이 없다."""
     await store_chunks(store, make_chunks(2, revision="rev-1", index_signature="sig-1"))
     await store_chunks(store, make_chunks(2, revision="rev-1", index_signature="sig-2"))
 
@@ -255,7 +235,7 @@ async def test_deleting_leaves_other_documents_alone(store):
 
 
 async def test_deleting_nothing_reports_zero(store):
-    """되돌리기가 두 번 불려도 실패하면 안 된다 — 지울 것이 없는 것은 오류가 아니다."""
+    """되돌리기가 두 번 불려도 실패하지 않는다 — 지울 것이 없는 것은 오류가 아니다."""
     assert await store.delete_document("없는-문서") == 0
 
 
@@ -326,12 +306,9 @@ async def test_a_version_outside_the_target_set_is_not_returned(store):
 
 
 async def test_an_empty_target_set_returns_nothing_rather_than_everything(store):
-    """**"조건 없음 = 전체"로 뒤집히면 사용자가 지운 문서가 검색된다.**
+    """"조건 없음 = 전체"로 뒤집히면 사용자가 지운 문서가 검색된다.
 
-    저장소 필터 API 에서 그 관습이 흔하므로 실수하기 쉬운 자리다. 유효한 문서가 하나도
-    없는 상태에서 잔여 청크가 검색되는 것이 정확히 이 실수의 모양이라, 청크를 저장해
-    둔 채로 확인한다.
-    """
+    잔여 청크를 저장해 둔 채로 확인한다 — 그 상태가 정확히 이 실수의 모양이다."""
     await store_chunks(store, make_chunks(3), vectors=make_query_vectors(3))
 
     assert await store.query(QUERY_VECTOR, top_k=10, versions=[]) == []
@@ -391,7 +368,7 @@ async def test_the_result_carries_the_source_metadata(store):
 
 
 async def test_a_page_less_format_comes_back_without_a_page(store):
-    """수집이 값 없는 키를 넣지 않는다는 규약의 반대편이다 — 없는 키에서 터지면 안 된다."""
+    """수집이 값 없는 키를 넣지 않는다는 규약의 반대편이다 — 없는 키에서도 터지지 않는다."""
     await store_chunks(store, make_chunks(1), vectors=make_query_vectors(1))
 
     result = (await store.query(QUERY_VECTOR, top_k=1, versions=[version_of()]))[0]
@@ -417,12 +394,9 @@ def test_the_collection_name_carries_the_dimension():
 
 
 async def test_a_collection_keeps_its_dimension_after_being_emptied(collection_name: str):
-    """`collection_for` 가 존재하는 이유를 실물로 고정한다.
+    """`collection_for` 가 존재하는 이유를 실물로 고정한다 — 비워도 차원이 남는다.
 
-    컬렉션을 비워도 차원이 남는다. 이름을 나누지 않으면, 차원이 다른 모델로 바꾼 뒤
-    기동 정리가 청크를 전부 지워도 재업로드가 영구히 실패한다 — "재업로드하면 복구된다"는
-    약속이 그 순간 거짓이 된다. Chroma 의 동작이 바뀌면 여기서 알게 된다.
-    """
+    이름을 나누지 않으면 "재업로드하면 복구된다"는 약속이 차원 교체에서 거짓이 된다."""
     store = ChromaVectorStore(VECTOR_STORE_URL, collection_name=collection_name)
     await store_chunks(store, make_chunks(1))
     await store.delete_document(DOCUMENT_ID)
@@ -441,12 +415,9 @@ async def test_a_collection_keeps_its_dimension_after_being_emptied(collection_n
 
 
 async def test_a_new_client_sees_what_another_wrote(collection_name: str):
-    """서버 모드에서 영속성은 서버(와 그 볼륨)의 책임이다.
+    """서버 모드에서 영속성은 서버(와 볼륨)의 책임이다.
 
-    어댑터 쪽에서 확인할 수 있는 것은 **상태를 프로세스 안에 들고 있지 않다**는 것뿐이다.
-    새 인스턴스가 같은 값을 본다는 사실이 그것을 말한다 — 캐시를 들고 있었다면 여기서
-    0이 나온다.
-    """
+    어댑터 쪽에서 확인할 수 있는 것은 상태를 프로세스 안에 들고 있지 않다는 것뿐이다."""
     await store_chunks(
         ChromaVectorStore(VECTOR_STORE_URL, collection_name=collection_name), make_chunks(2)
     )

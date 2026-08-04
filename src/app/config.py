@@ -88,9 +88,8 @@ class Settings(BaseSettings):
     # ── 검색 ──────────────────────────────────────────────────────────
     # 요청이 덮어쓸 수 있게 연 이유는 K 조정에 재배포가 들지 않게 하려는 것이다.
     retrieval_top_k: int = Field(default=5, gt=0)
-    # 그 열어 둔 문 때문에 상한이 필요하다 — 없으면 `top_k=1000000` 이 저장소를 다 긁는다.
-    # 20 인 이유는 응답 크기가 아니라 융합 여지다 — 상한이 후보 깊이에 가까워질수록
-    # 한 retriever 가 자리를 다 채워 다른 쪽 발견이 들어올 자리가 없어진다 (`candidate_depth`).
+    # 없으면 `top_k=1000000` 이 저장소를 다 긁는다. 20 인 이유는 융합 여지다 — 상한이
+    # 후보 깊이에 가까워질수록 한 retriever 가 자리를 다 채운다 (`candidate_depth`).
     retrieval_max_top_k: int = Field(default=20, gt=0)
     # 0.82 는 계측값이다 — 관련 1위 최솟값 0.8511 / 무관 1위 최댓값 0.8134 사이.
     # 어휘 쪽 하한은 `lexical_min_token_rarity` 라 이 값은 밀집 retriever 만 본다.
@@ -122,6 +121,30 @@ class Settings(BaseSettings):
     qa_llm_interrupt_grace_seconds: float = Field(default=2.0, gt=0)
     # 프로세스 기동 + 핸드셰이크 상한. 실측 8.5초의 세 배 이상이다.
     qa_llm_session_startup_timeout_seconds: float = Field(default=30.0, gt=0)
+
+    # ── 응답 캐시 ──────────────────────────────────────────────────────
+    # 끄면 `NullResponseCache` 라 모든 요청이 미스다. 인메모리로 잇지 않는 것이 결정이다.
+    cache_enabled: bool = True
+    # 정확성은 무효화와 재검증이 맡으므로 TTL 은 방치된 항목의 상한 역할만 한다. 하루면
+    # 프롬프트나 색인을 바꾼 뒤 키가 갈려 닿을 수 없게 된 항목도 그 안에 사라진다.
+    cache_ttl_seconds: int = Field(default=86_400, gt=0)
+    # 항목 하나가 근거 청크 본문까지 담아 3~5KB 라 500건이 2.5MB 규모다. 넘으면 저장을
+    # 거부하는 대신 오래된 것부터 밀어낸다.
+    cache_max_entries: int = Field(default=500, gt=0)
+    # 계측값이다 — 서로 다른 질문 최대 0.8326 위로 여유를 둔 값. 부정문 쌍(0.9066~0.9979)은
+    # 이 값으로 걸러지지 않는다: 내리기 전에 `ARCHITECTURE.md` 「임계값 0.93」을 읽을 것.
+    cache_semantic_threshold: float = Field(default=0.93, ge=0, le=1)
+    # 완전 탐색의 비용을 고정하는 값이다 — 없으면 캐시가 커질수록 히트가 미스보다 느려진다.
+    cache_semantic_candidates: int = Field(default=200, gt=0)
+
+    # 캐시는 최적화라 200ms 안에 답하지 못하면 도움이 되지 않는다. `probe_timeout_seconds`
+    # 와 값이 다른 것은 프로브가 "살아 있나"를, 조회가 "지금 도움이 되나"를 묻기 때문이다.
+    cache_operation_timeout_seconds: float = Field(default=0.2, gt=0)
+    # 타임아웃만 두면 죽은 저장소에 매 요청 400ms 를 계속 잃는다. 연속 실패가 이만큼
+    # 쌓이면 쿨다운 동안 저장소를 아예 부르지 않는다.
+    cache_circuit_breaker_failures: int = Field(default=3, ge=1)
+    # 쿨다운 뒤 첫 요청이 탐침이라 회복에 재기동이 들지 않는다.
+    cache_circuit_breaker_cooldown_seconds: float = Field(default=30.0, gt=0)
 
     @model_validator(mode="after")
     def _overlap_must_be_smaller_than_chunk(self) -> "Settings":

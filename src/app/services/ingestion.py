@@ -33,6 +33,7 @@ from app.core.exceptions import (
     NoExtractableText,
     StorageUnavailable,
 )
+from app.services.cache import CacheService
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ class IngestionService:
         vector_store: VectorStore,
         lexical_index: LexicalIndex,
         registry: DocumentRegistry,
+        cache: CacheService,
         *,
         index_signature: str,
         chunk_strategy: ChunkStrategy,
@@ -102,6 +104,9 @@ class IngestionService:
         self._store = vector_store
         self._lexical = lexical_index
         self._registry = registry
+        # 무효화가 어댑터가 아니라 여기 있는 이유는 저장소 둘이 서로를 참조하지 않게
+        # 하려는 것이다 — 벡터 스토어를 대역으로 갈면 무효화가 함께 사라진다.
+        self._cache = cache
         # 전략은 기동 시점에 함수로 해석해 둔다. 업로드마다 조회하면 등록 누락이
         # 첫 업로드에서야 드러난다.
         self._split = get_splitter(chunk_strategy)
@@ -179,7 +184,11 @@ class IngestionService:
             # 동시성 상한은 실제로 일을 하는 구간에만 건다. 조회만 하고 끝나는
             # `unchanged` 요청이 상한을 점유하면 처리량이 이유 없이 떨어진다.
             async with self._limiter:
-                return await self._index(document_id, filename, data, revision, current)
+                result = await self._index(document_id, filename, data, revision, current)
+
+            # 커밋이 확정된 뒤다 — 앞에서 부르면 실패해 롤백된 수집이 멀쩡한 캐시를 날린다.
+            await self._invalidate(document_id, corpus_changed=True)
+            return result
 
     async def list_documents(self) -> list[Document]:
         """수집된 문서 전체. 최근에 수집된 것이 앞이고 `stale` 도 포함한다.
@@ -208,11 +217,25 @@ class IngestionService:
             await self._lexical.delete_document(document_id)
             await self._registry.delete(document_id)
 
+            # 삭제가 확정된 뒤다. 부정 판정은 비우지 않는다 — 내용을 지워서 없던 답이
+            # 생기지는 않는다 (design 결정 4).
+            await self._invalidate(document_id, corpus_changed=False)
+
             logger.info(
                 "문서를 삭제했습니다",
                 extra={"document_id": document_id, "chunk_count": record.chunk_count},
             )
             return record
+
+    async def _invalidate(self, document_id: str, *, corpus_changed: bool) -> None:
+        """그 문서를 인용한 항목을 걷어낸다. 실패는 요청을 실패시키지 않는다.
+
+        문서는 이미 바뀌었고 그것을 되돌리는 쪽이 더 큰 손해다 — 재검증이 두 번째 방어선이다."""
+        await self._cache.invalidate_document(document_id)
+        if corpus_changed:
+            # 판정을 뒤집는 것은 문서 개수가 아니라 내용이다. 교체는 개수를 그대로 둔 채
+            # 내용을 바꾸고, 재색인은 관련성 하한을 넘는 청크의 집합을 바꾼다.
+            await self._cache.invalidate_negative()
 
     # ── 기동 정리 ───────────────────────────────────────────────────────
 

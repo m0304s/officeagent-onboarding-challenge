@@ -1,12 +1,7 @@
-"""검색 서비스 — 임베딩 경로·대상 집합·동시 변경·순서·하한.
+"""검색 서비스 — 순서와 판정. 무엇을 언제 부르고 무엇을 대상으로 삼는가.
 
-API 계층의 요청 검증과 응답 모양은 `test_search_api.py` 가, 임베딩이 의미를 잡는지는
-`test_retrieval_quality.py` 가 실물 모델로 덮는다. 여기서 고정하는 것은 **순서와 판정**이다 —
-무엇을 언제 부르는가, 무엇을 대상으로 삼고 무엇을 버리는가.
-
-전부 페이크 임베더로 돈다. 벡터에 의미가 없어도 **결정론적**이라, 질의 문자열을 특정 청크
-본문과 똑같이 두면 벡터가 정확히 일치해 그 청크의 1위가 확정된다. 그 성질로 정렬 방향과
-필터를 의미 없이도 결정적으로 잰다.
+페이크 임베더가 결정론적이라 질의를 청크 본문과 똑같이 두면 그 청크의 1위가 확정된다 —
+그 성질로 정렬 방향과 필터를 의미 없이도 결정적으로 잰다.
 """
 
 from dataclasses import replace
@@ -18,8 +13,8 @@ from app.core.exceptions import StorageUnavailable
 from tests.retrieval_harness import GUIDE, POLICY, SHORT, make_harness
 from tests.stubs import StubLexicalIndex, StubVectorStore
 
-#: 하한 테스트가 공유하는 질의. 하한을 점수 분포에서 유도하므로 세 테스트가 **같은
-#: 질의**를 봐야 유도한 값이 그대로 쓰인다.
+#: 하한 테스트가 공유하는 질의. 하한을 점수 분포에서 유도하므로 세 테스트가 같은
+#: 질의를 봐야 유도한 값이 그대로 쓰인다.
 FLOOR_QUERY = "교육비 지원"
 
 #: 양쪽 retriever 를 켠 구성. 이름 목록이 그대로 기여 목록의 기대값이 된다.
@@ -29,11 +24,9 @@ HYBRID = ("dense", "lexical")
 
 
 async def test_a_search_uses_the_query_embedding_path_exactly_once():
-    """경로를 바꿔 써도 결과 형식은 멀쩡하다 — 호출 기록이 아니면 검출되지 않는다.
+    """경로를 바꿔 써도 결과 형식은 멀쩡해 호출 기록이 아니면 검출되지 않는다.
 
-    `embed_documents([query])[0]` 도 벡터를 내고 오류도 나지 않지만, 역할에 따라 입력을
-    다르게 다루는 모델에서는 점수 분포가 통째로 이동해 하한이 조용히 무효가 된다.
-    """
+    역할에 따라 입력을 다르게 다루는 모델에서는 점수 분포가 통째로 이동한다."""
     harness = make_harness()
     await harness.ingest("policy.txt", POLICY)
     batches_after_ingestion = len(harness.embedder.batches)
@@ -77,9 +70,7 @@ async def test_a_deleted_document_disappears_from_results():
 async def test_leftover_chunks_from_a_previous_revision_are_not_searchable():
     """이전 세대 정리가 실패해 저장소에 남아도 검색되지 않는다.
 
-    잔여 청크가 무해하다는 근거가 이 필터 하나뿐이다. 깨지면 사용자는 자기가 지운
-    문장을 근거로 인용한 답변을 받는다.
-    """
+    잔여 청크가 무해하다는 근거가 이 필터 하나뿐이다."""
     # 정리 실패를 주입한다 — 교체 자체는 성립하고 이전 리비전 청크만 저장소에 남는다.
     harness = make_harness(vector_store=_store_that_cannot_delete())
     first = await harness.ingest("policy.txt", POLICY)
@@ -128,9 +119,7 @@ async def test_a_document_indexed_under_another_signature_is_not_searchable():
 async def test_a_replacement_committed_after_the_target_set_does_not_leak_the_old_revision():
     """대상 집합 확정과 저장소 질의 사이는 잠겨 있지 않다.
 
-    낡은 `revision` 이 결과에 실려 나가면 다음 change 의 캐시가 그 값으로 항목을 만들고,
-    무효화가 이미 지나간 뒤라 **그 항목은 어떤 무효화에도 걸리지 않는다.**
-    """
+    낡은 `revision` 이 실려 나가면 캐시가 그 값으로 만든 항목이 무효화에 걸리지 않는다."""
     harness = make_harness()
     first = await harness.ingest("policy.txt", POLICY)
 
@@ -286,12 +275,9 @@ async def test_lowering_the_floor_only_adds_results():
 
 
 async def _floor_between_the_top_two(harness) -> float:
-    """1위와 2위의 **밀집 원점수** 사이의 하한.
+    """1위와 2위의 밀집 원점수 사이의 하한.
 
-    응답의 `score` 로는 유도할 수 없다 — 그것은 융합 점수라 순위에서만 결정되고, 하한이
-    비교하는 값(코사인)과 척도가 다르다. 상수로 박으면 페이크의 점수 분포가 조금만
-    움직여도 단언이 공허해진다 — 전부 통과하거나 전부 걸리는 쪽으로 조용히 넘어간다.
-    """
+    응답의 `score` 는 척도가 달라 못 쓰고, 상수로 박으면 단언이 공허해진다."""
     everything = await harness.searching_with(min_score=0.0).search(FLOOR_QUERY)
     assert everything.count >= 2
     scores = [chunk.contributions[0].native_score for chunk in everything.chunks]
@@ -331,8 +317,7 @@ async def test_every_result_carries_at_least_one_contribution():
 async def test_a_single_retriever_configuration_preserves_its_own_order():
     """융합이 순서를 보존한다는 것이 회귀 판정의 기준선이다.
 
-    기준선이 없으면 하이브리드가 "좋아졌다"고 말할 수 없다 — 무엇과 비교할지가 없다.
-    """
+    기준선이 없으면 하이브리드가 "좋아졌다"고 말할 수 없다 — 무엇과 비교할지가 없다."""
     harness = make_harness(retrievers=HYBRID)
     await harness.ingest("policy.txt", POLICY)
     await harness.ingest("guide.md", GUIDE)
@@ -441,9 +426,7 @@ async def test_every_retriever_failing_is_a_storage_error_even_when_all_are_opti
 async def test_an_optional_failure_does_not_squash_the_score_scale():
     """실패한 목록은 분모에서도 빠진다 — 빈 목록으로 넘기면 모든 점수가 절반이 된다.
 
-    두 사실이 다르기 때문이다. 하한이 걸러 비운 목록은 "아무것도 인정하지 않았다"는
-    판정이라 척도에 남아야 하고, 실패한 retriever 는 판정을 내린 적이 없다.
-    """
+    하한이 걸러 비운 목록은 판정이라 척도에 남고, 실패한 retriever 는 판정한 적이 없다."""
     broken = make_harness(
         lexical_index=StubLexicalIndex(fail_search=True), retrievers=HYBRID, required=("dense",)
     )
@@ -458,9 +441,7 @@ async def test_an_optional_failure_does_not_squash_the_score_scale():
 def _store_that_cannot_delete():
     """이전 세대 정리가 실패하는 저장소.
 
-    교체 자체는 성립하고(저장과 커밋은 지나갔다) 이전 리비전 청크만 남는다 — 수집이
-    "정리 실패는 응답을 바꾸지 않는다"고 정해 둔 그 상태다.
-    """
+    교체 자체는 성립하고 이전 리비전 청크만 남는다 — 수집이 허용한다고 정해 둔 상태다."""
     from tests.stubs import StubVectorStore
 
     return StubVectorStore(fail_delete=True)

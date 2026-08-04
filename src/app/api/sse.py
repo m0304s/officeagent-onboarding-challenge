@@ -11,10 +11,11 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.queries import SearchResultView
 from app.core.answers import Citation, FinishReason
+from app.core.cache import CacheLayer
 from app.core.documents import DocumentFormat
 from app.services.qa import (
     AnswerEvent,
@@ -80,7 +81,7 @@ class AnswerPayload(BaseModel):
 
 
 class DonePayload(BaseModel):
-    """`done` 이벤트 — 종료 사유·답변 전문·검증된 인용·버려진 마커 수·소요 시간.
+    """`done` 이벤트 — 종료 사유·답변 전문·인용·버려진 마커 수·소요 시간·캐시 판정.
 
     구조를 모델이 아니라 서버가 보증한다 — 모델이 형식을 어겨도 이 모양은 흔들리지 않는다."""
 
@@ -88,7 +89,16 @@ class DonePayload(BaseModel):
     answer: str
     citations: list[CitationView]
     dropped_markers: int
+    #: 이번 요청의 소요 시간이지 캐시된 복사가 아니다.
     elapsed_ms: int
+    cache_hit: bool = Field(description="이 답변이 캐시에서 왔는가")
+    cache_layer: CacheLayer | None = Field(
+        default=None, description="히트한 층 — 정확 매치 / 유사 매치. 미스면 null"
+    )
+    cache_similarity: float | None = Field(
+        default=None,
+        description="유사 매치 판정에 쓰인 코사인 유사도. 정확 매치와 미스에서는 null",
+    )
 
 
 class ErrorPayload(BaseModel):
@@ -171,6 +181,9 @@ def _payload(event: QaEvent) -> BaseModel:
             citations=[CitationView.of(citation) for citation in event.answer.citations],
             dropped_markers=event.answer.dropped_markers,
             elapsed_ms=event.elapsed_ms,
+            cache_hit=event.cache.hit,
+            cache_layer=event.cache.layer,
+            cache_similarity=event.cache.similarity,
         )
     if isinstance(event, ErrorEvent):
         return ErrorPayload(

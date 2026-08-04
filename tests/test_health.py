@@ -1,7 +1,7 @@
 """헬스 엔드포인트 시나리오.
 
 spec 의 시나리오와 1:1로 맞춘다. 상태 코드만 보는 테스트가 되지 않도록, 불능일 때
-**어느 의존성이 문제인지 본문에서 식별되는지**를 함께 단언한다.
+어느 의존성이 문제인지 본문에서 식별되는지를 함께 단언한다.
 """
 
 import asyncio
@@ -54,7 +54,7 @@ class TestSingleDependencyDown:
         assert deps(body)["cache"]["status"] == "ok"
 
     async def test_the_reason_reaches_the_response(self, make_client):
-        """어느 의존성이 왜 불능인지가 응답에 남아야 한다 — 상태 코드만으로는 진단이 안 된다."""
+        """어느 의존성이 왜 불능인지가 응답에 남아야 한다 — 상태 코드만으로는 진단할 수 없다."""
         probes = (
             StubProbe("cache"),
             StubProbe("vector_store", Status.UNAVAILABLE, detail="연결 실패 (ConnectionError)"),

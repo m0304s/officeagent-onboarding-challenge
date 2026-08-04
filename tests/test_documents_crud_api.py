@@ -1,10 +1,7 @@
-"""문서 목록·상세·삭제와 재업로드 의미론.
-
-업로드 한 건이 아니라 **문서의 생애**를 다룬다 — 올린 것이 조회되는가, 다시 올리면
-무엇이 바뀌는가, 지우면 정말 사라지는가, 색인 구성을 바꾸면 어떻게 드러나는가.
+"""문서의 생애 — 목록·상세·삭제와 재업로드 의미론.
 
 `status` 네 값(`created`·`replaced`·`reindexed`·`unchanged`)의 구분이 이 파일의 축이다.
-넷을 뭉개면 클라이언트는 자기가 올린 파일이 실제로 색인됐는지 알 수 없다.
+넷을 뭉개면 클라이언트가 자기가 올린 파일이 실제로 색인됐는지 알 수 없다.
 """
 
 import pytest
@@ -193,9 +190,7 @@ async def test_recollecting_a_deleted_document_starts_over(client):
 async def collect_in_isolation(make_client, **overrides) -> dict:
     """독립된 저장소에 같은 문서를 수집한다.
 
-    저장소를 공유하면 두 번째 수집이 교체·재색인이 되어, 확인하려는 것(구성이 서명을
-    어떻게 바꾸는가)과 다른 경로가 섞인다.
-    """
+    공유하면 두 번째가 교체·재색인이 되어 확인하려는 경로와 다른 것이 섞인다."""
     async with make_client(
         vector_store=StubVectorStore(), registry=StubDocumentRegistry(), **overrides
     ) as client:
@@ -289,9 +284,7 @@ async def test_the_same_bytes_are_reindexed_after_the_configuration_changes(
 
 
 # ── 재기동 ──────────────────────────────────────────────────────────────
-#
-# `ASGITransport` 는 lifespan 을 돌리지 않으므로 위 테스트들은 기동 훅을 타지 않는다.
-# 기동 정리가 앱에 **실제로 배선되어 있는지**는 여기서만 드러난다.
+# `ASGITransport` 는 lifespan 을 돌리지 않아, 기동 정리의 배선은 여기서만 드러난다.
 
 
 async def test_restarting_with_the_same_configuration_keeps_the_chunks(make_app, vector_store):

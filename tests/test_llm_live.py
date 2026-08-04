@@ -1,8 +1,7 @@
-"""실물 층 — 설치된 `codex app-server`가 실제로 답을 만드는가.
+"""실물 층 — 설치된 `codex app-server` 가 실제로 답을 만드는가.
 
-**기본 실행에서 빠집니다** (`-m llm` 으로만 돕니다). `pytest` 한 줄이 구독과 네트워크에
-묶이면 안 된다는 규율 그대로입니다. 나머지 층이 전부 페이크와 저장된 샘플 위에 서 있어,
-프로세스 인자 형태와 JSON-RPC 스키마 변화는 여기서만 드러납니다.
+기본 실행에서 빠진다(`-m llm`). 나머지 층이 페이크와 저장된 샘플 위에 서 있어, 프로세스
+인자 형태와 JSON-RPC 스키마 변화는 여기서만 드러난다.
 """
 
 import os
@@ -34,7 +33,7 @@ SOURCE = ScoredChunk(
 
 
 def credentials_are_present() -> bool:
-    """자격증명 파일이 있는지만 본다. CLI 를 부르지 않는 것이 요점이다."""
+    """자격증명 파일이 있는지만 본다. CLI 는 부르지 않는다."""
     home = os.environ.get("CODEX_HOME") or f"{os.environ.get('HOME', '')}/.codex"
     return Path(home, "auth.json").is_file()
 
@@ -65,8 +64,7 @@ async def live(tmp_path: Path):
 async def test_실물_CLI가_근거_안에서_답을_만든다(live):
     """계약 넷을 한 번에 본다 — 델타가 여럿 오는가, 형식을 지키는가, 근거를 인용하는가.
 
-    나눠 두면 턴을 그만큼 더 돌게 되고, 한 턴이 5~17초라 실행 시간이 그대로 곱해집니다.
-    """
+    나눠 두면 턴을 그만큼 더 돌게 되고, 한 턴이 5~17초라 실행 시간이 그대로 곱해집니다."""
     generator, _ = live
     prompt = build_prompt(QUESTION, [SOURCE])
 

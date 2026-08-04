@@ -18,12 +18,13 @@ change 단위로 점진적으로 구현합니다. **아래 표에서 "구현됨"
 | 문서 수집 — 추출 → 청킹 → 임베딩 → 벡터·어휘 색인 저장 (`POST /documents`) | 구현됨 |
 | 문서 목록·상세·삭제 (`GET`/`DELETE /documents`) | 구현됨 |
 | 재업로드 교체·재색인, 기동 시 저장소 정리 (두 색인 모두) | 구현됨 |
-| 어휘 색인 — SQLite FTS5, BM25 순위, 한국어 토큰화 | 구현됨 (**아직 검색 경로에 연결되지 않음** — 수집만 양쪽에 씁니다) |
+| 어휘 색인 — SQLite FTS5, BM25 순위, 한국어 토큰화 | 구현됨 (검색 경로에 연결됨) |
 | 벡터 검색 — 질의 임베딩 → 대상 필터 → 상위 K (`POST /search`) | 구현됨 |
-| 하이브리드 검색 — 밀집·어휘 팬아웃 + RRF 융합 | 미구현 (융합 코어 `core/fusion.py`만 존재) |
+| 하이브리드 검색 — 밀집·어휘 팬아웃 + RRF 융합 | 구현됨 |
 | LLM 답변 생성 + SSE 스트리밍 — 출처 표기·환각 억제·재시도 (`POST /qa`) | 구현됨 |
 | 데모 UI — 문서 패널 + 스트리밍 Q&A 콘솔 ([`demo-ui/`](./demo-ui/)) | 구현됨 (선택 실행) |
-| 응답 캐싱, 캐시 무효화 | 미구현 |
+| 응답 캐싱 — 정확 매치(L1) + 유사 매치(L2), TTL·총량 상한, 타임아웃·차단기 | 구현됨 |
+| 캐시 무효화 — 문서 태그 + 부정 판정 집합, 읽기 시점 현재성 재검증 | 구현됨 |
 
 계획은 [`openspec/changes/`](./openspec/changes/)에 change별로 있습니다.
 
@@ -309,6 +310,33 @@ data: {"finish_reason":"insufficient_evidence","answer":"제공된 근거에는 
        "citations":[],"dropped_markers":0,"elapsed_ms":4983}
 ```
 
+#### 캐시 — 이 답변이 어디에서 왔는가
+
+`done` 이벤트가 세 값을 함께 싣습니다. 같은 질문을 두 번 보내 `cache_hit`이 `false` → `true`로 바뀌는 것이 캐시가 실제로 도는지 확인하는 가장 짧은 방법입니다.
+
+```bash
+for i in 1 2; do
+  curl -sN localhost:8000/qa -H 'content-type: application/json' \
+    -d '{"question":"교육비는 얼마까지 지원되나요?"}' \
+    | grep -A1 '^event: done' | tail -1 | jq -c '{cache_hit,cache_layer,cache_similarity,elapsed_ms}'
+done
+```
+
+```json
+{"cache_hit":false,"cache_layer":null,"cache_similarity":null,"elapsed_ms":7385}
+{"cache_hit":true,"cache_layer":"exact","cache_similarity":null,"elapsed_ms":12}
+```
+
+| 값 | 뜻 |
+|---|---|
+| `cache_hit` | 이 답변이 캐시에서 왔는가. **캐시 저장소가 죽어 미스로 강등된 요청도 `false`입니다** |
+| `cache_layer` | `exact`(정규화한 질문이 같음) / `semantic`(뜻이 충분히 가까움) / `null`(미스) |
+| `cache_similarity` | 유사 매치 판정에 쓰인 코사인 유사도. 정확 매치와 미스에서는 `null` |
+
+`elapsed_ms`는 **이번 요청**의 소요 시간이지 캐시된 복사가 아닙니다. 히트는 검색과 생성을 모두 건너뛰므로 그 차이가 그대로 이 값에 드러납니다.
+
+**히트도 미스와 같은 이벤트 시퀀스로 나갑니다** — `sources`에는 원래 생성 시점의 근거가 그대로 실리고, 본문은 `answer` 조각 **하나**로 재생됩니다. 조각 경계를 저장하지 않는 것은 히트에 "조각이 도착하는 사건"이 없기 때문입니다. 그것을 흉내 내면 캐시가 아낀 시간을 도로 쓰면서 진행하는 척만 하게 됩니다.
+
 #### 인용 — 답변이 무엇을 근거로 했는가
 
 답변 본문의 `[1]` 마커가 `sources`의 몇 번째 결과인지를 가리킵니다. **마커는 본문에서 지우지 않습니다** — 지우면 흘러간 문장과 `done.answer`가 달라집니다.
@@ -478,9 +506,23 @@ docker compose run --build --rm test
 | 구조 층 (필터·순서·경계·오류) | ✅ |
 | 실물 Chroma 어댑터 | ✅ (`depends_on`이 띄웁니다) |
 | 검색 품질 (임베딩 실물) | ✅ (가중치가 이미지에 있습니다) |
+| 캐시 의미 (TTL·상한·유사 매치·무효화) | ✅ (인메모리 구현으로 돕니다) |
+| **실물 Redis 어댑터** | ❌ — 저장소가 필요해 기본 실행에서 뺍니다 (바로 아래) |
 | **실물 CLI (답변 생성)** | ❌ — 구독이 필요해 기본 실행에서 뺍니다 (바로 아래) |
 
 **LLM 구독도 API 키도 필요 없습니다.** 건너뛴 항목이 있으면 실행 결과에 사유와 함께 표시됩니다.
+
+각 테스트 파일이 **어떤 실패를 막으려고** 있는지는 [`tests/README.md`](./tests/README.md)에 파일별로 적어 두었습니다. 커버리지 수치가 아니라 그 답이 평가 기준이라, 주석 규칙이 파일 안에서 밀어낸 설명을 지우지 않고 그 문서로 옮겼습니다.
+
+### 실물 Redis 층
+
+캐시의 **의미**(수명·총량 상한·유사 매치·태그 무효화)는 인메모리 구현으로 기본 실행에서 검증합니다. 평가자의 한 줄이 저장소에 묶이면 안 되기 때문입니다. Redis에서만 존재하는 것들 — TTL이 실제로 걸리는가, 만료된 지문이 순서 인덱스에서 걷히는가, 용량 상한이 페이로드 키까지 지우는가 — 은 `redis` 마커 뒤에 두었습니다.
+
+```bash
+docker compose run --build --rm test pytest -m redis
+```
+
+위 명령이 `depends_on`으로 Redis를 함께 띄웁니다. 계약 테스트는 **15번 데이터베이스**를 쓰고 시작과 끝에 비웁니다 — 개발 중에 띄워 둔 캐시(0번)를 건드리지 않습니다.
 
 ### 실물 CLI 층
 
@@ -490,7 +532,7 @@ docker compose run --build --rm test
 docker compose run --build --rm test python -m pytest -m llm
 ```
 
-**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`660 passed, 2 deselected`).
+**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`951 passed, 23 deselected` — 제외된 23건은 실물 CLI 2건과 실물 Redis 21건입니다).
 
 호스트에서 직접 돌리고 싶다면 아래도 됩니다. 이때 실물 Chroma 층은 `docker compose up -d --wait vector-store`로 서버를 띄워야 실행되고, 검색 품질 층은 임베딩 가중치가 캐시돼 있어야 실행됩니다.
 
@@ -540,10 +582,20 @@ docker compose run --build --rm test ruff format --check .
 | `APP_QA_LLM_MODEL` | 모델 식별자. 비우면 CLI 기본값 | (빈 값) |
 | `APP_QA_LLM_INTERRUPT_GRACE_SECONDS` | 턴 중단 후 종료 알림을 기다리는 유예(초). 넘기면 세션 폐기 | `2.0` |
 | `APP_QA_LLM_SESSION_STARTUP_TIMEOUT_SECONDS` | 생성기 프로세스 기동 + 핸드셰이크 상한(초) | `30.0` |
+| `APP_CACHE_ENABLED` | 응답 캐시 사용 여부. 끄면 **모든 요청이 미스**입니다 | `true` |
+| `APP_CACHE_TTL_SECONDS` | 캐시 항목의 수명(초) | `86400` |
+| `APP_CACHE_MAX_ENTRIES` | 보관 항목 수 상한. 넘으면 오래된 것부터 밀려납니다 | `500` |
+| `APP_CACHE_SEMANTIC_THRESHOLD` | 유사 질문으로 인정하는 코사인 유사도 하한 | `0.93` |
+| `APP_CACHE_SEMANTIC_CANDIDATES` | 유사 매치가 한 요청에서 훑는 후보 수 상한 | `200` |
+| `APP_CACHE_OPERATION_TIMEOUT_SECONDS` | 캐시 작업 하나의 시간 상한(초) | `0.2` |
+| `APP_CACHE_CIRCUIT_BREAKER_FAILURES` | 연속 실패가 이만큼이면 캐시 호출을 건너뜁니다 | `3` |
+| `APP_CACHE_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | 건너뛰는 시간(초). 지나면 자동 재개 | `30.0` |
 
 구현되지 않은 `APP_CHUNK_STRATEGY` 값(현재 구현된 것은 `recursive` 하나입니다)이나 청크 크기 이상의 겹침을 넣으면 **기동에 실패합니다.** 잘못된 색인 구성으로 조용히 뜨는 것보다 낫기 때문입니다.
 
 같은 이유로 **`APP_RETRIEVAL_TOP_K`와 `APP_RETRIEVAL_MAX_TOP_K`는 함께 검증됩니다** — 기본 K가 상한보다 크면 어떤 요청도 통과할 수 없으므로 기동을 막습니다. 두 값이 각각은 멀쩡한데 조합이 성립하지 않는 자리라, 첫 검색 요청이 아니라 기동에서 드러나야 합니다.
+
+**`APP_QA_LLM_MODEL`을 비워 두면 캐시 키에 빈 문자열이 들어갑니다.** 빈 값은 "CLI 기본 모델을 쓴다"는 뜻인데, 그 기본값이 CLI 업그레이드로 바뀌어도 캐시 키는 `""` 그대로입니다. 그러면 **옛 모델이 만든 답변이 새 모델의 답인 척 남습니다.** 모델을 명시하면 이 구멍이 닫히고, 모델을 바꾸는 순간 캐시가 저절로 갈립니다.
 
 **활성 retriever 목록만은 이 표에 없습니다.** 값이 항목 넷을 가진 목록이라 환경변수 한 줄로 적기에 맞지 않아, `config.py`에 두고 아래처럼 바꿉니다.
 

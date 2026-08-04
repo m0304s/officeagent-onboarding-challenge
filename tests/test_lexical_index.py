@@ -1,12 +1,7 @@
-"""어휘 색인의 계약 (`lexical-index` 스펙).
+"""어휘 색인의 계약 (`lexical-index` 스펙) — 실물 SQLite 로 돈다.
 
-**실물 SQLite 로 돈다.** 이 층에서 검증할 것 — BM25 의 세 성질, `bm25()` 부호 뒤집기,
-`fts5vocab` 로 읽는 문서 빈도, 가상 테이블의 삭제 — 은 전부 FTS5 자체의 동작이라
-대역으로 바꾸면 검증 대상이 사라진다. 파일 하나뿐이라 컨테이너도 네트워크도 필요 없다.
-
-부호 변환은 오류를 내지 않고 **순위만 뒤집는다.** 원값을 그대로 실으면 점수가 전부 음수라
-`ScoredChunk` 가 거절하겠지만, `DESC` 를 걸면 아무 데서도 걸리지 않고 가장 안 맞는 청크가
-1위가 된다 — 그래서 「점수는 음수가 아니고 앞이 더 크다」가 이 파일에서 가장 중요한 단언이다.
+`bm25()` 부호 뒤집기는 오류를 내지 않고 순위만 뒤집으므로, 「점수는 음수가 아니고 앞이 더
+크다」가 이 파일에서 가장 무거운 단언이다 (`tests/README.md`).
 """
 
 from pathlib import Path
@@ -421,9 +416,7 @@ class TestTheSameQueryGivesTheSameList:
 class TestFailureIsNotDisguisedAsEmptiness:
     """빈 목록과 색인 장애를 뭉개면 어휘 retriever 가 죽은 것을 아무도 알 수 없다.
 
-    융합은 빈 목록을 정상 입력으로 받으므로, 하이브리드 검색이 꺼진 채로 몇 주가 지나도
-    응답은 계속 `200` 이다.
-    """
+    융합이 빈 목록을 정상 입력으로 받아, 꺼진 채 몇 주가 지나도 응답은 `200` 이다."""
 
     @pytest.fixture
     def broken(self, tmp_path: Path) -> SqliteLexicalIndex:

@@ -9,7 +9,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import ClassVar
 
@@ -17,6 +17,7 @@ import anyio
 
 from app.adapters.protocols import AnswerGenerator
 from app.core.answers import Answer, FinishReason, build_citations
+from app.core.cache import CachedAnswer, CacheLookup
 from app.core.exceptions import (
     ErrorCode,
     LlmGenerationFailed,
@@ -25,6 +26,7 @@ from app.core.exceptions import (
 )
 from app.core.prompting import ParsedAnswer, Verdict, VerdictSplitter, build_prompt, parse_answer
 from app.core.retrieval import ScoredChunk
+from app.services.cache import CacheService, CacheSlot
 from app.services.retrieval import RetrievalResult, RetrievalService
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,17 @@ class SourcesEvent:
             target_documents=result.target_documents,
         )
 
+    @classmethod
+    def cached(cls, entry: CachedAnswer) -> "SourcesEvent":
+        """히트에도 원래 생성 시점의 근거가 그대로 실린다 (`response-cache`).
+
+        비워 보내면 클라이언트가 히트와 미스에서 다른 화면을 그려야 한다."""
+        return cls(
+            results=entry.sources,
+            top_k=entry.top_k,
+            target_documents=entry.target_documents,
+        )
+
 
 @dataclass(frozen=True)
 class AnswerEvent:
@@ -89,7 +102,7 @@ class AnswerEvent:
 
 @dataclass(frozen=True)
 class DoneEvent:
-    """정상 종료 — 답변 전문·종료 사유·검증된 인용·소요 시간.
+    """정상 종료 — 답변 전문·종료 사유·검증된 인용·소요 시간·캐시 판정.
 
     전문을 다시 싣는 것은 의도한 중복이다 — 조립 책임을 클라이언트에 지우지 않는다."""
 
@@ -97,6 +110,9 @@ class DoneEvent:
 
     answer: Answer
     elapsed_ms: int
+    #: 이번 답변이 캐시에서 왔는가. 축소 동작으로 처리된 요청은 미스로 나간다 —
+    #: 스펙이 필드의 부재와 `false` 를 다른 뜻으로 요구한다.
+    cache: CacheLookup = field(default_factory=CacheLookup.miss)
 
 
 @dataclass(frozen=True)
@@ -124,13 +140,36 @@ class QaContext:
     `stream` 이 질문을 다시 받지 않아 두 단계 사이에 값이 갈릴 자리가 없다."""
 
     question: str
-    result: RetrievalResult
+    cache: CacheSlot
+    #: 검색에 실제로 쓰인 질의. 지금은 질문과 같지만 캐시 키의 재료가 이쪽이라,
+    #: 질의 재작성이 들어오면 고칠 곳이 여기 하나다.
+    search_query: str
+    #: 캐시 히트면 검색을 하지 않는다 — 근거는 캐시 항목이 들고 있다.
+    result: RetrievalResult | None = None
     request_id: str | None = None
     started_at: float = field(default_factory=time.monotonic)
 
     @property
+    def hit(self) -> bool:
+        return self.cache.hit
+
+    @property
     def sources(self) -> tuple[ScoredChunk, ...]:
-        return self.result.chunks
+        entry = self.cache.entry
+        if entry is not None:
+            return entry.sources
+        return self.result.chunks if self.result is not None else ()
+
+    @property
+    def source_count(self) -> int:
+        return len(self.sources)
+
+    @property
+    def target_documents(self) -> int:
+        entry = self.cache.entry
+        if entry is not None:
+            return entry.target_documents
+        return self.result.target_documents if self.result is not None else 0
 
 
 class QaService:
@@ -140,6 +179,7 @@ class QaService:
         self,
         retrieval: RetrievalService,
         generator: AnswerGenerator,
+        cache: CacheService,
         *,
         timeout_seconds: float,
         max_attempts: int,
@@ -148,6 +188,9 @@ class QaService:
     ) -> None:
         self._retrieval = retrieval
         self._generator = generator
+        # 캐시가 꺼진 배선에서도 객체는 있다 — `None` 분기를 두면 "꺼짐"이 코드 경로가
+        # 되어, 켠 상태에서만 도는 자리가 생긴다.
+        self._cache = cache
         # 정책이 아니라 예산이라 그대로 어댑터에 넘긴다 — 중단 대상과 회수 방법을
         # 아는 곳이 거기뿐이다. 시도 횟수와 백오프는 정책이라 여기 남는다.
         self._timeout_seconds = timeout_seconds
@@ -167,17 +210,32 @@ class QaService:
         top_k: int | None = None,
         request_id: str | None = None,
     ) -> QaContext:
-        """검색까지. 예외를 잡지 않는다.
+        """캐시 조회 → (미스면) 검색까지. 검색 예외를 잡지 않는다.
 
         잡아서 `error` 로 바꾸면 같은 장애가 `/search` 와 `/qa` 에서 다르게 보인다."""
         started_at = time.monotonic()
-        result = await self._retrieval.search(question, top_k=top_k)
-        return QaContext(
+        search_query = question
+
+        # 키 재료를 여기서 다시 유도하지 않는다 — K 의 기본값 규칙과 색인 세대는
+        # 검색 서비스가 소유한다 (design 결정 14).
+        slot = await self._cache.lookup(
+            search_query,
+            top_k=self._retrieval.resolve_top_k(top_k),
+            index_signature=self._retrieval.index_signature,
+        )
+        context = QaContext(
             question=question,
-            result=result,
+            cache=slot,
+            search_query=search_query,
             request_id=request_id,
             started_at=started_at,
         )
+        if slot.hit:
+            # 히트면 검색도 하지 않는다 — 캐시가 아끼는 것은 생성 비용만이 아니다.
+            return context
+
+        result = await self._retrieval.search(search_query, top_k=top_k)
+        return replace(context, result=result)
 
     # ── 2단계: 스트림 안 ────────────────────────────────────────────────
 
@@ -185,10 +243,15 @@ class QaService:
         """`sources` → `answer`* → (`done` | `error`). 종료 이벤트는 정확히 하나다.
 
         종료 없는 닫힘을 허용하면 클라이언트가 매번 타임아웃으로 추정해야 한다."""
+        if context.hit:
+            async for event in self._replay(context):
+                yield event
+            return
+
         yield SourcesEvent.of(context.result)
 
         if not context.sources:
-            yield self._no_evidence(context)
+            yield await self._no_evidence(context)
             return
 
         # `async for` 는 순회를 멈출 때 대상 생성기를 닫아 주지 않는다 — 여기서 닫지
@@ -197,11 +260,29 @@ class QaService:
             async for event in events:
                 yield event
 
-    def _no_evidence(self, context: QaContext) -> DoneEvent:
+    async def _replay(self, context: QaContext) -> AsyncIterator[QaEvent]:
+        """캐시 히트를 미스와 같은 이벤트 시퀀스로 되돌려 준다.
+
+        본문은 조각 하나다 — 히트에는 조각이 도착하는 사건이 없어 경계를 재생하면 연출이다."""
+        entry = context.cache.entry
+        yield SourcesEvent.cached(entry)
+        if entry.answer.text:
+            yield AnswerEvent(text=entry.answer.text)
+        # 동시성 상한을 잡지 않는다 — 그 상한이 있는 이유는 생성 하나가 프로세스 하나라서인데,
+        # 히트에는 프로세스가 없다. 잡으면 히트가 미스 뒤에 줄을 선다 (design 결정 5).
+        self._log_done(context, answer=entry.answer, attempts=0)
+        yield DoneEvent(
+            answer=entry.answer,
+            elapsed_ms=self._elapsed_ms(context),
+            cache=context.cache.lookup,
+        )
+
+    async def _no_evidence(self, context: QaContext) -> DoneEvent:
         """근거 0건 — 생성기를 부르지 않고, 문구도 만들지 않고 `done` 으로 끝낸다.
 
         빈 문맥에서 모델이 쓸 재료는 학습된 지식뿐이라 애초에 묻지 않는다."""
         answer = Answer.no_evidence()
+        await self._remember(context, answer)
         self._log_done(context, answer=answer, attempts=0)
         return DoneEvent(answer=answer, elapsed_ms=self._elapsed_ms(context))
 
@@ -275,6 +356,9 @@ class QaService:
                 continue
 
             answer = _assemble(parsed, sources)
+            # 저장은 `done` 직전이다 — 뒤에 두면 클라이언트가 마지막 프레임 직전에
+            # 끊었을 때 저장이 건너뛰어진다.
+            await self._remember(context, answer)
             self._log_done(context, answer=answer, attempts=attempt)
             if not parsed.verdict_line_present:
                 # 형식 위반은 응답이 아니라 로그로 잡는다 — 이 경고가 늘어나는 것이
@@ -285,6 +369,23 @@ class QaService:
                 )
             yield DoneEvent(answer=answer, elapsed_ms=self._elapsed_ms(context))
             return
+
+    # ── 저장 ────────────────────────────────────────────────────────────
+
+    async def _remember(self, context: QaContext, answer: Answer) -> None:
+        """이번 답변을 캐시에 맡긴다. 실패는 캐시 계층이 삼키고 로그로 남긴다.
+
+        `error` 로 끝난 스트림은 여기 오지 않는다 — 답변이 조립되지 않는다."""
+        await self._cache.store(
+            context.cache,
+            CachedAnswer(
+                answer=answer,
+                top_k=context.result.top_k,
+                target_documents=context.result.target_documents,
+                sources=context.sources,
+            ),
+            query=context.search_query,
+        )
 
     # ── 조립과 관측 ─────────────────────────────────────────────────────
 
@@ -301,8 +402,8 @@ class QaService:
             "답변 생성이 실패로 끝났습니다",
             extra={
                 "request_id": context.request_id,
-                "source_count": context.result.count,
-                "target_documents": context.result.target_documents,
+                "source_count": context.source_count,
+                "target_documents": context.target_documents,
                 "error_code": code.value,
                 "failure_reason": reason.value,
                 "attempts": attempts,
@@ -315,16 +416,23 @@ class QaService:
         """요청 하나가 무엇을 했는지 한 줄로. 질문·근거·답변 본문은 싣지 않는다.
 
         `dropped_markers` 는 프롬프트가 나빠졌다는 가장 이른 신호다."""
+        lookup = context.cache.lookup
         logger.info(
             "답변 생성 요청을 처리했습니다",
             extra={
                 "request_id": context.request_id,
-                "source_count": context.result.count,
-                "target_documents": context.result.target_documents,
+                "source_count": context.source_count,
+                "target_documents": context.target_documents,
                 "finish_reason": answer.finish_reason.value,
                 "citation_count": len(answer.citations),
                 "dropped_markers": answer.dropped_markers,
                 "attempts": attempts,
+                # 캐시 판정도 같은 줄에 싣는다 — 요청 하나가 무엇을 했는지가 한 줄이라야
+                # 히트율을 로그에서 셀 수 있다. 질문·답변 본문은 여기에도 없다.
+                "cache_hit": lookup.hit,
+                "cache_layer": lookup.layer.value if lookup.layer else None,
+                "cache_similarity": lookup.similarity,
+                "cache_degraded": context.cache.degraded,
                 "elapsed_ms": self._elapsed_ms(context),
             },
         )

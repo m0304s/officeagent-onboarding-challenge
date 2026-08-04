@@ -7,6 +7,7 @@
 from collections.abc import AsyncIterator, Sequence
 from typing import Protocol, runtime_checkable
 
+from app.core.cache import CachedAnswer, CacheLookup
 from app.core.documents import (
     Chunk,
     Document,
@@ -184,6 +185,62 @@ class AnswerGenerator(Protocol):
     조각을 쪼개지도 합치지도 않고, 취소는 순회 종료로 표현한다 (`ARCHITECTURE.md`)."""
 
     def generate(self, prompt: str, *, timeout_seconds: float) -> AsyncIterator[str]: ...
+
+
+@runtime_checkable
+class ResponseCache(Protocol):
+    """답변 한 건을 질의 지문에 맡아 두고, 문서 변경에 맞춰 걷어낸다.
+
+    유사 매치에 "가장 가까운 하나"만 요구해 저장소를 갈아도 소비처가 흔들리지 않는다."""
+
+    async def lookup_exact(self, fingerprint: str) -> CacheLookup: ...
+
+    async def count_candidates(self, scope: str) -> int:
+        """유사 매치가 훑을 항목 수. 0 이면 호출부가 질의 임베딩을 만들지 않는다.
+
+        이 값을 묻지 않으면 캐시가 빈 상태에서도 미스마다 임베딩이 두 번 돈다 (결정 10)."""
+        ...
+
+    async def lookup_semantic(
+        self,
+        embedding: Sequence[float],
+        *,
+        scope: str,
+        threshold: float,
+        candidates: int,
+    ) -> CacheLookup:
+        """같은 `scope` 의 최근 `candidates` 개 중 임계값을 넘는 가장 가까운 항목.
+
+        임계값을 인자로 받는 것은 구현이 "얼마나 틀려도 되는가"를 들지 않게 하려는 것이다."""
+        ...
+
+    async def store(
+        self,
+        fingerprint: str,
+        entry: CachedAnswer,
+        *,
+        scope: str,
+        embedding: Sequence[float],
+        negative: bool,
+    ) -> None:
+        """항목 하나를 맡긴다. 저장이 거부되는 경로는 없다 — 상한은 오래된 것을 밀어낸다.
+
+        무효화 태그는 항목이 스스로 알고(`document_ids`), 부정 판정 여부는 호출부가 정한다."""
+        ...
+
+    async def invalidate_document(self, document_id: str) -> int:
+        """그 문서를 근거로 삼은 항목을 지우고 지운 개수를 돌려준다."""
+        ...
+
+    async def invalidate_negative(self) -> int:
+        """근거 없음·답변 불가로 끝난 항목을 지우고 지운 개수를 돌려준다.
+
+        코퍼스 내용이 바뀌면 "어디에도 없다"는 주장이 반증되기 때문이다 (design 결정 4)."""
+        ...
+
+    async def discard(self, fingerprint: str) -> None:
+        """항목 하나를 지운다 — 재검증에서 버린 항목이 요청마다 비용을 다시 물지 않게."""
+        ...
 
 
 @runtime_checkable
