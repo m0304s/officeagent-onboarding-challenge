@@ -38,25 +38,52 @@ def derive_cache_key(
     """다섯 재료에서 캐시 항목의 지문을 유도한다 — 하나만 달라도 다른 항목이 된다.
 
     질의를 키에 그대로 담으면 `redis-cli KEYS` 나 로그에 질문이 복원 가능하게 남는다."""
-    # `None` 이 키에 들어가면 K 를 생략한 요청과 기본값을 명시한 요청이 갈린다
-    # (design 결정 14). 타입 힌트는 런타임에 이것을 막지 않는다.
-    if top_k < 1:
-        raise ValueError("top_k 는 1 이상이어야 한다")
-
-    # `derive_index_signature` 와 같은 직렬화 규약이다. 값 경계가 모호한 연결은 서로
-    # 다른 구성이 같은 키를 받는 자리를 남긴다.
-    canonical = json.dumps(
+    _require_resolved_top_k(top_k)
+    return _fingerprint(
         {
             "query": normalize_query(query),
             "top_k": top_k,
             "prompt_version": prompt_version,
             "index_signature": index_signature,
             "model": model,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+        }
     )
+
+
+def derive_cache_scope(
+    *,
+    top_k: int,
+    prompt_version: str,
+    index_signature: str,
+    model: str,
+) -> str:
+    """질의를 뺀 네 재료의 지문 — 유사 매치가 훑어도 되는 후보 집합의 이름이다.
+
+    K 나 프롬프트가 다른 항목이 유사도만으로 히트가 되는 것을 막는다 (`response-cache`)."""
+    _require_resolved_top_k(top_k)
+    # 키와 같은 재료를 쓰므로 접두사로 갈라 둔다 — 없으면 질의가 빈 항목의 키와 겹친다.
+    return _fingerprint(
+        {
+            "scope": "qa",
+            "top_k": top_k,
+            "prompt_version": prompt_version,
+            "index_signature": index_signature,
+            "model": model,
+        }
+    )[:16]
+
+
+def _require_resolved_top_k(top_k: int) -> None:
+    """`None` 이 들어오면 K 를 생략한 요청과 기본값을 명시한 요청이 갈린다 (design 결정 14)."""
+    if top_k < 1:
+        raise ValueError("top_k 는 1 이상이어야 한다")
+
+
+def _fingerprint(materials: dict[str, object]) -> str:
+    """정규 JSON → SHA-256. `derive_index_signature` 와 같은 직렬화 규약이다.
+
+    값 경계가 모호한 연결은 서로 다른 구성이 같은 지문을 받는 자리를 남긴다."""
+    canonical = json.dumps(materials, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -114,10 +141,15 @@ class CacheLookup:
     entry: CachedAnswer | None = None
     layer: CacheLayer | None = None
     similarity: float | None = None
+    #: 히트한 항목의 지문. 재검증에서 버린 항목을 지우려면 어느 항목이었는지가 필요한데,
+    #: 유사 매치에서는 그것을 저장소만 안다 (design 결정 7).
+    fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if (self.entry is None) != (self.layer is None):
             raise ValueError("히트는 항목과 층을 함께 든다")
+        if (self.entry is None) != (self.fingerprint is None):
+            raise ValueError("히트는 자기 지문을 함께 든다")
         # 유사도는 유사 매치의 판정 근거라, 다른 층에 실리면 응답에서 뜻이 갈린다.
         if (self.similarity is not None) != (self.layer is CacheLayer.SEMANTIC):
             raise ValueError("유사도는 유사 매치 히트에만 실린다")
@@ -132,14 +164,19 @@ class CacheLookup:
         return cls()
 
     @classmethod
-    def exact(cls, entry: CachedAnswer) -> "CacheLookup":
+    def exact(cls, fingerprint: str, entry: CachedAnswer) -> "CacheLookup":
         """정확 매치 히트."""
-        return cls(entry=entry, layer=CacheLayer.EXACT)
+        return cls(entry=entry, layer=CacheLayer.EXACT, fingerprint=fingerprint)
 
     @classmethod
-    def semantic(cls, entry: CachedAnswer, similarity: float) -> "CacheLookup":
+    def semantic(cls, fingerprint: str, entry: CachedAnswer, similarity: float) -> "CacheLookup":
         """유사 매치 히트 — 판정에 쓰인 유사도를 함께 든다."""
-        return cls(entry=entry, layer=CacheLayer.SEMANTIC, similarity=similarity)
+        return cls(
+            entry=entry,
+            layer=CacheLayer.SEMANTIC,
+            similarity=similarity,
+            fingerprint=fingerprint,
+        )
 
 
 @dataclass(frozen=True)

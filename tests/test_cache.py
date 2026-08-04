@@ -26,6 +26,7 @@ from app.core.cache import (
     best_match,
     cosine_similarity,
     derive_cache_key,
+    derive_cache_scope,
     normalize_query,
 )
 from app.core.documents import ChunkLocation, DocumentFormat
@@ -158,6 +159,42 @@ def test_key_rejects_unresolved_top_k():
         derive_cache_key(**{**KEY_MATERIALS, "top_k": None})
 
 
+# ── 후보 집합 ────────────────────────────────────────────────────────────
+
+
+def scope_materials(**overrides) -> dict:
+    fields = {name: value for name, value in KEY_MATERIALS.items() if name != "query"}
+    return {**fields, **overrides}
+
+
+def test_scope_ignores_the_query():
+    """유사 매치는 질의가 다른 항목을 찾는 층이라, 질의가 후보 집합을 갈라서는 안 된다."""
+    assert derive_cache_scope(**scope_materials()) == derive_cache_scope(**scope_materials())
+
+
+@pytest.mark.parametrize(
+    ("material", "other"),
+    [
+        ("top_k", 3),
+        ("prompt_version", "qa-ko-2"),
+        ("index_signature", "ffffffffffffffff"),
+        ("model", "gpt-5"),
+    ],
+)
+def test_scope_splits_on_every_non_query_material(material, other):
+    """K 나 프롬프트나 색인이 다른 항목이 유사도만으로 히트가 되면 안 된다 (`response-cache`).
+
+    이것이 없으면 `top_k=3` 으로 캐시된 답변이 `top_k=5` 요청에 유사도 1.0 으로 나간다."""
+    assert derive_cache_scope(**scope_materials(**{material: other})) != derive_cache_scope(
+        **scope_materials()
+    )
+
+
+def test_scope_is_not_a_cache_key():
+    """둘이 같은 재료를 쓰므로 값이 겹치면 후보 집합 이름이 항목 지문 자리에 들어간다."""
+    assert derive_cache_scope(**scope_materials()) not in derive_cache_key(**KEY_MATERIALS)
+
+
 # ── 캐시 항목 ────────────────────────────────────────────────────────────
 
 
@@ -209,7 +246,7 @@ def test_miss_carries_neither_layer_nor_similarity():
 
 def test_exact_hit_has_no_similarity():
     """정확 매치는 유사도를 계산하지 않는다 — 값이 실리면 운영자가 임계값을 오독한다."""
-    lookup = CacheLookup.exact(entry())
+    lookup = CacheLookup.exact("fp-1", entry())
 
     assert lookup.hit and lookup.layer is CacheLayer.EXACT
     assert lookup.similarity is None
@@ -217,10 +254,16 @@ def test_exact_hit_has_no_similarity():
 
 def test_semantic_hit_carries_the_similarity_used_to_judge():
     """임계값 조정 근거가 응답 밖에만 있으면 운영자가 로그를 파야 한다."""
-    lookup = CacheLookup.semantic(entry(), 0.9612)
+    lookup = CacheLookup.semantic("fp-1", entry(), 0.9612)
 
     assert lookup.hit and lookup.layer is CacheLayer.SEMANTIC
     assert lookup.similarity == pytest.approx(0.9612)
+
+
+def test_hit_identifies_the_entry_it_came_from():
+    """지문이 없으면 재검증에서 버린 항목을 지울 수 없다 — 유사 매치는 저장소만 안다."""
+    assert CacheLookup.semantic("fp-7", entry(), 0.95).fingerprint == "fp-7"
+    assert CacheLookup.miss().fingerprint is None
 
 
 @pytest.mark.parametrize(
@@ -229,10 +272,12 @@ def test_semantic_hit_carries_the_similarity_used_to_judge():
         {"layer": CacheLayer.EXACT},
         {"similarity": 0.99},
         {"entry": entry()},
+        {"entry": entry(), "layer": CacheLayer.EXACT},
+        {"fingerprint": "fp-1"},
     ],
 )
 def test_lookup_rejects_half_built_hits(fields):
-    """층 없는 항목이나 항목 없는 유사도는 응답에서 서로를 부정한다."""
+    """층이나 지문이 빠진 항목은 응답에서 서로를 부정한다."""
     with pytest.raises(ValueError):
         CacheLookup(**fields)
 
@@ -240,7 +285,7 @@ def test_lookup_rejects_half_built_hits(fields):
 def test_lookup_rejects_similarity_on_exact_layer():
     """정확 매치에 유사도가 실리면 두 층의 구분이 무의미해진다."""
     with pytest.raises(ValueError):
-        CacheLookup(entry=entry(), layer=CacheLayer.EXACT, similarity=1.0)
+        CacheLookup(entry=entry(), layer=CacheLayer.EXACT, similarity=1.0, fingerprint="fp-1")
 
 
 # ── 유사 매치 판정 ───────────────────────────────────────────────────────

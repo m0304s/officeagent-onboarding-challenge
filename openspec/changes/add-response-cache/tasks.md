@@ -8,14 +8,14 @@
 
 ## 2. 캐시 저장소 계약과 구현 셋
 
-- [ ] 2.1 `adapters/protocols.py` 에 `ResponseCache` 프로토콜을 더한다 — `lookup_exact`, `lookup_semantic`, `store`, `invalidate_document`, `invalidate_negative`, `discard`. 소비처가 생기는 지금 정의한다
-- [ ] 2.2 `adapters/cache/null.py` — `NullResponseCache`. 조회는 항상 미스, 저장은 무동작. `cache_enabled=false` 가 배선되는 곳이다. 인메모리로 잇지 않는다 — 그러면 캐시를 껐는데 히트가 계속 난다 (design.md 결정 12)
-- [ ] 2.3 `adapters/cache/memory.py` — `InMemoryResponseCache`. TTL·상한·유사 매치·태그 무효화까지 전체 의미를 구현한다. **테스트가 명시적으로 주입할 때만** 쓰이며, 프로덕션 배선이 여기로 떨어지는 분기를 만들지 않는다
-- [ ] 2.4 `config.py` 에 설정 항목을 더한다 — `cache_enabled`, `cache_ttl_seconds`, `cache_max_entries`, `cache_semantic_threshold`, `cache_semantic_candidates`. 전부 기본값을 갖게 해 환경 변수 없이 기동되게 한다
-- [ ] 2.5 `config.py` 에 장애 대비 항목을 더한다 — `cache_operation_timeout_seconds`(기본 0.2), `cache_circuit_breaker_failures`(기본 3), `cache_circuit_breaker_cooldown_seconds`(기본 30). 헬스 프로브의 2초와 값이 다른 이유를 주석으로 남긴다 (design.md 결정 13)
-- [ ] 2.6 테스트 — TTL 만료 후 미스, 항목 수 상한 초과 시 오래된 항목부터 밀려나되 저장이 거부되지 않음, 후보 스캔 상한이 지켜짐 (`response-cache`: 캐시 항목에는 수명과 총량 상한이 있다)
+- [x] 2.1 `adapters/protocols.py` 에 `ResponseCache` 프로토콜을 더한다 — `lookup_exact`, `lookup_semantic`, `store`, `invalidate_document`, `invalidate_negative`, `discard`. 소비처가 생기는 지금 정의한다
+- [x] 2.2 `adapters/cache/null.py` — `NullResponseCache`. 조회는 항상 미스, 저장은 무동작. `cache_enabled=false` 가 배선되는 곳이다. 인메모리로 잇지 않는다 — 그러면 캐시를 껐는데 히트가 계속 난다 (design.md 결정 12)
+- [x] 2.3 `adapters/cache/memory.py` — `InMemoryResponseCache`. TTL·상한·유사 매치·태그 무효화까지 전체 의미를 구현한다. **테스트가 명시적으로 주입할 때만** 쓰이며, 프로덕션 배선이 여기로 떨어지는 분기를 만들지 않는다
+- [x] 2.4 `config.py` 에 설정 항목을 더한다 — `cache_enabled`, `cache_ttl_seconds`, `cache_max_entries`, `cache_semantic_threshold`, `cache_semantic_candidates`. 전부 기본값을 갖게 해 환경 변수 없이 기동되게 한다
+- [x] 2.5 `config.py` 에 장애 대비 항목을 더한다 — `cache_operation_timeout_seconds`(기본 0.2), `cache_circuit_breaker_failures`(기본 3), `cache_circuit_breaker_cooldown_seconds`(기본 30). 헬스 프로브의 2초와 값이 다른 이유를 주석으로 남긴다 (design.md 결정 13)
+- [x] 2.6 테스트 — TTL 만료 후 미스, 항목 수 상한 초과 시 오래된 항목부터 밀려나되 저장이 거부되지 않음, 후보 스캔 상한이 지켜짐 (`response-cache`: 캐시 항목에는 수명과 총량 상한이 있다)
 - [ ] 2.7 테스트 — `cache_enabled=false` 로 **같은 질문을 두 번** 보내면 둘 다 미스이고 생성기가 두 번 호출되는지 (`response-cache`: 캐시를 끈 상태에서는 어떤 요청도 히트가 되지 않는다)
-- [ ] 2.8 테스트 — 배선 코드에 인메모리 구현으로 가는 분기가 없는지 고정한다. 프로덕션 경로가 인메모리로 새면 결정 12 가 막으려던 실패가 그대로 돌아온다
+- [x] 2.8 테스트 — 배선 코드에 인메모리 구현으로 가는 분기가 없는지 고정한다. 프로덕션 경로가 인메모리로 새면 결정 12 가 막으려던 실패가 그대로 돌아온다
 
 ## 3. Redis 어댑터
 
