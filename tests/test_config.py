@@ -167,6 +167,118 @@ def test_default_top_k_above_the_ceiling_fails_startup(monkeypatch, tmp_path):
     assert "retrieval_top_k" in message and "retrieval_max_top_k" in message
 
 
+# ── retriever 구성 (5.7) ────────────────────────────────────────────────
+
+#: 상한 기본값(50)을 채우는 깊이. 깊이 검증이 아닌 테스트가 그 검증에 먼저 걸리면
+#: 무엇이 기동을 막았는지가 갈리지 않는다.
+DEEP = 50
+
+
+def _retrievers_env(monkeypatch, tmp_path, payload: str) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RETRIEVERS", payload)
+
+
+def test_the_shipped_retriever_defaults_are_dense_required_plus_lexical_optional(
+    monkeypatch, tmp_path
+):
+    """기본 구성이 하이브리드다 — 어휘 색인이 죽어도 밀집만으로 계속 돈다."""
+    monkeypatch.chdir(tmp_path)
+    for key in list(os.environ):
+        if key.startswith("APP_"):
+            monkeypatch.delenv(key, raising=False)
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert [item.name for item in settings.retrievers] == ["dense", "lexical"]
+    assert [item.required for item in settings.retrievers] == [True, False]
+    assert all(item.weight > 0 for item in settings.retrievers)
+    assert all(item.candidate_depth >= settings.retrieval_max_top_k for item in settings.retrievers)
+    assert settings.retrieval_rrf_k > 0
+
+
+def test_an_empty_retriever_list_fails_startup(monkeypatch, tmp_path):
+    """빈 목록을 허용하면 검색이 아무것도 못 찾는 배포가 오류 없이 존재하게 된다."""
+    _retrievers_env(monkeypatch, tmp_path, "[]")
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    assert "retrievers" in str(exc_info.value)
+
+
+def test_an_unknown_retriever_name_fails_startup_and_names_the_culprit(monkeypatch, tmp_path):
+    """실패 사유에서 문제가 된 이름을 확인할 수 있어야 한다 — 오타는 이름으로만 찾는다."""
+    _retrievers_env(
+        monkeypatch, tmp_path, f'[{{"name": "sparse", "candidate_depth": {DEEP}}}]'
+    )
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "sparse" in message
+    assert "dense" in message and "lexical" in message, "등록된 이름을 알려주지 않았다"
+
+
+@pytest.mark.parametrize("weight", ["0", "-1.5"])
+def test_a_non_positive_weight_fails_startup(monkeypatch, tmp_path, weight):
+    """0 은 그 목록이 순위에 아무것도 기여하지 않고, 음수는 순서를 뒤집는다."""
+    _retrievers_env(
+        monkeypatch,
+        tmp_path,
+        f'[{{"name": "dense", "weight": {weight}, "candidate_depth": {DEEP}}}]',
+    )
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    assert "weight" in str(exc_info.value)
+
+
+def test_a_candidate_depth_below_the_k_ceiling_fails_startup(monkeypatch, tmp_path):
+    """비교 대상이 K **상한**이다 — 기본값과만 비교하면 큰 `top_k` 요청 하나가 곧 넘어선다.
+
+    기본 K 를 상한보다 훨씬 낮게 두고 깊이를 그 **기본값 이상·상한 미만**으로 잡는다.
+    기본값과 비교하는 구현은 이 구성을 통과시키고, 그 배포에서 `top_k=40` 요청 하나가
+    곧바로 융합할 후보가 없는 상태를 만든다.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RETRIEVAL_TOP_K", "5")
+    monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "40")
+    monkeypatch.setenv("APP_RETRIEVERS", '[{"name": "dense", "candidate_depth": 10}]')
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "candidate_depth" in message and "retrieval_max_top_k" in message
+
+
+def test_a_candidate_depth_at_the_k_ceiling_boots(monkeypatch, tmp_path):
+    """상한과 같으면 통과한다 — 하한이 아니라 상한과의 대조라는 것의 반대편이다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RETRIEVAL_MAX_TOP_K", "40")
+    monkeypatch.setenv("APP_RETRIEVERS", '[{"name": "lexical", "candidate_depth": 40}]')
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert [item.name for item in settings.retrievers] == ["lexical"]
+    assert settings.retrievers[0].candidate_depth == 40
+
+
 # ── 답변 생성 설정 ──────────────────────────────────────────────────────
 
 

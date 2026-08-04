@@ -47,6 +47,15 @@ OfficeAgent BE 채용 과제 — Document Q&A API. 문서를 업로드하면 내
   **직전 이미지의 코드를 검사**하므로, 방금 고친 결함을 그대로 다시 보고합니다.
   **수정 직후의 재검증이 몇 초 만에 같은 결과로 돌아왔다면 `--build`를 빠뜨린 것입니다.**
 
+- **일부 테스트만 돌릴 때는 `pytest`를 직접 적습니다.** `Dockerfile`의 `test` 스테이지는
+  `ENTRYPOINT`가 아니라 `CMD ["pytest", "-q"]`라, `docker compose run`에 넘긴 인자가
+  명령을 통째로 갈아치웁니다.
+
+  ```bash
+  docker compose run --build --rm test pytest tests/test_config.py -q   # 이렇게
+  docker compose run --build --rm test tests/test_config.py             # exec format error
+  ```
+
 - **`api` 서비스도 같습니다 — `docker compose up`에도 `--build`를 붙입니다.**
 
   ```bash
@@ -76,7 +85,7 @@ OfficeAgent BE 채용 과제 — Document Q&A API. 문서를 업로드하면 내
 | 호스트 | 제약 |
 |---|---|
 | macOS (`Darwin`, 현재) | 기본 셸 `zsh`. `python3`은 3.9라 앱을 못 돌립니다. `jq`는 있습니다 |
-| Windows | `python`·`py`·`python3`이 전부 **Windows Store 별칭**이라 exit 49로 죽습니다 (파이썬이 없는 것과 같습니다). `jq`도 없습니다. Bash는 POSIX(Git Bash)·PowerShell은 5.1이라 **한 명령에 섞지 않습니다.** PowerShell에서 네이티브 exe에 `2>&1`을 붙이지 않고, 컨테이너 경로를 인자로 넘길 때는 `MSYS_NO_PATHCONV=1`을 씁니다 |
+| Windows | `PATH`의 `python`·`python3`은 **Windows Store 별칭**이라 exit 49로 죽습니다. 다만 **실물 파이썬이 있습니다** — `C:\Users\SSAFY\AppData\Local\Programs\Python\Launcher\py.exe -3` (3.15.0b3). `scripts/check_comments.py`와 표준 라이브러리만 쓰는 모듈의 사전 점검은 이것으로 돌아갑니다. `pytest`·`ruff`·`fastapi`는 설치돼 있지 않아, 스크래치패드에 `py -3 -m venv`로 venv를 만들어 넣어야 합니다. `tests/conftest.py`가 `fastapi`를 import하므로 코어 테스트만 돌릴 때는 `--noconftest`가 필요합니다. `jq`는 없습니다. Bash는 POSIX(Git Bash)·PowerShell은 5.1이라 **한 명령에 섞지 않습니다.** PowerShell에서 네이티브 exe에 `2>&1`을 붙이지 않고, 컨테이너 경로를 인자로 넘길 때는 `MSYS_NO_PATHCONV=1`을 씁니다. Docker Desktop은 설치돼 있으나 **데몬이 꺼져 있을 수 있습니다** — `docker compose`가 `dockerDesktopLinuxEngine` 파이프를 못 찾으면 데몬부터 띄웁니다 |
 
 ## 주석 규칙
 

@@ -300,10 +300,11 @@ def derive_index_signature(
     chunk_strategy_version: int,
     chunk_size: int,
     chunk_overlap: int,
+    tokenizer_signature: str,
 ) -> str:
-    """색인 구성에서 서명을 유도한다 — 결과 벡터를 바꾸는 값만 들어온다.
+    """색인 구성에서 서명을 유도한다 — 저장물을 바꾸는 값만 들어온다.
 
-    성능 값을 넣으면 튜닝이 전면 재색인을 유발한다 (`ARCHITECTURE.md` 저장소)."""
+    성능 값과 검색 시점 설정을 넣으면 튜닝이 전면 재색인을 유발한다 (`ARCHITECTURE.md`)."""
     if chunk_strategy_version < 1:
         raise ValueError("chunk_strategy_version 은 1 이상이어야 한다")
 
@@ -316,6 +317,9 @@ def derive_index_signature(
             "chunk_strategy_version": chunk_strategy_version,
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
+            # 토큰화가 달라지면 어휘 색인의 내용이 달라진다. 서명을 따로 두지 않는 근거는
+            # `document-ingestion` 델타의 「색인 서명은 저장 시점의 색인 구성에서」에 있다.
+            "tokenizer_signature": tokenizer_signature,
         },
         ensure_ascii=False,
         sort_keys=True,

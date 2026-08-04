@@ -21,8 +21,9 @@ from app.core.documents import (
     TextSegment,
 )
 from app.core.exceptions import StorageUnavailable
+from app.core.lexical import DEFAULT_TOKENIZER
 from app.core.models import ProbeResult, Status
-from app.core.retrieval import ScoredChunk
+from app.core.retrieval import RetrievedChunk
 
 
 class StubProbe:
@@ -314,7 +315,7 @@ class StubVectorStore:
         *,
         top_k: int,
         versions: Sequence[StoredIndexVersion],
-    ) -> list[ScoredChunk]:
+    ) -> list[RetrievedChunk]:
         self.queries.append((top_k, tuple(versions)))
         if self._query_delay:
             await asyncio.to_thread(time.sleep, self._query_delay)
@@ -341,7 +342,7 @@ class StubVectorStore:
         # 기대면 저장 순서가 바뀌는 순간 거짓이 된다.
         scored.sort(key=lambda item: (-item[0], item[1]["chunk"].id))
         return [
-            ScoredChunk(
+            RetrievedChunk(
                 document_id=record["chunk"].document_id,
                 revision=record["chunk"].revision,
                 index_signature=record["chunk"].index_signature,
@@ -350,7 +351,7 @@ class StubVectorStore:
                 location=record["chunk"].location,
                 filename=record["filename"],
                 format=record["format"],
-                score=score,
+                native_score=score,
             )
             for score, record in scored[:top_k]
         ]
@@ -382,8 +383,8 @@ class StubVectorStore:
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     """코사인 유사도를 `[0, 1]` 로 잘라 돌려준다.
 
-    실물 어댑터가 거리를 유사도로 바꾸며 클램프하는 것과 같은 정의역이다 — 대역이
-    범위를 벗어난 점수를 내면 `ScoredChunk` 가 거절해 테스트가 대역 탓으로 깨진다.
+    실물 어댑터가 거리를 유사도로 바꾸며 클램프하는 것과 같은 정의역이다 — 대역이 다른
+    범위를 쓰면 밀집 하한을 재는 테스트가 실물에서 뒤집힌다.
     """
     dot = sum(a * b for a, b in zip(left, right, strict=True))
     norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
@@ -403,6 +404,148 @@ def _matches(
         and (revision is None or chunk.revision == revision)
         and (index_signature is None or chunk.index_signature == index_signature)
     )
+
+
+class StubLexicalIndex:
+    """인메모리 어휘 색인.
+
+    `StubVectorStore` 와 **같은 손잡이**를 갖는 것이 요건이다. 수집 스펙이 요구하는
+    "어느 한쪽 쓰기가 실패해도 양쪽에 그 리비전의 청크가 0개"는 실패를 **한쪽에만**
+    주입할 수 있어야 만들어지고, 두 대역의 주입 방식이 다르면 그 대칭이 표현되지 않는다.
+
+    검색은 토큰 교집합 수로 매기는 단순 순위다. BM25 의 세 성질과 `bm25()` 부호 뒤집기는
+    실물에서만 관측되는 성질이라 `test_lexical_index.py` 가 실물 SQLite 로 덮는다 — 여기서
+    흉내 내면 검증 대상이 대역이 된다.
+    """
+
+    def __init__(
+        self,
+        *,
+        fail_add_after: int | None = None,
+        fail_delete: bool = False,
+        fail_search: bool = False,
+    ) -> None:
+        self.records: dict[str, dict] = {}
+        self.fail_add_after = fail_add_after
+        self.fail_delete = fail_delete
+        self.fail_search = fail_search
+        self.add_calls = 0
+        #: 질의 호출 기록. "대상이 없으면 색인을 건드리지 않는다"는 호출 부재로만 확인된다.
+        self.searches: list[tuple[str, int, tuple[StoredIndexVersion, ...]]] = []
+
+    async def add_chunks(
+        self,
+        chunks: Sequence[Chunk],
+        *,
+        filename: str,
+        document_format: DocumentFormat,
+    ) -> None:
+        if self.fail_add_after is not None and self.add_calls >= self.fail_add_after:
+            self.add_calls += 1
+            raise StorageUnavailable("주입된 어휘 색인 쓰기 실패")
+        self.add_calls += 1
+        for chunk in chunks:
+            self.records[chunk.id] = {
+                "chunk": chunk,
+                "filename": filename,
+                "format": document_format,
+            }
+
+    async def delete_document(
+        self,
+        document_id: str,
+        *,
+        revision: str | None = None,
+        index_signature: str | None = None,
+    ) -> int:
+        if self.fail_delete:
+            raise StorageUnavailable("주입된 어휘 색인 삭제 실패")
+        matched = [
+            chunk_id
+            for chunk_id, record in self.records.items()
+            if _matches(record["chunk"], document_id, revision, index_signature)
+        ]
+        for chunk_id in matched:
+            del self.records[chunk_id]
+        return len(matched)
+
+    async def count_chunks(
+        self,
+        document_id: str | None = None,
+        *,
+        revision: str | None = None,
+        index_signature: str | None = None,
+    ) -> int:
+        return len(
+            [
+                record
+                for record in self.records.values()
+                if _matches(record["chunk"], document_id, revision, index_signature)
+            ]
+        )
+
+    async def list_stored_versions(self) -> list[StoredIndexVersion]:
+        versions = {
+            (
+                record["chunk"].document_id,
+                record["chunk"].revision,
+                record["chunk"].index_signature,
+            )
+            for record in self.records.values()
+        }
+        return [StoredIndexVersion(*version) for version in sorted(versions)]
+
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[RetrievedChunk]:
+        self.searches.append((query, top_k, tuple(versions)))
+        if self.fail_search:
+            raise StorageUnavailable("주입된 어휘 검색 실패")
+        # 실물 어댑터와 같은 판정이라야 대역으로 통과한 테스트가 실물에서 뒤집히지 않는다.
+        if not versions:
+            return []
+        wanted = set(DEFAULT_TOKENIZER.tokenize(query))
+        targets = {
+            (version.document_id, version.revision, version.index_signature) for version in versions
+        }
+        scored = []
+        for record in self.records.values():
+            chunk = record["chunk"]
+            if (chunk.document_id, chunk.revision, chunk.index_signature) not in targets:
+                continue
+            overlap = len(wanted & set(DEFAULT_TOKENIZER.tokenize(chunk.text)))
+            if overlap:
+                scored.append((float(overlap), record))
+        scored.sort(key=lambda item: (-item[0], item[1]["chunk"].id))
+        return [
+            RetrievedChunk(
+                document_id=record["chunk"].document_id,
+                revision=record["chunk"].revision,
+                index_signature=record["chunk"].index_signature,
+                chunk_index=record["chunk"].chunk_index,
+                text=record["chunk"].text,
+                location=record["chunk"].location,
+                filename=record["filename"],
+                format=record["format"],
+                native_score=score,
+            )
+            for score, record in scored[:top_k]
+        ]
+
+    def chunks_of(self, document_id: str) -> list[Chunk]:
+        """저장 순서가 아니라 청크 순번으로 정렬해 돌려준다."""
+        return sorted(
+            (
+                record["chunk"]
+                for record in self.records.values()
+                if record["chunk"].document_id == document_id
+            ),
+            key=lambda chunk: chunk.chunk_index,
+        )
 
 
 @dataclass(frozen=True)

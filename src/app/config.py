@@ -8,11 +8,42 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.adapters.retrievers import RETRIEVER_NAMES
 from app.core.chunking import ChunkStrategy
 from app.core.exceptions import ConfigurationError
+from app.core.fusion import DEFAULT_RRF_K
+
+
+class RetrieverSettings(BaseModel):
+    """활성 retriever 하나의 구성 — 이름·가중치·후보 깊이·필수 여부."""
+
+    name: str
+    # 0 이나 음수는 그 목록이 순위에 아무것도 기여하지 않거나 순서를 뒤집는다는 뜻이다.
+    weight: float = Field(default=1.0, gt=0)
+    candidate_depth: int = Field(default=100, gt=0)
+    required: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _must_be_registered(cls, value: str) -> str:
+        """등록되지 않은 이름은 기동을 막는다 — 런타임에 발견되면 오타가 조용히 도는 배포다."""
+        if value not in RETRIEVER_NAMES:
+            raise ValueError(
+                f"알 수 없는 retriever 이름입니다 — {value!r} "
+                f"(등록된 이름: {sorted(RETRIEVER_NAMES)})"
+            )
+        return value
+
+
+def _default_retrievers() -> list[RetrieverSettings]:
+    """밀집 필수 + 어휘 선택. 가중치를 같게 두는 근거는 `ARCHITECTURE.md` 에 있다."""
+    return [
+        RetrieverSettings(name="dense", required=True),
+        RetrieverSettings(name="lexical", required=False),
+    ]
 
 
 class Settings(BaseSettings):
@@ -23,20 +54,21 @@ class Settings(BaseSettings):
     app_name: str = "document-qa-api"
     log_level: str = "INFO"
 
-    # 캐시 저장소 (별도 컨테이너)
     cache_url: str = "redis://localhost:6379/0"
-
-    # 8001 인 이유는 Chroma 기본값(8000)이 이 API 포트와 겹치기 때문이다. compose 가
-    # 호스트 8001 을 컨테이너 8000 에 연결해 안팎에서 같은 주소가 쓰인다.
     vector_store_url: str = "http://localhost:8001"
 
-    # 의존성별·전체 상한을 따로 둔다 — 하나가 매달려도 나머지 결과가 나와야 한다.
     probe_timeout_seconds: float = Field(default=2.0, gt=0)
     health_total_timeout_seconds: float = Field(default=5.0, gt=0)
 
-    # ── 문서 수집 ──────────────────────────────────────────────────────
-    # 표준 라이브러리 SQLite 파일이라 컨테이너가 늘지 않는다.
     registry_path: Path = Path("./data/registry.sqlite3")
+
+    # 어휘 색인(FTS5)도 파일 하나다. 레지스트리와 나누는 이유는 검색용 테이블이 섞이면
+    # 백업·삭제 절차가 두 관심사를 함께 다루게 되기 때문이다.
+    lexical_index_path: Path = Path("./data/lexical.sqlite3")
+
+    # 질의 토큰이 "드물다"고 인정받는 하한. 실측 근거는 `ARCHITECTURE.md` 「어휘 색인」에
+    # 있다 — 0.4 로 올리면 샘플 문서에서 코드리뷰 질의가 빈 목록이 된다.
+    lexical_min_token_rarity: float = Field(default=0.3, ge=0, le=1)
 
     # 샘플 문서가 한국어라 영어 전용 모델은 검색이 동작하지 않고, 입력 창이 좁은
     # 모델(128 토큰)은 청크 뒷부분이 조용히 잘린다.
@@ -45,14 +77,9 @@ class Settings(BaseSettings):
     # 크기가 문자 기준인 이유는 토큰 기준이면 `core/` 가 임베딩 라이브러리를 알게 되어서다.
     chunk_strategy: ChunkStrategy = ChunkStrategy.RECURSIVE
     chunk_size: int = Field(default=600, gt=0)
-    # 0 을 허용하지 않는다 — 겹치지 않으면 경계에 걸친 문장이 양쪽 어디에서도
-    # 온전히 읽히지 않는다.
     chunk_overlap: int = Field(default=100, gt=0)
 
-    # 메모리가 문서 크기가 아니라 배치 크기에 비례하게 만드는 값이다.
     embedding_batch_size: int = Field(default=64, gt=0)
-
-    # 업로드 크기 상한. 본문을 읽으면서 누적 바이트로 강제한다.
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
 
     # 상한에 걸린 요청은 실패하지 않고 대기한다. 같은 문서의 직렬화는 별도 잠금이 맡는다.
@@ -62,11 +89,17 @@ class Settings(BaseSettings):
     # 요청이 덮어쓸 수 있게 연 이유는 K 조정에 재배포가 들지 않게 하려는 것이다.
     retrieval_top_k: int = Field(default=5, gt=0)
     # 그 열어 둔 문 때문에 상한이 필요하다 — 없으면 `top_k=1000000` 이 저장소를 다 긁는다.
-    # 50 은 기본값의 열 배이자 최악 응답 600자 × 50 ≈ 30 KB.
-    retrieval_max_top_k: int = Field(default=50, gt=0)
+    # 20 인 이유는 응답 크기가 아니라 융합 여지다 — 상한이 후보 깊이에 가까워질수록
+    # 한 retriever 가 자리를 다 채워 다른 쪽 발견이 들어올 자리가 없어진다 (`candidate_depth`).
+    retrieval_max_top_k: int = Field(default=20, gt=0)
     # 0.82 는 계측값이다 — 관련 1위 최솟값 0.8511 / 무관 1위 최댓값 0.8134 사이.
-    # 표본 크기와 측정 절차는 `ARCHITECTURE.md` 검색 파이프라인에 있다.
+    # 어휘 쪽 하한은 `lexical_min_token_rarity` 라 이 값은 밀집 retriever 만 본다.
     retrieval_min_score: float = Field(default=0.82, ge=0, le=1)
+
+    # 활성 retriever 구성. JSON 목록이라 조합·가중치·깊이·필수 여부가 재배포 없이 바뀐다.
+    retrievers: list[RetrieverSettings] = Field(default_factory=_default_retrievers)
+    # RRF 원 논문(Cormack et al., 2009)이 실험으로 고른 값이자 업계 관례다.
+    retrieval_rrf_k: int = Field(default=DEFAULT_RRF_K, gt=0)
     # 막는 것은 절단이 아니라 임의 길이 입력이 토크나이저에 들어가는 것이다. 절단은
     # 임베더가 선언한 입력 창이 막는다 — 문자 수로 막으면 상한이 101자가 된다.
     retrieval_max_query_chars: int = Field(default=1000, gt=0)
@@ -107,6 +140,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"retrieval_top_k({self.retrieval_top_k}) 는 "
                 f"retrieval_max_top_k({self.retrieval_max_top_k}) 이하여야 합니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _at_least_one_retriever_must_be_active(self) -> "Settings":
+        """빈 목록을 허용하면 검색이 아무것도 못 찾는 배포가 오류 없이 존재하게 된다."""
+        if not self.retrievers:
+            raise ValueError("retrievers 는 하나 이상이어야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _candidate_depth_must_cover_the_k_ceiling(self) -> "Settings":
+        """깊이를 K 상한과 비교한다 — 기본값으로만 보면 큰 `top_k` 요청 하나가 곧 넘어선다."""
+        shallow = [
+            item.name for item in self.retrievers if item.candidate_depth < self.retrieval_max_top_k
+        ]
+        if shallow:
+            raise ValueError(
+                f"retriever {shallow} 의 candidate_depth 가 "
+                f"retrieval_max_top_k({self.retrieval_max_top_k}) 보다 작습니다"
             )
         return self
 

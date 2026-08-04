@@ -12,8 +12,9 @@
 from app.adapters.parsers import ParserRegistry, default_parsers
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import derive_index_signature
+from app.core.lexical import DEFAULT_TOKENIZER
 from app.services.ingestion import IngestionService
-from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubVectorStore
+from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubLexicalIndex, StubVectorStore
 
 LONG_KOREAN = (
     "사내 복리후생 안내\n\n" + "교육비는 연 200만원까지 지원합니다. 신청은 인사팀에 합니다. " * 30
@@ -25,7 +26,9 @@ def make_service(
     parsers=None,
     embedder=None,
     vector_store=None,
+    lexical_index=None,
     registry=None,
+    tokenizer=DEFAULT_TOKENIZER,
     size: int = 200,
     overlap: int = 40,
     batch_size: int = 64,
@@ -43,6 +46,7 @@ def make_service(
         ParserRegistry(default_parsers() if parsers is None else parsers),
         embedder,
         vector_store or StubVectorStore(),
+        lexical_index or StubLexicalIndex(),
         registry or StubDocumentRegistry(),
         index_signature=derive_index_signature(
             embedder_signature=embedder.signature,
@@ -50,6 +54,7 @@ def make_service(
             chunk_strategy_version=CHUNK_STRATEGY_VERSION,
             chunk_size=size,
             chunk_overlap=overlap,
+            tokenizer_signature=tokenizer.signature_material,
         ),
         chunk_strategy=ChunkStrategy.RECURSIVE,
         chunk_size=size,

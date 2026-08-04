@@ -1,4 +1,4 @@
-import type { CitationView, SearchResultView } from "../api/types";
+import type { CitationView, ContributionView, SearchResultView } from "../api/types";
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -8,6 +8,16 @@ export function formatBytes(bytes: number): string {
 
 export function formatScore(score: number): string {
   return score.toFixed(3);
+}
+
+/**
+ * 어느 retriever 가 몇 위로 올렸는지. 원점수는 척도가 서로 달라 싣지 않는다.
+ *
+ * 이름 하나가 빠진 것이 하이브리드가 꺼졌다는 유일한 신호라, 이 줄이 데모에서 그 신호를
+ * 보는 자리다.
+ */
+export function formatContributions(contributions: ContributionView[]): string {
+  return contributions.map((item) => `${item.retriever} ${item.rank}위`).join(" · ");
 }
 
 /** 좁은 패널에 들어가야 해서 연도를 뺀다 — 데모에서 구분에 필요한 것은 월·일·시각이다. */

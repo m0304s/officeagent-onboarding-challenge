@@ -31,7 +31,13 @@ from app.adapters.vector_store.client import parse_url
 from app.config import Settings
 from app.main import create_app
 
-from .stubs import FakeEmbedder, StubDocumentRegistry, StubProbe, StubVectorStore
+from .stubs import (
+    FakeEmbedder,
+    StubDocumentRegistry,
+    StubLexicalIndex,
+    StubProbe,
+    StubVectorStore,
+)
 
 
 @pytest.fixture
@@ -137,12 +143,18 @@ def vector_store() -> StubVectorStore:
 
 
 @pytest.fixture
+def lexical_index() -> StubLexicalIndex:
+    """앱에 배선된 어휘 색인. 수집이 두 색인에 같은 청크를 넣었는지 여기서 확인한다."""
+    return StubLexicalIndex()
+
+
+@pytest.fixture
 def registry() -> StubDocumentRegistry:
     return StubDocumentRegistry()
 
 
 @pytest.fixture
-def make_app(settings, healthy_probes, embedder, vector_store, registry):
+def make_app(settings, healthy_probes, embedder, vector_store, lexical_index, registry):
     """앱 하나를 만든다. 지정하지 않은 것은 기본 대역이 채운다.
 
     **같은 대역을 공유한 채 설정만 바꾼 앱**을 만들 수 있다는 점이 중요하다. 색인 구성을
@@ -153,6 +165,7 @@ def make_app(settings, healthy_probes, embedder, vector_store, registry):
         "probes": healthy_probes,
         "embedder": embedder,
         "vector_store": vector_store,
+        "lexical_index": lexical_index,
         "registry": registry,
     }
 

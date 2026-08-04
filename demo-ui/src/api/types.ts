@@ -30,7 +30,19 @@ export interface DocumentListView {
   count: number;
 }
 
-/** 근거 청크 하나. `/search` 결과와 SSE `sources` 항목이 같은 모양이다. */
+/** 이 청크를 어느 retriever 가 몇 위로 올렸는가. `native_score` 는 척도가 서로 다르다. */
+export interface ContributionView {
+  retriever: string;
+  rank: number;
+  native_score: number;
+}
+
+/**
+ * 근거 청크 하나. `/search` 결과와 SSE `sources` 항목이 같은 모양이다.
+ *
+ * `score` 는 유사도가 아니라 활성 retriever 들의 합의 정도인 융합 점수다 — 값의 크기를
+ * "질의와 얼마나 가까운가"로 읽으면 안 된다.
+ */
 export interface SearchResultView {
   document_id: string;
   filename: string;
@@ -42,6 +54,7 @@ export interface SearchResultView {
   char_start: number;
   char_end: number;
   page: number | null;
+  contributions: ContributionView[];
 }
 
 /** 답변이 실제로 인용한 근거. `text` 가 없고 `marker` 가 있다. */

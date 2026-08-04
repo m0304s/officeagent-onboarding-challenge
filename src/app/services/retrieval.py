@@ -1,6 +1,6 @@
-"""검색 오케스트레이션 — 임베딩 → 대상 집합 → 질의 → 재검증 → 하한 → 조립.
+"""검색 오케스트레이션 — 대상 집합 → retriever 팬아웃 → 융합 → 재검증 → 상위 K.
 
-대상 집합이 저장소 질의보다 앞인 것이 계약이다. 답변은 만들지 않는다
+대상 집합이 팬아웃보다 앞이고 요청당 한 번인 것이 계약이다. 답변은 만들지 않는다
 (`ARCHITECTURE.md` 검색 파이프라인).
 """
 
@@ -9,11 +9,26 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from app.adapters.protocols import DocumentRegistry, Embedder, VectorStore
+from app.adapters.protocols import DocumentRegistry, Retriever
 from app.core.documents import Document, StoredIndexVersion
-from app.core.retrieval import ScoredChunk
+from app.core.exceptions import AppError, ConfigurationError, StorageUnavailable
+from app.core.fusion import DEFAULT_RRF_K, FusedItem, FusionInput, fuse
+from app.core.retrieval import RetrievedChunk, ScoredChunk
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RetrieverBinding:
+    """활성 retriever 하나 — 구성값과 구현체를 묶는다.
+
+    이름·가중치가 구현체 밖에 있는 이유는 구현체가 자기 비중을 알 이유가 없기 때문이다."""
+
+    name: str
+    weight: float
+    candidate_depth: int
+    required: bool
+    retriever: Retriever
 
 
 @dataclass(frozen=True)
@@ -26,6 +41,8 @@ class RetrievalResult:
     top_k: int
     chunks: tuple[ScoredChunk, ...]
     target_documents: int
+    #: 이번 검색에서 융합에 목록을 실어 보낸 retriever 이름들. 실패한 것은 빠진다
+    retrievers: tuple[str, ...] = ()
 
     @property
     def count(self) -> int:
@@ -33,61 +50,111 @@ class RetrievalResult:
 
     @property
     def top_score(self) -> float | None:
-        """1위 점수. `None` 인 이유는 `0.0` 이 무관해서 0점인 경우와 겹치기 때문이다."""
+        """1위의 융합 점수. 유사도가 아니라 retriever 들의 합의 정도다."""
         return self.chunks[0].score if self.chunks else None
 
 
 class RetrievalService:
-    """질의 하나를 받아 지금 유효한 청크 중 가까운 것부터 최대 K개를 돌려준다."""
+    """질의 하나를 활성 retriever 전부에 보내고 융합 결과 상위 K개를 돌려준다."""
 
     def __init__(
         self,
-        embedder: Embedder,
-        vector_store: VectorStore,
+        retrievers: Sequence[RetrieverBinding],
         registry: DocumentRegistry,
         *,
         index_signature: str,
         top_k: int,
-        min_score: float,
+        rrf_k: int = DEFAULT_RRF_K,
     ) -> None:
-        self._embedder = embedder
-        self._store = vector_store
+        if not retrievers:
+            raise ConfigurationError("활성 retriever 가 하나도 없습니다")
+        self._bindings = tuple(retrievers)
         self._registry = registry
         # 수집이 쓴 것과 같은 값이어야 해 배선이 한 번 유도해 넣는다 — 각자 유도하면
         # 한쪽만 고쳐진 순간 방금 올린 문서가 오류 없이 검색되지 않는다.
         self._index_signature = index_signature
         self._top_k = top_k
-        self._min_score = min_score
+        self._rrf_k = rrf_k
 
     async def search(self, query: str, *, top_k: int | None = None) -> RetrievalResult:
         """질의 한 건. `top_k` 를 주면 설정 기본값을 대신한다.
 
-        유효성은 API 계층이 이미 봤다 — 거부된 요청이 임베딩을 유발하지 않게 한다."""
+        유효성은 API 계층이 이미 봤다 — 거부된 요청이 저장소를 건드리지 않게 한다."""
         effective_k = self._top_k if top_k is None else top_k
-
-        # 질의용 경로여야 한다. 문서용으로 계산해도 오류는 안 나지만 점수 분포가 이동해
-        # 계측으로 정한 하한이 조용히 무효가 된다.
-        embedding = await self._embedder.embed_query(query)
 
         current = await self._current_versions()
         if not current:
-            # 여기서 끊어야 문서가 하나도 없는 경우가 저장소 왕복조차 만들지 않는다.
+            # 여기서 끊어야 문서가 하나도 없는 경우가 저장소 왕복도 임베딩도 만들지 않는다.
             return RetrievalResult(query=query, top_k=effective_k, chunks=(), target_documents=0)
 
-        scored = await self._store.query(
-            embedding,
-            top_k=effective_k,
-            versions=[StoredIndexVersion.of(document) for document in current.values()],
-        )
+        # 목록 하나를 만들어 전부에게 같은 것을 넘긴다. 각자 계산하면 레지스트리를 읽는
+        # 시점이 갈려 융합 결과에 두 세대가 섞인다.
+        versions = [StoredIndexVersion.of(document) for document in current.values()]
 
-        fresh = await self._drop_superseded(scored, current)
-        kept = tuple(chunk for chunk in fresh if chunk.score >= self._min_score)
+        sources = await self._fan_out(query, versions)
+        fused = [_assemble(entry) for entry in fuse(sources, rrf_k=self._rrf_k)]
 
+        fresh = await self._drop_superseded(fused, current)
         return RetrievalResult(
             query=query,
             top_k=effective_k,
-            chunks=kept,
+            # 절단이 재검증 뒤인 것이 계약이다 — 앞에 두면 밀려난 리비전이 자리를 차지한
+            # 만큼 결과가 비어 돌아온다.
+            chunks=tuple(fresh[:effective_k]),
             target_documents=len(current),
+            retrievers=tuple(source.name for source in sources),
+        )
+
+    # ── 팬아웃 ──────────────────────────────────────────────────────────
+
+    async def _fan_out(
+        self, query: str, versions: Sequence[StoredIndexVersion]
+    ) -> list[FusionInput[RetrievedChunk]]:
+        """활성 retriever 전부를 겹쳐 돌리고 성공한 목록만 융합 입력으로 만든다.
+
+        둘 다 블로킹을 스레드로 내보내므로 지연이 합이 아니라 최댓값에 가까워진다."""
+        outcomes = await asyncio.gather(
+            *(
+                binding.retriever.retrieve(
+                    query, depth=binding.candidate_depth, versions=versions
+                )
+                for binding in self._bindings
+            ),
+            return_exceptions=True,
+        )
+
+        sources: list[FusionInput[RetrievedChunk]] = []
+        for binding, outcome in zip(self._bindings, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                self._dispose_of(binding, outcome)
+                continue
+            sources.append(
+                FusionInput(name=binding.name, weight=binding.weight, items=tuple(outcome))
+            )
+
+        if not sources:
+            # 전부 선택이어도 전부 실패는 장애다. 빈 결과로 위장하면 아무도 눈치채지 못한다.
+            raise StorageUnavailable("검색에 쓸 수 있는 저장소가 없습니다")
+        return sources
+
+    def _dispose_of(self, binding: RetrieverBinding, failure: BaseException) -> None:
+        """실패 하나를 처분한다 — 필수는 올리고 선택은 목록에서 뺀다.
+
+        빈 목록으로 대신 넣지 않는다. 근거는 `retrieval` 스펙의 부분 실패 요구사항이다."""
+        # 취소는 처분 대상이 아니다 — `gather` 가 잡아 온 것을 그대로 올린다.
+        if not isinstance(failure, Exception):
+            raise failure
+
+        if binding.required:
+            if isinstance(failure, AppError):
+                raise failure
+            # 도메인 예외가 아니면 `503` 보증이 성립하지 않는다 — 경계에서 바꿔 준다.
+            raise StorageUnavailable("필수 retriever 가 실패했습니다") from failure
+
+        logger.warning(
+            "선택 retriever 가 실패해 이번 검색에서 제외했습니다",
+            exc_info=failure,
+            extra={"retriever": binding.name},
         )
 
     # ── 대상 집합 ───────────────────────────────────────────────────────
@@ -143,3 +210,20 @@ class RetrievalService:
             revision=filtered_with.revision,
             index_signature=filtered_with.index_signature,
         )
+
+
+def _assemble(entry: FusedItem[RetrievedChunk]) -> ScoredChunk:
+    """융합 결과 한 줄을 응답용 값 객체로. 기여 내역이 그대로 실린다."""
+    chunk = entry.item
+    return ScoredChunk(
+        document_id=chunk.document_id,
+        revision=chunk.revision,
+        index_signature=chunk.index_signature,
+        chunk_index=chunk.chunk_index,
+        text=chunk.text,
+        location=chunk.location,
+        filename=chunk.filename,
+        format=chunk.format,
+        score=entry.score,
+        contributions=entry.contributions,
+    )

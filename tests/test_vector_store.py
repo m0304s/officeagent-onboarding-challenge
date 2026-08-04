@@ -289,7 +289,7 @@ async def test_a_stored_chunk_comes_back_for_a_query(store):
     results = await store.query(QUERY_VECTOR, top_k=5, versions=[version_of()])
 
     assert [result.text for result in results] == [chunk.text for chunk in chunks]
-    assert all(0 <= result.score <= 1 for result in results)
+    assert all(0 <= result.native_score <= 1 for result in results)
 
 
 async def test_the_result_count_is_capped_by_top_k(store):
@@ -307,7 +307,7 @@ async def test_results_are_ordered_by_descending_score(store):
 
     results = await store.query(QUERY_VECTOR, top_k=4, versions=[version_of()])
 
-    scores = [result.score for result in results]
+    scores = [result.native_score for result in results]
     assert scores == sorted(scores, reverse=True)
     assert [result.chunk_index for result in results] == [0, 1, 2, 3]
 

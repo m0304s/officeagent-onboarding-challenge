@@ -9,20 +9,30 @@
 구조(순서·필터·K)를 재는 테스트가 하한에 걸리면 그건 검증이 아니라 잡음이다. 하한 자체를
 재는 테스트만 `searching_with(min_score=...)` 로 값을 명시한다.
 
+**기본 구성은 밀집 단독이다.** 구조를 재는 단언 대부분이 "질의 문자열과 같은 본문의 청크가
+1위"라는 페이크의 성질에 기대는데, 어휘 목록이 함께 들어오면 그 성질이 융합에 흔들린다.
+하이브리드는 `retrievers=("dense", "lexical")` 로 명시한 테스트에서만 켜진다.
+
 **임베더는 프로토콜로 받는다.** 기본값은 페이크지만 품질 테스트
 (`test_retrieval_quality.py`)가 같은 하네스에 **실물 모델**을 꽂는다 — 구조를 재는 층과
 품질을 재는 층이 같은 배선 위에 서야, 한쪽에서만 통과하는 상태가 생기지 않는다.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.adapters.parsers import ParserRegistry, default_parsers
-from app.adapters.protocols import Embedder
+from app.adapters.protocols import Embedder, LexicalIndex
+from app.adapters.retrievers import RetrieverDependencies, build_retriever
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import Document, derive_index_signature
+from app.core.lexical import DEFAULT_TOKENIZER
 from app.services.ingestion import IngestionService
-from app.services.retrieval import RetrievalService
-from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubVectorStore
+from app.services.retrieval import RetrievalService, RetrieverBinding
+from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubLexicalIndex, StubVectorStore
+
+#: 후보 깊이. `Settings` 기본값과 같은 값이라 하네스가 배포 구성과 같은 깊이로 돈다.
+CANDIDATE_DEPTH = 50
 
 #: 여러 청크로 쪼개지는 길이의 한국어 문서 둘. 주제를 갈라 둔 이유는 "다른 문서의 청크가
 #: 섞였는가"를 본문으로 눈에 보이게 확인하기 위해서다.
@@ -60,27 +70,43 @@ class Harness:
     retrieval: RetrievalService
     embedder: Embedder
     store: StubVectorStore
+    lexical: LexicalIndex
     registry: StubDocumentRegistry
     index_signature: str
     _top_k: int
     _min_score: float
+    _retrievers: tuple[str, ...]
+    _weights: dict[str, float]
+    _required: tuple[str, ...]
 
     async def ingest(self, filename: str, text: str) -> Document:
         return (await self.ingestion.ingest(filename, text.encode())).document
 
-    def searching_with(self, *, top_k: int | None = None, min_score: float | None = None):
+    def searching_with(
+        self,
+        *,
+        top_k: int | None = None,
+        min_score: float | None = None,
+        retrievers: Sequence[str] | None = None,
+        weights: dict[str, float] | None = None,
+        required: Sequence[str] | None = None,
+    ) -> RetrievalService:
         """같은 대역을 보되 설정만 다른 검색 서비스.
 
-        하한 비교("하한을 내리면 걸러졌던 청크가 나타난다")는 **같은 저장소 상태**에서
-        설정만 갈아야 성립한다. 앱을 다시 만들면 저장소도 새로 생겨 비교가 무의미해진다.
+        하한·구성 비교는 **같은 저장소 상태**에서 설정만 갈아야 성립한다. 앱을 다시
+        만들면 저장소도 새로 생겨 비교가 무의미해진다.
         """
-        return RetrievalService(
+        return _service(
             self.embedder,
             self.store,
+            self.lexical,
             self.registry,
-            index_signature=self.index_signature,
+            signature=self.index_signature,
             top_k=self._top_k if top_k is None else top_k,
             min_score=self._min_score if min_score is None else min_score,
+            retrievers=self._retrievers if retrievers is None else retrievers,
+            weights=self._weights if weights is None else weights,
+            required=self._required if required is None else required,
         )
 
     def chunk_text(self, document_id: str, chunk_index: int) -> str:
@@ -96,15 +122,21 @@ def make_harness(
     *,
     embedder: Embedder | None = None,
     vector_store: StubVectorStore | None = None,
+    lexical_index: LexicalIndex | None = None,
     registry: StubDocumentRegistry | None = None,
     size: int = 200,
     overlap: int = 40,
     top_k: int = 5,
     min_score: float = 0.0,
+    retrievers: Sequence[str] = ("dense",),
+    weights: dict[str, float] | None = None,
+    required: Sequence[str] = ("dense",),
 ) -> Harness:
     embedder = embedder or FakeEmbedder()
     store = vector_store or StubVectorStore()
+    lexical = lexical_index or StubLexicalIndex()
     registry = registry or StubDocumentRegistry()
+    weights = weights or {}
     # 배선(`create_app`)이 하는 일 그대로 — 한 번 유도해 **두 서비스에 같은 값**을 준다.
     signature = derive_index_signature(
         embedder_signature=embedder.signature,
@@ -112,12 +144,14 @@ def make_harness(
         chunk_strategy_version=CHUNK_STRATEGY_VERSION,
         chunk_size=size,
         chunk_overlap=overlap,
+        tokenizer_signature=DEFAULT_TOKENIZER.signature_material,
     )
     return Harness(
         ingestion=IngestionService(
             ParserRegistry(default_parsers()),
             embedder,
             store,
+            lexical,
             registry,
             index_signature=signature,
             chunk_strategy=ChunkStrategy.RECURSIVE,
@@ -126,18 +160,66 @@ def make_harness(
             embedding_batch_size=64,
             concurrency=2,
         ),
-        retrieval=RetrievalService(
+        retrieval=_service(
             embedder,
             store,
+            lexical,
             registry,
-            index_signature=signature,
+            signature=signature,
             top_k=top_k,
             min_score=min_score,
+            retrievers=retrievers,
+            weights=weights,
+            required=required,
         ),
         embedder=embedder,
         store=store,
+        lexical=lexical,
         registry=registry,
         index_signature=signature,
         _top_k=top_k,
         _min_score=min_score,
+        _retrievers=tuple(retrievers),
+        _weights=weights,
+        _required=tuple(required),
+    )
+
+
+def _service(
+    embedder: Embedder,
+    store: StubVectorStore,
+    lexical: LexicalIndex,
+    registry: StubDocumentRegistry,
+    *,
+    signature: str,
+    top_k: int,
+    min_score: float,
+    retrievers: Sequence[str],
+    weights: dict[str, float],
+    required: Sequence[str],
+) -> RetrievalService:
+    """이름 목록을 배선이 하는 것과 **같은 경로**로 인스턴스에 옮긴다.
+
+    등록부를 지나가야 "이름으로 구성한다"가 실제로 검증된다 — 여기서 직접 생성하면
+    등록부가 비어도 테스트가 통과한다."""
+    dependencies = RetrieverDependencies(
+        embedder=embedder,
+        vector_store=store,
+        lexical_index=lexical,
+        dense_min_score=min_score,
+    )
+    return RetrievalService(
+        [
+            RetrieverBinding(
+                name=name,
+                weight=weights.get(name, 1.0),
+                candidate_depth=CANDIDATE_DEPTH,
+                required=name in required,
+                retriever=build_retriever(name, dependencies),
+            )
+            for name in retrievers
+        ],
+        registry,
+        index_signature=signature,
+        top_k=top_k,
     )

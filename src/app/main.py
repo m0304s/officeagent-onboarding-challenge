@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from app.adapters.cache.probe import CacheProbe
 from app.adapters.embedding import SentenceTransformerEmbedder
+from app.adapters.lexical import SqliteLexicalIndex, fts5_is_available
 from app.adapters.llm import AppServerSession, CodexAnswerGenerator, SessionLaunch, SessionPool
 from app.adapters.parsers import ParserRegistry, default_parsers
 from app.adapters.protocols import (
@@ -22,9 +23,11 @@ from app.adapters.protocols import (
     DocumentRegistry,
     Embedder,
     HealthProbe,
+    LexicalIndex,
     VectorStore,
 )
 from app.adapters.registry import SqliteDocumentRegistry
+from app.adapters.retrievers import RetrieverDependencies, build_retriever
 from app.adapters.vector_store import ChromaVectorStore, VectorStoreProbe, collection_for
 from app.api.errors import register_error_handlers
 from app.api.logging import RequestLoggingMiddleware, configure_logging
@@ -32,10 +35,11 @@ from app.api.routes import documents, health, qa, search
 from app.config import Settings, get_settings, llm_environment
 from app.core.chunking import CHUNK_STRATEGY_VERSION
 from app.core.documents import derive_index_signature
+from app.core.lexical import DEFAULT_TOKENIZER
 from app.services.health import HealthService
 from app.services.ingestion import IngestionService
 from app.services.qa import QaService
-from app.services.retrieval import RetrievalService
+from app.services.retrieval import RetrievalService, RetrieverBinding
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     앞의 둘은 기동 조건이 아니다 — 실패해도 뜨고 로그만 남는다. 오래 걸리는 쪽이 앞이다."""
     await _warm_up_embedder(app)
 
+    if not fts5_is_available():
+        # 기동을 세우지 않는다. 어휘 색인 없이도 밀집 검색은 그대로 도는데, 여기서
+        # 죽으면 "한 줄 실행"이 런타임 빌드 옵션에 묶인다.
+        logger.warning(
+            "이 런타임의 sqlite3 에 FTS5 가 없습니다 — 어휘 색인은 첫 사용에서 실패합니다"
+        )
+
     report = await app.state.ingestion_service.reconcile_storage()
     if report.stale_documents or report.removed_chunks:
         logger.info(
@@ -111,12 +122,40 @@ async def _warm_up_embedder(app: FastAPI) -> None:
         )
 
 
+def _bind_retrievers(
+    settings: Settings,
+    embedder: Embedder,
+    vector_store: VectorStore,
+    lexical_index: LexicalIndex,
+) -> list[RetrieverBinding]:
+    """설정의 retriever 목록을 구성값과 인스턴스의 쌍으로 옮긴다.
+
+    이름 해석이 여기 한 번뿐이라 오타는 기동에서 끝난다 (`build_retriever`)."""
+    dependencies = RetrieverDependencies(
+        embedder=embedder,
+        vector_store=vector_store,
+        lexical_index=lexical_index,
+        dense_min_score=settings.retrieval_min_score,
+    )
+    return [
+        RetrieverBinding(
+            name=item.name,
+            weight=item.weight,
+            candidate_depth=item.candidate_depth,
+            required=item.required,
+            retriever=build_retriever(item.name, dependencies),
+        )
+        for item in settings.retrievers
+    ]
+
+
 def create_app(
     settings: Settings | None = None,
     probes: Sequence[HealthProbe] | None = None,
     parsers: Sequence[DocumentParser] | None = None,
     embedder: Embedder | None = None,
     vector_store: VectorStore | None = None,
+    lexical_index: LexicalIndex | None = None,
     registry: DocumentRegistry | None = None,
     generator: AnswerGenerator | None = None,
 ) -> FastAPI:
@@ -146,6 +185,12 @@ def create_app(
         vector_store = ChromaVectorStore(
             settings.vector_store_url, collection_name=collection_for(embedder.dimension)
         )
+    if lexical_index is None:
+        lexical_index = SqliteLexicalIndex(
+            settings.lexical_index_path,
+            tokenizer=DEFAULT_TOKENIZER,
+            min_token_rarity=settings.lexical_min_token_rarity,
+        )
 
     # 한 번만 유도한다 — 두 서비스가 각자 유도하면 한쪽만 고쳐진 순간 방금 올린 문서가
     # 오류 없이 검색되지 않는다.
@@ -155,6 +200,9 @@ def create_app(
         chunk_strategy_version=CHUNK_STRATEGY_VERSION,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+        # 하나의 서명이 두 색인을 함께 지배한다 — 나누면 문서 하나가 "밀집으로는 검색
+        # 가능하고 어휘로는 stale" 인 상태를 가질 수 있게 된다 (design 결정 8).
+        tokenizer_signature=DEFAULT_TOKENIZER.signature_material,
     )
 
     # 두 서비스가 같은 인스턴스를 본다 — 아니면 업로드 직후 문서가 검색되지 않는다.
@@ -167,6 +215,7 @@ def create_app(
         ParserRegistry(default_parsers() if parsers is None else parsers),
         embedder,
         vector_store,
+        lexical_index,
         registry,
         index_signature=index_signature,
         chunk_strategy=settings.chunk_strategy,
@@ -176,13 +225,12 @@ def create_app(
         concurrency=settings.ingestion_concurrency,
     )
     app.state.retrieval_service = RetrievalService(
-        embedder,
-        vector_store,
+        _bind_retrievers(settings, embedder, vector_store, lexical_index),
         registry,
         # 수집이 청크를 찍은 것과 같은 서명이라 두 서비스가 같은 색인 세대에 묶인다.
         index_signature=index_signature,
         top_k=settings.retrieval_top_k,
-        min_score=settings.retrieval_min_score,
+        rrf_k=settings.retrieval_rrf_k,
     )
     # 풀은 지연 기동이라 여기서 프로세스가 뜨지 않는다 — 첫 `/qa` 요청이 띄운다.
     app.state.session_pool = None

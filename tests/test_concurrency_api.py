@@ -218,16 +218,21 @@ async def test_a_reupload_racing_a_delete_ends_in_one_of_the_two_serial_states(
 QUERY = "교육비는 얼마까지 지원되나요?"
 
 
-async def test_health_answers_while_a_query_is_being_embedded(make_client):
+async def test_health_answers_while_a_query_is_being_embedded(make_client, settings):
     """질의 임베딩이 진행 중이어도 다른 요청이 기다리지 않는다.
 
-    **문서를 올리지 않는다.** 질의 임베딩은 대상 집합 확정보다 앞이라 문서 유무와
-    무관하게 계산되고, 지연이 걸린 임베더로 수집까지 하면 준비 자체가 느려진다.
+    **문서를 먼저 올린다.** 질의 임베딩이 밀집 retriever 안으로 들어가 대상 집합 확정
+    **뒤**가 되었으므로, 대상이 비면 임베딩 자체가 일어나지 않는다 — 그 상태로는 재려던
+    지연이 발동하지 않는다. 옆의 저장소 질의 테스트가 문서를 먼저 올리는 이유와 같다.
     """
     delay = 0.3
     embedder = FakeEmbedder(delay=delay)
+    searchable = settings.model_copy(update={"retrieval_min_score": 0.0})
 
-    async with make_client(embedder=embedder) as client:
+    async with make_client(settings=searchable, embedder=embedder) as client:
+        created = await client.post("/documents", **upload("policy.txt", DATA))
+        assert created.status_code == 201, created.text
+
         searching = asyncio.create_task(client.post("/search", json={"query": QUERY}))
         await until(lambda: len(embedder.queries) > 0)  # 임베딩이 시작된 뒤에 잰다
 

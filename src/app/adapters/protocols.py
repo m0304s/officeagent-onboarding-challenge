@@ -15,7 +15,7 @@ from app.core.documents import (
     StoredIndexVersion,
 )
 from app.core.models import ProbeResult
-from app.core.retrieval import ScoredChunk
+from app.core.retrieval import RetrievedChunk
 
 
 @runtime_checkable
@@ -106,10 +106,74 @@ class VectorStore(Protocol):
         *,
         top_k: int,
         versions: Sequence[StoredIndexVersion],
-    ) -> list[ScoredChunk]:
-        """`versions` 의 청크 중 가까운 것부터 최대 `top_k` 개, 점수 내림차순.
+    ) -> list[RetrievedChunk]:
+        """`versions` 의 청크 중 가까운 것부터 최대 `top_k` 개, 코사인 유사도 내림차순.
 
         모자란 자리를 채우지 않고, `versions` 가 비면 저장소를 건드리지 않는다."""
+        ...
+
+
+@runtime_checkable
+class LexicalIndex(Protocol):
+    """청크 본문을 글자 그대로 찾는 색인. 벡터 스토어와 같은 삼중항 축을 쓴다.
+
+    축이 어긋나면 수집이 두 색인을 한 순서로 다룰 수 없고, 재색인에서 한쪽만 지워진다."""
+
+    async def add_chunks(
+        self,
+        chunks: Sequence[Chunk],
+        *,
+        filename: str,
+        document_format: DocumentFormat,
+    ) -> None: ...
+
+    async def delete_document(
+        self,
+        document_id: str,
+        *,
+        revision: str | None = None,
+        index_signature: str | None = None,
+    ) -> int: ...
+
+    async def count_chunks(
+        self,
+        document_id: str | None = None,
+        *,
+        revision: str | None = None,
+        index_signature: str | None = None,
+    ) -> int: ...
+
+    async def list_stored_versions(self) -> list[StoredIndexVersion]: ...
+
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[RetrievedChunk]:
+        """`versions` 의 청크 중 어휘가 겹치는 것부터 최대 `top_k` 개, 점수 내림차순.
+
+        점수 척도가 벡터 쪽과 달라 `RetrievedChunk` 다. `versions` 가 비면 빈 목록이다."""
+        ...
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """질의 하나에 대해 자기 척도의 ranked list 를 돌려준다.
+
+    자기 이름도 가중치도 모른다 — 그것은 설정이 정하고 검색 서비스가 들고 있다."""
+
+    async def retrieve(
+        self,
+        query: str,
+        *,
+        depth: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[RetrievedChunk]:
+        """`versions` 의 청크 중 관련도가 높은 것부터 최대 `depth` 개, 점수 내림차순.
+
+        관련성 하한을 여기서 자기 단위로 건다 — 융합 뒤에는 척도가 사라진다."""
         ...
 
 

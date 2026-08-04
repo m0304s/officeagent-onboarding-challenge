@@ -11,12 +11,19 @@ API 계층의 요청 검증과 응답 모양은 `test_search_api.py` 가, 임베
 
 from dataclasses import replace
 
+import pytest
+
 from app.core.documents import IndexStatus
+from app.core.exceptions import StorageUnavailable
 from tests.retrieval_harness import GUIDE, POLICY, SHORT, make_harness
+from tests.stubs import StubLexicalIndex, StubVectorStore
 
 #: 하한 테스트가 공유하는 질의. 하한을 점수 분포에서 유도하므로 세 테스트가 **같은
 #: 질의**를 봐야 유도한 값이 그대로 쓰인다.
 FLOOR_QUERY = "교육비 지원"
+
+#: 양쪽 retriever 를 켠 구성. 이름 목록이 그대로 기여 목록의 기대값이 된다.
+HYBRID = ("dense", "lexical")
 
 # ── 임베딩 경로 (5.7) ────────────────────────────────────────────────────
 
@@ -182,7 +189,7 @@ async def test_results_are_sorted_by_descending_score():
 
     scores = [chunk.score for chunk in result.chunks]
     assert scores == sorted(scores, reverse=True)
-    assert all(0 <= score <= 1 for score in scores)
+    assert all(0 < score <= 1 for score in scores)
 
 
 async def test_the_chunk_whose_text_matches_the_query_ranks_first():
@@ -248,7 +255,7 @@ async def test_every_returned_result_clears_the_floor():
     result = await harness.searching_with(min_score=floor).search(FLOOR_QUERY)
 
     assert 0 < result.count, "하한이 전부를 걸러 단언이 공허해졌다"
-    assert all(chunk.score >= floor for chunk in result.chunks)
+    assert all(chunk.contributions[0].native_score >= floor for chunk in result.chunks)
 
 
 async def test_a_floor_of_one_empties_the_results_without_an_error():
@@ -279,14 +286,173 @@ async def test_lowering_the_floor_only_adds_results():
 
 
 async def _floor_between_the_top_two(harness) -> float:
-    """1위와 2위 점수 **사이**의 하한.
+    """1위와 2위의 **밀집 원점수** 사이의 하한.
 
-    상수로 박으면 페이크의 점수 분포가 조금만 움직여도 단언이 공허해진다 — 전부
-    통과하거나 전부 걸리는 쪽으로 조용히 넘어가고, 그때 테스트는 여전히 초록이다.
+    응답의 `score` 로는 유도할 수 없다 — 그것은 융합 점수라 순위에서만 결정되고, 하한이
+    비교하는 값(코사인)과 척도가 다르다. 상수로 박으면 페이크의 점수 분포가 조금만
+    움직여도 단언이 공허해진다 — 전부 통과하거나 전부 걸리는 쪽으로 조용히 넘어간다.
     """
     everything = await harness.searching_with(min_score=0.0).search(FLOOR_QUERY)
     assert everything.count >= 2
-    return (everything.chunks[0].score + everything.chunks[1].score) / 2
+    scores = [chunk.contributions[0].native_score for chunk in everything.chunks]
+    return (scores[0] + scores[1]) / 2
+
+
+# ── 팬아웃과 융합 (6.4) ──────────────────────────────────────────────────
+
+
+async def test_both_retrievers_contribute_to_one_search():
+    """양쪽이 찾아낸 청크는 내역이 둘이고, 응답의 기여 목록에 두 이름이 모두 있다."""
+    harness = make_harness(retrievers=HYBRID)
+    await harness.ingest("policy.txt", POLICY)
+    target = harness.chunk_text(next(iter(harness.registry.documents)), 1)
+
+    result = await harness.retrieval.search(target)
+
+    assert result.retrievers == HYBRID
+    both = [chunk for chunk in result.chunks if len(chunk.contributions) == 2]
+    assert both, "양쪽이 같은 청크를 찾은 적이 없어 단언이 공허해졌다"
+    for chunk in both:
+        assert {credit.retriever for credit in chunk.contributions} == set(HYBRID)
+        assert all(credit.rank >= 1 for credit in chunk.contributions)
+
+
+async def test_every_result_carries_at_least_one_contribution():
+    harness = make_harness(retrievers=HYBRID)
+    await harness.ingest("policy.txt", POLICY)
+    await harness.ingest("guide.md", GUIDE)
+
+    result = await harness.retrieval.search("교육비 지원 한도")
+
+    assert result.count > 1
+    assert all(chunk.contributions for chunk in result.chunks)
+
+
+async def test_a_single_retriever_configuration_preserves_its_own_order():
+    """융합이 순서를 보존한다는 것이 회귀 판정의 기준선이다.
+
+    기준선이 없으면 하이브리드가 "좋아졌다"고 말할 수 없다 — 무엇과 비교할지가 없다.
+    """
+    harness = make_harness(retrievers=HYBRID)
+    await harness.ingest("policy.txt", POLICY)
+    await harness.ingest("guide.md", GUIDE)
+    document_id = next(iter(harness.registry.documents))
+    query = harness.chunk_text(document_id, 0)
+
+    dense_only = await harness.searching_with(retrievers=("dense",)).search(query)
+    direct = await harness.store.query(
+        await harness.embedder.embed_query(query),
+        top_k=dense_only.top_k,
+        versions=await harness.store.list_stored_versions(),
+    )
+
+    assert [(chunk.document_id, chunk.chunk_index) for chunk in dense_only.chunks] == [
+        (chunk.document_id, chunk.chunk_index) for chunk in direct
+    ]
+
+
+async def test_every_retriever_sees_the_very_same_target_list():
+    """대상 집합을 각자 계산하면 융합 결과에 두 세대가 섞인다."""
+    harness = make_harness(retrievers=HYBRID)
+    await harness.ingest("policy.txt", POLICY)
+    await harness.ingest("guide.md", GUIDE)
+
+    await harness.retrieval.search("교육비")
+
+    dense_targets = harness.store.queries[-1][1]
+    lexical_targets = harness.lexical.searches[-1][2]
+    searchable = {
+        (document.document_id, document.revision, document.index_signature)
+        for document in harness.registry.documents.values()
+    }
+    assert dense_targets == lexical_targets
+    assert {(v.document_id, v.revision, v.index_signature) for v in dense_targets} == searchable
+
+
+async def test_no_targets_means_no_retriever_is_called_at_all():
+    harness = make_harness(retrievers=HYBRID)
+
+    result = await harness.retrieval.search("교육비")
+
+    assert result.count == 0
+    assert result.retrievers == ()
+    assert harness.store.queries == []
+    assert harness.lexical.searches == []
+
+
+async def test_a_lexical_only_configuration_never_embeds_the_query():
+    """어휘 retriever 가 임베딩에 의존하면 두 목록이 같은 결함을 공유한다."""
+    harness = make_harness(retrievers=("lexical",), required=("lexical",))
+    await harness.ingest("guide.md", GUIDE)
+    batches_after_ingestion = len(harness.embedder.batches)
+
+    result = await harness.retrieval.search("P1")
+
+    assert result.count > 0
+    assert result.retrievers == ("lexical",)
+    assert harness.embedder.queries == []
+    assert len(harness.embedder.batches) == batches_after_ingestion
+
+
+# ── 부분 실패의 세 처분 (6.4) ────────────────────────────────────────────
+
+
+async def test_a_required_retriever_failure_becomes_a_storage_error():
+    """빈 결과로 위장하면 벡터 스토어가 죽은 동안 "근거를 찾지 못했습니다"가 나간다."""
+    harness = make_harness(
+        vector_store=StubVectorStore(fail_query=True), retrievers=HYBRID, required=("dense",)
+    )
+    await harness.ingest("guide.md", GUIDE)
+
+    with pytest.raises(StorageUnavailable):
+        await harness.retrieval.search("P1")
+
+
+async def test_an_optional_retriever_failure_proceeds_with_the_rest(caplog):
+    """넘기되 응답과 로그에 드러낸다 — 기여 목록에서 이름이 빠진 것이 곧 신호다."""
+    harness = make_harness(
+        lexical_index=StubLexicalIndex(fail_search=True), retrievers=HYBRID, required=("dense",)
+    )
+    await harness.ingest("guide.md", GUIDE)
+
+    with caplog.at_level("WARNING"):
+        result = await harness.retrieval.search("P1 장애")
+
+    assert result.count > 0
+    assert result.retrievers == ("dense",)
+    credited = {credit.retriever for chunk in result.chunks for credit in chunk.contributions}
+    assert credited == {"dense"}
+    assert any(record.levelname == "WARNING" for record in caplog.records)
+
+
+async def test_every_retriever_failing_is_a_storage_error_even_when_all_are_optional():
+    harness = make_harness(
+        vector_store=StubVectorStore(fail_query=True),
+        lexical_index=StubLexicalIndex(fail_search=True),
+        retrievers=HYBRID,
+        required=(),
+    )
+    await harness.ingest("guide.md", GUIDE)
+
+    with pytest.raises(StorageUnavailable):
+        await harness.retrieval.search("P1")
+
+
+async def test_an_optional_failure_does_not_squash_the_score_scale():
+    """실패한 목록은 분모에서도 빠진다 — 빈 목록으로 넘기면 모든 점수가 절반이 된다.
+
+    두 사실이 다르기 때문이다. 하한이 걸러 비운 목록은 "아무것도 인정하지 않았다"는
+    판정이라 척도에 남아야 하고, 실패한 retriever 는 판정을 내린 적이 없다.
+    """
+    broken = make_harness(
+        lexical_index=StubLexicalIndex(fail_search=True), retrievers=HYBRID, required=("dense",)
+    )
+    await broken.ingest("guide.md", GUIDE)
+
+    failing = await broken.retrieval.search("P1 장애")
+    unconfigured = await broken.searching_with(retrievers=("dense",)).search("P1 장애")
+
+    assert failing.top_score == unconfigured.top_score == 1.0
 
 
 def _store_that_cannot_delete():
