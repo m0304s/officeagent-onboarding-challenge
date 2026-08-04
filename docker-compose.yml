@@ -69,6 +69,8 @@ services:
       APP_CACHE_URL: redis://cache:6379/0
       APP_VECTOR_STORE_URL: http://vector-store:8000
       APP_REGISTRY_PATH: /data/registry.sqlite3
+      # 같은 볼륨이다 — 어휘 색인도 파일 하나라 컨테이너도 마운트도 늘지 않는다.
+      APP_LEXICAL_INDEX_PATH: /data/lexical.sqlite3
     ports:
       - "8000:8000"
     volumes:

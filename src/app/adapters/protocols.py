@@ -15,7 +15,7 @@ from app.core.documents import (
     StoredIndexVersion,
 )
 from app.core.models import ProbeResult
-from app.core.retrieval import ScoredChunk
+from app.core.retrieval import RetrievedChunk, ScoredChunk
 
 
 @runtime_checkable
@@ -110,6 +110,51 @@ class VectorStore(Protocol):
         """`versions` 의 청크 중 가까운 것부터 최대 `top_k` 개, 점수 내림차순.
 
         모자란 자리를 채우지 않고, `versions` 가 비면 저장소를 건드리지 않는다."""
+        ...
+
+
+@runtime_checkable
+class LexicalIndex(Protocol):
+    """청크 본문을 글자 그대로 찾는 색인. 벡터 스토어와 같은 삼중항 축을 쓴다.
+
+    축이 어긋나면 수집이 두 색인을 한 순서로 다룰 수 없고, 재색인에서 한쪽만 지워진다."""
+
+    async def add_chunks(
+        self,
+        chunks: Sequence[Chunk],
+        *,
+        filename: str,
+        document_format: DocumentFormat,
+    ) -> None: ...
+
+    async def delete_document(
+        self,
+        document_id: str,
+        *,
+        revision: str | None = None,
+        index_signature: str | None = None,
+    ) -> int: ...
+
+    async def count_chunks(
+        self,
+        document_id: str | None = None,
+        *,
+        revision: str | None = None,
+        index_signature: str | None = None,
+    ) -> int: ...
+
+    async def list_stored_versions(self) -> list[StoredIndexVersion]: ...
+
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        versions: Sequence[StoredIndexVersion],
+    ) -> list[RetrievedChunk]:
+        """`versions` 의 청크 중 어휘가 겹치는 것부터 최대 `top_k` 개, 점수 내림차순.
+
+        점수 척도가 벡터 쪽과 달라 `RetrievedChunk` 다. `versions` 가 비면 빈 목록이다."""
         ...
 
 

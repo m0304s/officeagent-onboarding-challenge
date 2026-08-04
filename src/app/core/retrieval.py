@@ -32,3 +32,24 @@ class ScoredChunk:
         # 무의미해진다. 그 전에 여기서 걸린다.
         if not 0 <= self.score <= 1:
             raise ValueError("score 는 0 과 1 사이의 유사도여야 한다")
+
+
+@dataclass(frozen=True)
+class RetrievedChunk:
+    """retriever 하나가 자기 척도로 매긴 청크 하나 — 융합에 들어가는 입력.
+
+    척도가 retriever 마다 달라 `score` 자리에 담으면 `[0, 1]` 이 뜻을 잃는다."""
+
+    document_id: str
+    revision: str
+    index_signature: str
+    chunk_index: int
+    text: str
+    location: ChunkLocation
+    filename: str
+    format: DocumentFormat
+    native_score: float
+
+    def __post_init__(self) -> None:
+        if self.chunk_index < 0:
+            raise ValueError("chunk_index 는 0 이상이어야 한다")

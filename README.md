@@ -15,10 +15,12 @@ change 단위로 점진적으로 구현합니다. **아래 표에서 "구현됨"
 | 테스트 하네스 | 구현됨 |
 | 공통 오류 응답 형식, 구조화 로깅 | 구현됨 |
 | Docker Compose 한 줄 실행, 호스트 자격증명 주입 | 구현됨 |
-| 문서 수집 — 추출 → 청킹 → 임베딩 → 벡터 저장 (`POST /documents`) | 구현됨 |
+| 문서 수집 — 추출 → 청킹 → 임베딩 → 벡터·어휘 색인 저장 (`POST /documents`) | 구현됨 |
 | 문서 목록·상세·삭제 (`GET`/`DELETE /documents`) | 구현됨 |
-| 재업로드 교체·재색인, 기동 시 저장소 정리 | 구현됨 |
+| 재업로드 교체·재색인, 기동 시 저장소 정리 (두 색인 모두) | 구현됨 |
+| 어휘 색인 — SQLite FTS5, BM25 순위, 한국어 토큰화 | 구현됨 (**아직 검색 경로에 연결되지 않음** — 수집만 양쪽에 씁니다) |
 | 벡터 검색 — 질의 임베딩 → 대상 필터 → 상위 K (`POST /search`) | 구현됨 |
+| 하이브리드 검색 — 밀집·어휘 팬아웃 + RRF 융합 | 미구현 (융합 코어 `core/fusion.py`만 존재) |
 | LLM 답변 생성 + SSE 스트리밍 — 출처 표기·환각 억제·재시도 (`POST /qa`) | 구현됨 |
 | 데모 UI — 문서 패널 + 스트리밍 Q&A 콘솔 ([`demo-ui/`](./demo-ui/)) | 구현됨 (선택 실행) |
 | 응답 캐싱, 캐시 무효화 | 미구현 |
@@ -506,6 +508,8 @@ docker compose run --build --rm test ruff format --check .
 | `APP_PROBE_TIMEOUT_SECONDS` | 의존성 점검 개별 상한(초) | `2.0` |
 | `APP_HEALTH_TOTAL_TIMEOUT_SECONDS` | 헬스 점검 전체 상한(초) | `5.0` |
 | `APP_REGISTRY_PATH` | 문서 레지스트리(SQLite) 경로 | `./data/registry.sqlite3` |
+| `APP_LEXICAL_INDEX_PATH` | 어휘 색인(SQLite FTS5) 경로 | `./data/lexical.sqlite3` |
+| `APP_LEXICAL_MIN_TOKEN_RARITY` | 질의 토큰이 "드물다"고 인정받는 하한. 이 값을 넘는 토큰이 하나도 겹치지 않는 청크는 어휘 검색 결과에서 빠집니다 | `0.3` |
 | `APP_EMBEDDING_MODEL` | 임베딩 모델 이름 | `intfloat/multilingual-e5-small` |
 | `APP_CHUNK_STRATEGY` | 분할 전략 | `recursive` |
 | `APP_CHUNK_SIZE` | 청크 크기 상한(문자) | `600` |
@@ -532,7 +536,11 @@ docker compose run --build --rm test ruff format --check .
 
 `APP_RETRIEVAL_MIN_SCORE`의 기본값 `0.82`는 감으로 적은 값이 아니라 **계측값**입니다 — `sample-docs`의 두 문서로 관련 질의 4개와 무관 질의 3개의 점수 분포를 실제로 재서 그 사이에 놓았습니다(관련 1위 최솟값 0.8511 / 무관 1위 최댓값 0.8134). 표본이 문서 2개·질의 7개뿐이라는 한계와 계측 절차는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)에 적어 두었습니다. 임베딩 모델을 바꾸면 점수 분포가 통째로 이동하므로 이 값도 다시 재야 합니다.
 
-`APP_EMBEDDING_MODEL`·`APP_CHUNK_STRATEGY`·`APP_CHUNK_SIZE`·`APP_CHUNK_OVERLAP`은 `index_signature`의 재료입니다. 바꾸면 기존 문서가 다음 기동에서 [`stale`](#index_status--그-문서가-지금-검색-가능한가)이 되어 재업로드가 필요합니다. 나머지 값(배치 크기·업로드 상한·동시성)은 저장된 벡터를 바꾸지 않으므로 서명에 영향을 주지 않습니다 — 성능 튜닝이 전면 재색인을 유발하지 않습니다.
+`APP_LEXICAL_MIN_TOKEN_RARITY`의 기본값 `0.3`도 **계측값**입니다 — `sample-docs`의 두 문서로 하한 후보 넷을 재서, 네 회귀 질의가 모두 살아남는 가장 높은 값을 골랐습니다(`0.4`부터 코드리뷰 질의가 빈 목록이 됩니다). 실측표와 표본 크기의 한계는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)에 있습니다.
+
+`APP_EMBEDDING_MODEL`·`APP_CHUNK_STRATEGY`·`APP_CHUNK_SIZE`·`APP_CHUNK_OVERLAP`과 **어휘 색인의 토큰화 구성**은 `index_signature`의 재료입니다. 바꾸면 기존 문서가 다음 기동에서 [`stale`](#index_status--그-문서가-지금-검색-가능한가)이 되어 재업로드가 필요합니다. 나머지 값(배치 크기·업로드 상한·동시성, 그리고 검색 시점에만 쓰이는 하한들)은 저장된 벡터와 어휘 색인의 내용을 바꾸지 않으므로 서명에 영향을 주지 않습니다 — 성능 튜닝과 하한 조정이 전면 재색인을 유발하지 않습니다.
+
+> **이 버전으로 올리면 기존 문서를 다시 업로드해야 합니다.** 어휘 색인이 추가되면서 토큰화 구성이 `index_signature`에 들어갔고, 그래서 이전 버전에서 수집한 모든 문서의 서명이 달라집니다. 첫 기동에서 기동 정리가 이를 발견해 두 색인의 청크를 지우고 문서를 `stale`로 표시합니다 — **기동은 실패하지 않습니다.** `GET /documents`에서 `index_status`가 `stale`인 문서를 같은 파일로 다시 올리면 `reindexed`로 복구됩니다.
 
 `.env` 파일도 읽습니다. 환경을 직접 조회하는 곳은 `src/app/config.py` 하나뿐이며, 다른 모듈의 직접 조회는 린트 규칙으로 막혀 있습니다.
 
@@ -545,6 +553,7 @@ docker compose run --build --rm test ruff format --check .
 | 임베딩 | sentence-transformers (`intfloat/multilingual-e5-small`) | 로컬 오픈소스 모델이라 테스트가 LLM 구독 없이 실행됨. 다국어·512 토큰 창 |
 | 문서 레지스트리 | SQLite (표준 라이브러리) | "지금 유효한 리비전이 무엇인가"의 단일 답. 컨테이너를 늘리지 않고 벡터 스토어와 같은 볼륨에 놓임 |
 | 벡터 DB | Chroma (**서버 모드**, 별도 컨테이너) | 메타데이터 필터와 문서 단위 삭제를 지원해 리비전 교체·캐시 무효화 연동이 가능. 저장소를 앱 프로세스 밖으로 빼 API 재배포와 수명이 분리됨 |
+| 어휘 색인 | SQLite **FTS5** (표준 라이브러리) | `bm25()` 순위 함수가 내장이라 컨테이너가 늘지 않음. Elasticsearch는 이 규모에 JVM 컨테이너가 과잉이고, 인메모리 BM25는 영속성이 없어 기동마다 전 청크를 재구축해야 함 ([근거](./ARCHITECTURE.md#어휘-색인)) |
 | PDF 파싱 | PyMuPDF | 쪽 단위 텍스트 추출이 정확하고 빠름. **AGPL-3.0**이므로 배포 형태를 바꿀 때 재검토가 필요 |
 | 캐시 DB | Redis | 정확 매치는 키 조회, 유사 질문은 질문 임베딩 유사도로 판정. TTL·태그 기반 무효화가 자연스러움 |
 | 린터 | ruff | 포매팅과 린팅을 한 도구로 통일. 레이어 경계도 린트 규칙으로 강제 |

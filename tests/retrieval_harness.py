@@ -20,9 +20,10 @@ from app.adapters.parsers import ParserRegistry, default_parsers
 from app.adapters.protocols import Embedder
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import Document, derive_index_signature
+from app.core.lexical import DEFAULT_TOKENIZER
 from app.services.ingestion import IngestionService
 from app.services.retrieval import RetrievalService
-from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubVectorStore
+from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubLexicalIndex, StubVectorStore
 
 #: 여러 청크로 쪼개지는 길이의 한국어 문서 둘. 주제를 갈라 둔 이유는 "다른 문서의 청크가
 #: 섞였는가"를 본문으로 눈에 보이게 확인하기 위해서다.
@@ -112,12 +113,14 @@ def make_harness(
         chunk_strategy_version=CHUNK_STRATEGY_VERSION,
         chunk_size=size,
         chunk_overlap=overlap,
+        tokenizer_signature=DEFAULT_TOKENIZER.signature_material,
     )
     return Harness(
         ingestion=IngestionService(
             ParserRegistry(default_parsers()),
             embedder,
             store,
+            StubLexicalIndex(),
             registry,
             index_signature=signature,
             chunk_strategy=ChunkStrategy.RECURSIVE,

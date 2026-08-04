@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # 표준 라이브러리 SQLite 파일이라 컨테이너가 늘지 않는다.
     registry_path: Path = Path("./data/registry.sqlite3")
 
+    # 어휘 색인(FTS5)도 파일 하나다. 레지스트리와 나누는 이유는 검색용 테이블이 섞이면
+    # 백업·삭제 절차가 두 관심사를 함께 다루게 되기 때문이다.
+    lexical_index_path: Path = Path("./data/lexical.sqlite3")
+
+    # 질의 토큰이 "드물다"고 인정받는 하한. 실측 근거는 `ARCHITECTURE.md` 「어휘 색인」에
+    # 있다 — 0.4 로 올리면 샘플 문서에서 코드리뷰 질의가 빈 목록이 된다.
+    lexical_min_token_rarity: float = Field(default=0.3, ge=0, le=1)
+
     # 샘플 문서가 한국어라 영어 전용 모델은 검색이 동작하지 않고, 입력 창이 좁은
     # 모델(128 토큰)은 청크 뒷부분이 조용히 잘린다.
     embedding_model: str = "intfloat/multilingual-e5-small"

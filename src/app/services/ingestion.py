@@ -1,7 +1,7 @@
 """문서 수집 오케스트레이션 — 파싱 → 청킹 → 토큰 가드 → 임베딩·저장 → 커밋 → 정리.
 
 순서가 이 파일의 전부다. 새로 쓰고 → 커밋 → 지우기이며, 뒤집으면 중간 실패에 문서가
-통째로 사라진다 (`ARCHITECTURE.md` 문서 수집 파이프라인).
+통째로 사라진다. 벡터와 어휘는 한 트랜잭션의 두 면이라 함께 움직인다 (`ARCHITECTURE.md`).
 """
 
 import asyncio
@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import anyio
 
 from app.adapters.parsers import ParserRegistry
-from app.adapters.protocols import DocumentRegistry, Embedder, VectorStore
+from app.adapters.protocols import DocumentRegistry, Embedder, LexicalIndex, VectorStore
 from app.core.chunking import ChunkStrategy, clamp_overlap, get_splitter, resplit
 from app.core.documents import (
     Chunk,
@@ -73,7 +73,7 @@ class IngestionResult:
 
 @dataclass(frozen=True)
 class ReconciliationReport:
-    """기동 정리가 한 일."""
+    """기동 정리가 한 일. `removed_chunks` 는 두 색인에서 지운 항목의 합이다."""
 
     stale_documents: tuple[str, ...] = ()
     removed_chunks: int = 0
@@ -87,6 +87,7 @@ class IngestionService:
         parsers: ParserRegistry,
         embedder: Embedder,
         vector_store: VectorStore,
+        lexical_index: LexicalIndex,
         registry: DocumentRegistry,
         *,
         index_signature: str,
@@ -99,6 +100,7 @@ class IngestionService:
         self._parsers = parsers
         self._embedder = embedder
         self._store = vector_store
+        self._lexical = lexical_index
         self._registry = registry
         # 전략은 기동 시점에 함수로 해석해 둔다. 업로드마다 조회하면 등록 누락이
         # 첫 업로드에서야 드러난다.
@@ -203,6 +205,7 @@ class IngestionService:
 
             # 청크를 먼저 지운다 — 뒤집으면 "삭제 성공 + 잔여 청크"가 관측될 수 있다.
             await self._store.delete_document(document_id)
+            await self._lexical.delete_document(document_id)
             await self._registry.delete(document_id)
 
             logger.info(
@@ -214,7 +217,7 @@ class IngestionService:
     # ── 기동 정리 ───────────────────────────────────────────────────────
 
     async def reconcile_storage(self) -> ReconciliationReport:
-        """기동 시 벡터 스토어를 레지스트리에 맞춘다.
+        """기동 시 두 색인을 레지스트리에 맞춘다.
 
         정리에 실패해도 서비스는 뜬다 — 부수 작업이 "한 줄 실행"을 깨뜨리지 않게."""
         try:
@@ -225,7 +228,10 @@ class IngestionService:
 
     async def _reconcile(self) -> ReconciliationReport:
         documents = await self._registry.list_all()
-        stored = await self._store.list_stored_versions()
+        # 합집합이다 — 한쪽에만 남은 잔여물이 가장 흔한 어긋남이고, 교집합으로 보면
+        # 그것이 영원히 회수되지 않는다.
+        stored = set(await self._store.list_stored_versions())
+        stored |= set(await self._lexical.list_stored_versions())
         stale: list[str] = []
         removed = 0
 
@@ -240,6 +246,7 @@ class IngestionService:
             if document.index_status is IndexStatus.STALE and document.chunk_count == 0:
                 continue
             removed += await self._store.delete_document(document.document_id)
+            removed += await self._lexical.delete_document(document.document_id)
             await self._registry.commit(
                 replace(document, chunk_count=0, index_status=IndexStatus.STALE)
             )
@@ -250,14 +257,17 @@ class IngestionService:
             for document in documents
             if document.matches_index(self.index_signature)
         }
-        for version in stored:
+        for version in sorted(
+            stored, key=lambda v: (v.document_id, v.revision, v.index_signature)
+        ):
             if version in current_versions:
                 continue
-            removed += await self._store.delete_document(
-                version.document_id,
-                revision=version.revision,
-                index_signature=version.index_signature,
-            )
+            for index in (self._store, self._lexical):
+                removed += await index.delete_document(
+                    version.document_id,
+                    revision=version.revision,
+                    index_signature=version.index_signature,
+                )
 
         if stale:
             logger.warning(
@@ -339,7 +349,7 @@ class IngestionService:
     async def _embed_and_store(
         self, chunks: Sequence[Chunk], filename: str, document_format: DocumentFormat
     ) -> None:
-        """배치 단위로 인코딩하고 배치마다 쓴다.
+        """배치 단위로 인코딩하고 배치마다 두 색인에 쓴다.
 
         메모리를 배치 크기에 묶고, 배치 경계마다 루프가 다른 요청으로 넘어가게 한다."""
         for batch in _batches(chunks, self._batch_size):
@@ -347,22 +357,30 @@ class IngestionService:
             await self._store.add_chunks(
                 batch, vectors, filename=filename, document_format=document_format
             )
+            # 벡터 다음이다. 어느 쪽이 먼저든 원자적이지 않지만, 순서가 하나여야
+            # 되돌리기와 기동 정리가 같은 모양의 잔여물만 상대하게 된다.
+            await self._lexical.add_chunks(
+                batch, filename=filename, document_format=document_format
+            )
 
     async def _roll_back(self, document_id: str, revision: str) -> None:
-        """실패한 교체가 남긴 새 리비전 청크를 같은 요청 안에서 되돌린다.
+        """실패한 교체가 남긴 새 리비전 청크를 양쪽 색인에서 같은 요청 안에 되돌린다.
 
         어댑터가 아니라 여기 있는 것은 배치 쓰기에 트랜잭션이 없기 때문이다."""
-        try:
-            removed = await self._store.delete_document(
-                document_id, revision=revision, index_signature=self.index_signature
-            )
-        except Exception as exc:
-            logger.warning(
-                "되돌리기에 실패했습니다 — 잔여 청크는 다음 기동의 정리가 회수합니다",
-                exc_info=exc,
-                extra={"document_id": document_id, "revision": revision[:12]},
-            )
-            return
+        # 색인마다 따로 시도한다. 한 번의 `try` 로 묶으면 벡터 되돌리기가 실패했을 때
+        # 어휘 쪽이 손도 대지 못한 채 남아, 응답 시점의 "양쪽 0개"가 깨진다.
+        removed = 0
+        for index in (self._store, self._lexical):
+            try:
+                removed += await index.delete_document(
+                    document_id, revision=revision, index_signature=self.index_signature
+                )
+            except Exception as exc:
+                logger.warning(
+                    "되돌리기에 실패했습니다 — 잔여 청크는 다음 기동의 정리가 회수합니다",
+                    exc_info=exc,
+                    extra={"document_id": document_id, "revision": revision[:12]},
+                )
         if removed:
             logger.info(
                 "실패한 교체의 새 리비전 청크를 되돌렸습니다",
@@ -385,15 +403,16 @@ class IngestionService:
         else:
             selector = {"index_signature": current.index_signature}
 
-        try:
-            removed = await self._store.delete_document(current.document_id, **selector)
-        except Exception as exc:
-            logger.warning(
-                "이전 청크 정리에 실패했습니다 — 교체 자체는 이미 성립했습니다",
-                exc_info=exc,
-                extra={"document_id": current.document_id},
-            )
-            return
+        removed = 0
+        for index in (self._store, self._lexical):
+            try:
+                removed += await index.delete_document(current.document_id, **selector)
+            except Exception as exc:
+                logger.warning(
+                    "이전 청크 정리에 실패했습니다 — 교체 자체는 이미 성립했습니다",
+                    exc_info=exc,
+                    extra={"document_id": current.document_id},
+                )
         if removed:
             logger.info(
                 "이전 세대의 청크를 정리했습니다",

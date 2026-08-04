@@ -23,6 +23,7 @@ from app.core.documents import (
     derive_revision,
     normalize_filename,
 )
+from app.core.lexical import DEFAULT_TOKENIZER, Tokenizer
 
 BASE_SIGNATURE_MATERIALS = {
     "embedder_signature": "multilingual-e5-small/384/l2norm/e5-prefix-v1",
@@ -30,6 +31,7 @@ BASE_SIGNATURE_MATERIALS = {
     "chunk_strategy_version": CHUNK_STRATEGY_VERSION,
     "chunk_size": 600,
     "chunk_overlap": 100,
+    "tokenizer_signature": DEFAULT_TOKENIZER.signature_material,
 }
 
 
@@ -116,6 +118,10 @@ def test_same_materials_yield_the_same_signature():
         ("chunk_strategy_version", CHUNK_STRATEGY_VERSION + 1),  # 전략 버전
         ("chunk_size", 400),
         ("chunk_overlap", 50),
+        # 토큰화가 달라지면 어휘 색인의 내용이 달라진다. 하나의 서명이 두 색인을 함께
+        # 지배하므로 이 변경도 재색인을 유발해야 한다.
+        ("tokenizer_signature", Tokenizer(version=99).signature_material),
+        ("tokenizer_signature", Tokenizer(suffixes=("는", "은")).signature_material),
     ],
 )
 def test_each_material_changes_the_signature(material, changed):
@@ -179,6 +185,44 @@ def test_settings_that_do_not_change_vectors_are_not_materials():
         "ingestion_concurrency",
     }
     assert parameters == set(BASE_SIGNATURE_MATERIALS), "재료 목록이 계약이다"
+
+
+def test_search_time_settings_are_not_materials():
+    """retriever 목록·가중치·후보 깊이·하한·융합 상수·캐시 크기는 저장물을 바꾸지 않는다.
+
+    재료로 삼으면 가중치를 조정할 때마다 전면 재색인이 돌아 아무도 조정하지 않게 된다.
+    그 값들은 검색 결과 캐시의 키가 책임진다.
+    """
+    parameters = set(inspect.signature(derive_index_signature).parameters)
+
+    assert not parameters & {
+        "retrievers",
+        "retriever_weights",
+        "candidate_depth",
+        "rrf_k",
+        "retrieval_min_score",
+        "lexical_min_token_rarity",
+        "retrieval_cache_size",
+    }
+
+
+def test_the_tokenizer_configuration_reaches_the_signature():
+    """토큰화 구성이 서명에 닿지 않으면 규칙을 고쳐도 기존 색인이 `stale` 이 되지 않는다.
+
+    그 색인은 옛 규약으로 쓰였고 질의는 새 규약으로 오므로, 어휘 검색이 오류 없이
+    아무것도 찾지 못하는 상태로 남는다.
+    """
+    baseline = derive_index_signature(**BASE_SIGNATURE_MATERIALS)
+    retuned = derive_index_signature(
+        **{
+            **BASE_SIGNATURE_MATERIALS,
+            "tokenizer_signature": Tokenizer(
+                suffixes=(*DEFAULT_TOKENIZER.suffixes, "께서")
+            ).signature_material,
+        }
+    )
+
+    assert retuned != baseline
 
 
 def test_signature_is_short_enough_to_embed_in_a_chunk_id():

@@ -26,10 +26,17 @@ from app.core.exceptions import (
     NoExtractableText,
     StorageUnavailable,
 )
+from app.core.lexical import DEFAULT_TOKENIZER, Tokenizer
 from app.services.ingestion import ReconciliationReport
 from tests.ingestion_harness import LONG_KOREAN, make_service
 from tests.pdf_fixtures import BLANK_PAGE, make_pdf
-from tests.stubs import FakeEmbedder, StubDocumentRegistry, StubParser, StubVectorStore
+from tests.stubs import (
+    FakeEmbedder,
+    StubDocumentRegistry,
+    StubLexicalIndex,
+    StubParser,
+    StubVectorStore,
+)
 
 POLICY = "policy.txt"
 DATA = LONG_KOREAN.encode("utf-8")
@@ -43,13 +50,18 @@ def store() -> StubVectorStore:
 
 
 @pytest.fixture
+def lexical() -> StubLexicalIndex:
+    return StubLexicalIndex()
+
+
+@pytest.fixture
 def registry() -> StubDocumentRegistry:
     return StubDocumentRegistry()
 
 
 @pytest.fixture
-def service(store, registry):
-    return make_service(vector_store=store, registry=registry)
+def service(store, lexical, registry):
+    return make_service(vector_store=store, lexical_index=lexical, registry=registry)
 
 
 # ── 최초 수집 ────────────────────────────────────────────────────────────
@@ -479,6 +491,192 @@ async def test_reconciliation_never_fails_startup(store, registry, caplog):
 
 
 # ── 같은 문서의 동시 요청 ────────────────────────────────────────────────
+
+
+# ── 두 색인은 한 트랜잭션의 두 면이다 ───────────────────────────────────
+#
+# 두 색인이 어긋나도 오류는 나지 않는다. 검색은 계속 `200` 을 내고, 다만 retriever 마다
+# 다른 세대의 문장을 근거로 올린다. 융합은 그 둘을 정상 입력으로 받으므로 한 응답 안에
+# 두 세대가 섞인다 — `retrieval` 이 보증하는 "한 문서의 결과는 전부 같은 리비전"이
+# 저장 단계에서 이미 깨져 있는 상태다. 그래서 아래 단언은 전부 **양쪽**을 함께 본다.
+
+
+async def test_ingested_chunks_land_in_both_indexes(service, store, lexical):
+    result = await service.ingest(POLICY, DATA)
+
+    document_id = result.document.document_id
+    assert await store.count_chunks(document_id) == result.document.chunk_count
+    assert await lexical.count_chunks(document_id) == result.document.chunk_count
+
+
+async def test_both_indexes_carry_the_same_axes(service, store, lexical):
+    """축이 어긋나면 "이 문서의 현재 세대"가 색인마다 다른 것을 가리킨다."""
+    result = await service.ingest(POLICY, DATA)
+
+    document_id = result.document.document_id
+    assert lexical.chunks_of(document_id) == store.chunks_of(document_id)
+    assert await lexical.list_stored_versions() == await store.list_stored_versions()
+
+
+async def test_replacing_clears_the_previous_revision_from_both(service, store, lexical):
+    first = await service.ingest(POLICY, DATA)
+
+    second = await service.ingest(POLICY, OTHER_DATA)
+
+    document_id = second.document.document_id
+    old, new = first.document.revision, second.document.revision
+    for index in (store, lexical):
+        assert await index.count_chunks(document_id, revision=old) == 0
+        assert await index.count_chunks(document_id, revision=new) == second.document.chunk_count
+
+
+async def test_reindexing_clears_the_previous_signature_from_both(store, lexical, registry):
+    first = await make_service(
+        vector_store=store, lexical_index=lexical, registry=registry
+    ).ingest(POLICY, DATA)
+
+    changed = make_service(
+        vector_store=store,
+        lexical_index=lexical,
+        registry=registry,
+        embedder=FakeEmbedder(signature="other-model/8/l2norm/none-v1"),
+    )
+    second = await changed.ingest(POLICY, DATA)
+
+    assert second.status is IngestionStatus.REINDEXED
+    document_id = second.document.document_id
+    old_signature = first.document.index_signature
+    for index in (store, lexical):
+        assert await index.count_chunks(document_id, index_signature=old_signature) == 0
+        assert await index.count_chunks(document_id) == second.document.chunk_count
+
+
+async def test_deleting_clears_both_indexes(service, store, lexical):
+    result = await service.ingest(POLICY, DATA)
+
+    await service.delete(result.document.document_id)
+
+    assert await store.count_chunks(result.document.document_id) == 0
+    assert await lexical.count_chunks(result.document.document_id) == 0
+
+
+async def test_a_lexical_write_failure_rolls_back_the_vector_side(store, lexical, registry):
+    """한쪽에만 저장된 채로 수집이 성공으로 끝나면 두 세대가 한 응답에 섞인다."""
+    service = make_service(
+        vector_store=store, lexical_index=lexical, registry=registry, batch_size=1
+    )
+
+    lexical.fail_add_after = 0
+    with pytest.raises(StorageUnavailable):
+        await service.ingest(POLICY, DATA)
+
+    assert await store.count_chunks() == 0, "어휘 쪽이 실패했는데 벡터가 남았다"
+    assert await lexical.count_chunks() == 0
+    assert await registry.list_all() == []
+
+
+async def test_a_vector_write_failure_rolls_back_the_lexical_side(store, lexical, registry):
+    """되돌리기가 한쪽만 닿으면 레지스트리가 가리키지 않는 문장이 어휘 검색에 남는다."""
+    service = make_service(
+        vector_store=store, lexical_index=lexical, registry=registry, batch_size=1
+    )
+
+    # 배치 하나를 양쪽에 쓴 뒤 벡터 쓰기가 실패한다 — 어휘 쪽에 되돌릴 것이 실제로 있다.
+    store.fail_add_after = 1
+    with pytest.raises(StorageUnavailable):
+        await service.ingest(POLICY, DATA)
+
+    assert await lexical.count_chunks() == 0, "벡터 쪽이 실패했는데 어휘가 남았다"
+    assert await store.count_chunks() == 0
+    assert await registry.list_all() == []
+
+
+async def test_a_failed_replacement_keeps_the_previous_revision_in_both(store, lexical, registry):
+    service = make_service(
+        vector_store=store, lexical_index=lexical, registry=registry, batch_size=1
+    )
+    first = await service.ingest(POLICY, DATA)
+
+    lexical.fail_add_after = lexical.add_calls + 1
+    with pytest.raises(StorageUnavailable):
+        await service.ingest(POLICY, OTHER_DATA)
+
+    document_id = first.document.document_id
+    stored = await registry.get(document_id)
+    assert (stored.revision, stored.chunk_count) == (
+        first.document.revision,
+        first.document.chunk_count,
+    )
+    for index in (store, lexical):
+        assert await index.count_chunks(document_id) == first.document.chunk_count
+
+
+async def test_reconciliation_reclaims_leftovers_from_both(service, store, lexical):
+    """되돌리기가 닿지 못한 잔여물은 어느 색인에 남았든 회수되어야 한다."""
+    result = await service.ingest(POLICY, DATA)
+    document_id = result.document.document_id
+    leftover = orphan_chunk(
+        document_id, revision="죽은-리비전", index_signature=service.index_signature
+    )
+    store.records[leftover.id] = {"chunk": leftover, "embedding": [], "filename": POLICY}
+    lexical.records[leftover.id] = {"chunk": leftover, "filename": POLICY, "format": None}
+
+    report = await service.reconcile_storage()
+
+    assert report.removed_chunks == 2, "두 색인에서 각각 하나씩 회수되어야 한다"
+    for index in (store, lexical):
+        assert await index.count_chunks(document_id, revision="죽은-리비전") == 0
+        assert await index.count_chunks(document_id) == result.document.chunk_count
+
+
+async def test_a_leftover_in_only_one_index_is_still_reclaimed(service, lexical):
+    """합집합이 아니라 교집합으로 보면 한쪽에만 남은 잔여물이 영원히 회수되지 않는다."""
+    result = await service.ingest(POLICY, DATA)
+    document_id = result.document.document_id
+    leftover = orphan_chunk(document_id, revision="죽은-리비전", index_signature="죽은-서명")
+    lexical.records[leftover.id] = {"chunk": leftover, "filename": POLICY, "format": None}
+
+    report = await service.reconcile_storage()
+
+    assert report.removed_chunks == 1
+    assert await lexical.count_chunks(document_id, revision="죽은-리비전") == 0
+
+
+async def test_stale_handling_reaches_both_indexes(store, lexical, registry):
+    first = await make_service(
+        vector_store=store, lexical_index=lexical, registry=registry, size=200
+    ).ingest(POLICY, DATA)
+
+    reconfigured = make_service(
+        vector_store=store, lexical_index=lexical, registry=registry, size=400
+    )
+    report = await reconfigured.reconcile_storage()
+
+    document_id = first.document.document_id
+    stored = await registry.get(document_id)
+    assert report.stale_documents == (document_id,)
+    assert (stored.index_status, stored.chunk_count) == (IndexStatus.STALE, 0)
+    assert await store.count_chunks(document_id) == 0
+    assert await lexical.count_chunks(document_id) == 0
+
+
+async def test_a_tokenizer_change_makes_existing_documents_stale(store, lexical, registry):
+    """토큰화 규칙을 고치면 기존 색인은 옛 규약으로 쓰였고 질의는 새 규약으로 온다."""
+    first = await make_service(
+        vector_store=store, lexical_index=lexical, registry=registry
+    ).ingest(POLICY, DATA)
+
+    retuned = make_service(
+        vector_store=store,
+        lexical_index=lexical,
+        registry=registry,
+        tokenizer=Tokenizer(suffixes=(*DEFAULT_TOKENIZER.suffixes, "께서")),
+    )
+    report = await retuned.reconcile_storage()
+
+    assert retuned.index_signature != first.document.index_signature
+    assert report.stale_documents == (first.document.document_id,)
+    assert await lexical.count_chunks(first.document.document_id) == 0
 
 
 async def test_concurrent_uploads_of_the_same_document_are_serialized(store, registry):
