@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 
-from app.adapters.protocols import Embedder, Reranker
+from app.adapters.protocols import AnswerGenerator, Embedder, Reranker
 from app.core.answers import Citation
 from app.services.qa import (
     AnswerEvent,
@@ -39,7 +39,9 @@ class QaHarness:
     """같은 대역 위에 선 수집·검색·답변 생성."""
 
     retrieval: Harness
-    generator: ScriptedGenerator
+    #: 대본 생성기가 기본이고, 골든셋 판정 층만 실물 생성기를 넣는다 — 그 층에서는
+    #: 조각 수·호출 수를 세는 창이 없다.
+    generator: ScriptedGenerator | AnswerGenerator
     service: QaService
     #: 캐시 저장소 대역. 기본 배선은 `NullResponseCache` 라 이 자리가 비어 있다 —
     #: 캐시를 켠 하네스만 실물 의미를 가진 대역을 든다.
@@ -83,6 +85,7 @@ def make_qa_harness(
     retrieval: Harness | None = None,
     embedder: Embedder | None = None,
     reranker: Reranker | None = None,
+    generator: AnswerGenerator | None = None,
     semantic_threshold: float = 0.93,
     operation_timeout_seconds: float = 0.2,
     breaker_failures: int = 3,
@@ -110,14 +113,14 @@ def make_qa_harness(
     searching = (
         storage.searching_with(top_k=top_k, reranker=reranker) if retrieval else storage.retrieval
     )
-    generator = ScriptedGenerator(turns=turns or (GenerationTurn(),))
+    answering = generator or ScriptedGenerator(turns=turns or (GenerationTurn(),))
     harness = QaHarness(
         retrieval=storage,
-        generator=generator,
+        generator=answering,
         cache=storage.cache,
         service=QaService(
             searching,
-            generator,
+            answering,
             # 수집이 무효화에 쓰는 것과 같은 인스턴스다 — 나누면 무효화가 다른 캐시를 지운다.
             storage.cache_service,
             timeout_seconds=timeout_seconds,

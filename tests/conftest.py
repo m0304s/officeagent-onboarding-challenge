@@ -132,6 +132,22 @@ needs_reranker_weights = pytest.mark.skipif(
 )
 
 
+def credentials_are_present() -> bool:
+    """자격증명 파일이 있는지만 본다. CLI 는 부르지 않는다."""
+    home = os.environ.get("CODEX_HOME") or f"{os.environ.get('HOME', '')}/.codex"
+    return Path(home, "auth.json").is_file()
+
+
+#: 실물 CLI 를 부르는 테스트의 공통 스킵. 실물 층이 둘(생성·판정)이 되어 여기로 올렸다.
+needs_credentials = pytest.mark.skipif(
+    not credentials_are_present(),
+    reason=(
+        "codex 자격증명이 없습니다 — `docker compose up` 이 한 번 돌아야 "
+        ".secrets/codex/auth.json 이 생깁니다"
+    ),
+)
+
+
 def make_settings(data_dir: Path) -> Settings:
     """`settings` 픽스처가 만드는 것과 같은 설정.
 

@@ -75,5 +75,5 @@ addopts = ["-m", "not llm and not redis and not slow"]
 markers = [
     "llm: 실물 codex CLI 를 부르는 테스트 (구독 필요, 기본 실행 제외)",
     "redis: 실물 Redis 를 쓰는 캐시 계약 테스트 (저장소 필요, 기본 실행 제외)",
-    "slow: 골든셋 44문항을 두 구성으로 돌리는 리랭킹 비교 (CPU 30분대, 기본 실행 제외)",
+    "slow: 골든셋을 두 구성으로 돌리는 비교 — 순위는 `-m slow`, 생성 채점은 `-m \"llm and slow\"` (기본 실행 제외)",
 ]

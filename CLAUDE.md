@@ -76,6 +76,24 @@ OfficeAgent BE 채용 과제 — Document Q&A API. 문서를 업로드하면 내
   설치되어 있지 않습니다(`ruff` 전용). 실행 경로는 컨테이너 하나뿐입니다.
   다만 `.venv/bin/ruff`는 동작하므로 컨테이너를 띄우기 전 빠른 사전 점검에는 쓸 수 있습니다.
 
+- **Docker Desktop에서는 없는 호스트 이름의 DNS 해석이 4초 걸립니다.** 리눅스 도커 호스트에서는
+  즉시 `NXDOMAIN`으로 떨어지는 자리인데, 내장 DNS가 상위로 넘긴 뒤 응답을 기다립니다.
+  컨테이너 안에서 잰 값입니다.
+
+  ```
+  unused              4.011s  gaierror
+  cache               0.001s  resolved
+  ```
+
+  그래서 `tests/conftest.py`의 `make_settings()`가 캐시를 겨누는 `redis://unused:6379/0`가
+  **매 캐시 호출마다 상한(`cache_operation_timeout_seconds`, 0.2초)을 꽉 채웁니다.**
+  이름이 "unused"라서 안 쓰일 것 같지만 `cache_enabled` 기본값이 `True`라 `create_app`이
+  실물 Redis 어댑터를 그 주소로 만들고, API 테스트의 모든 수집·`/qa`가 그리로 나갑니다.
+  업로드 하나에 무효화가 3회라 0.6초가 되어, **`test_concurrency_api.py::test_different_documents_are_not_serialized`가
+  이 호스트에서만 실패합니다**(예산 0.4초). `git stash`로 작업을 걷어내고 HEAD에서 돌려도
+  같게 실패하는, 코드가 아니라 환경의 문제입니다. 고치려면 호스트 이름 대신 닿지 않는
+  포트(`redis://127.0.0.1:1/0`)를 쓰면 DNS 변수가 사라집니다 — 아직 고치지 않았습니다.
+
 - **환경 사실은 이 파일에만 남습니다.** 셸·런타임에서 새로 알아낸 제약(어떤 명령이 없는지,
   무엇이 막히는지)은 회고가 아니라 여기에 적습니다. 다음 세션이 자동으로 읽는 파일은 이것뿐입니다.
 
@@ -103,7 +121,7 @@ OfficeAgent BE 채용 과제 — Document Q&A API. 문서를 업로드하면 내
 확인한다.
 
 ```bash
-python3 scripts/check_comments.py       # 112개 파일, 위반 0건
+python3 scripts/check_comments.py       # 122개 파일, 위반 0건
 ```
 
 테스트의 긴 설명은 [`tests/README.md`](./tests/README.md)로 옮겼다 — 파일 안에는 한 줄
