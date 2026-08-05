@@ -56,12 +56,21 @@ RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/wh
 #
 # 모델 이름을 환경변수 하나로 두는 이유: 굽는 모델과 런타임이 쓰는 모델이 **구조적으로**
 # 같아야 한다. 두 곳에 따로 적으면 어긋난 순간 기동 시 다운로드가 조용히 되살아난다.
+#
+# 리랭커 리비전만 두 곳에 적힌다 — `Dockerfile` 은 앱 패키지를 import 할 수 없다.
+# 어긋나면 런타임이 고정한 커밋을 캐시에서 찾지 못해 다운로드가 조용히 되살아나므로,
+# `KNOWN_RERANKER_PROFILES` 와 같은 값인지는 테스트가 이 파일을 읽어 고정한다.
 ENV APP_EMBEDDING_MODEL=intfloat/multilingual-e5-small \
+    APP_RERANKER_MODEL=BAAI/bge-reranker-v2-m3 \
+    APP_RERANKER_REVISION=953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e \
     HF_HOME=/opt/huggingface
 RUN python -c "\
 import os;\
+from huggingface_hub import snapshot_download;\
 from sentence_transformers import SentenceTransformer;\
-SentenceTransformer(os.environ['APP_EMBEDDING_MODEL'])" \
+SentenceTransformer(os.environ['APP_EMBEDDING_MODEL']);\
+snapshot_download(os.environ['APP_RERANKER_MODEL'],\
+ revision=os.environ['APP_RERANKER_REVISION'])" \
     && chown -R app:app /opt/huggingface
 
 WORKDIR /app
@@ -102,8 +111,9 @@ COPY sample-docs ./sample-docs
 COPY scripts ./scripts
 # compose 파일 자체를 읽어 마운트·의존 계약을 단언하는 테스트가 있다. 자격증명이 붙는
 # 경로는 파이썬 코드가 아니라 이 YAML 에만 적혀 있어서, 여기가 조용히 바뀌면 다른 어떤
-# 테스트도 알아채지 못한다.
-COPY docker-compose.yml ./
+# 테스트도 알아채지 못한다. `Dockerfile` 도 같은 이유다 — 굽는 리랭커 리비전이 여기에만
+# 적혀 있고, 어댑터의 표와 어긋나면 런타임에 조용히 다시 받는다.
+COPY docker-compose.yml Dockerfile ./
 RUN pip install --no-cache-dir ".[dev]"
 USER app
 

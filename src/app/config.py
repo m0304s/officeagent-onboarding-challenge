@@ -109,12 +109,12 @@ class Settings(BaseSettings):
     reranker_enabled: bool = True
     # 학습 언어에 한국어가 있고 원격 코드가 없는 모델. 후보 비교는 `ARCHITECTURE.md` 에 있다.
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
-    # 후보 깊이(100)와 근거가 다르다 — 리랭크 깊이는 비용이 후보 수에 선형이라 곧 지연이다.
-    # K 상한 20 을 덮으면서 그 위로 여유를 조금 둔 값이다.
+    # 실측 뒤에도 30 을 유지한다 — 실제로 도는 후보 수는 밀집 하한이 정하고, 낮춰서
+    # 사는 구간이 없다 (`ARCHITECTURE.md` 리랭킹 절의 실측표).
     rerank_candidates: int = Field(default=30, gt=0)
-    # 실패보다 느린 성공이 흔한 자리다 — 가중치를 처음 올리는 요청이 여기 걸린다.
-    # 후보 30개 실측(1.14초, 웜)의 세 배 이상이라는 규칙은 `qa_llm_timeout_seconds` 와 같다.
-    reranker_timeout_seconds: float = Field(default=5.0, gt=0)
+    # `sample-docs` 실측 최악값(첫 요청 5.13초)의 세 배. 완주 보장이 아니라 지연 예산이라,
+    # 코퍼스가 커지면 예산을 넘겨 융합 순서로 축소된다 (`ARCHITECTURE.md` 리랭킹 절).
+    reranker_timeout_seconds: float = Field(default=15.0, gt=0)
 
     # ── 답변 생성 ──────────────────────────────────────────────────────
     # 한 시도의 상한. 실측 최악값(18.9초)이 이 값의 1/3 이라 정상 경로가 닿지 않는다.

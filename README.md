@@ -534,6 +534,16 @@ docker compose run --build --rm test python -m pytest -m llm
 
 **자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`951 passed, 23 deselected` — 제외된 23건은 실물 CLI 2건과 실물 Redis 21건입니다).
 
+### 골든셋 리랭킹 비교
+
+크로스인코더를 켠 구성과 끈 구성을 **같은 저장소 위에서** 비교하는 층입니다. 보험 요약집 PDF 한 건에 대한 진단용 평가셋(`tests/fixtures/golden/`) 44문항을 두 구성으로 돌려 근거 인용문의 순위를 잽니다. CPU에서 30분대라 `slow` 마커 뒤에 두었습니다 — 평가자가 도는 한 줄이 여기 묶이면 안 됩니다.
+
+```bash
+docker compose run --build --rm test pytest -m slow -s
+```
+
+`-s`를 붙이면 비교표가 그대로 출력됩니다. 무엇을 재고 무엇을 재지 않는지는 [`tests/README.md`](./tests/README.md)에 있습니다 — 요약하면 **검색 순서만 재고 답변 품질은 재지 않습니다**.
+
 호스트에서 직접 돌리고 싶다면 아래도 됩니다. 이때 실물 Chroma 층은 `docker compose up -d --wait vector-store`로 서버를 띄워야 실행되고, 검색 품질 층은 임베딩 가중치가 캐시돼 있어야 실행됩니다.
 
 ```bash

@@ -16,6 +16,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.adapters.llm import AppServerSession
+from app.adapters.reranking import KNOWN_RERANKER_PROFILES
 from app.config import Settings
 from app.main import create_app
 from tests.conftest import booted
@@ -243,6 +244,7 @@ def test_the_reranker_switch_decides_whether_one_is_wired(settings, healthy_prob
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SYNC_SCRIPT = REPO_ROOT / "scripts" / "sync-credentials.sh"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+DOCKERFILE = REPO_ROOT / "Dockerfile"
 
 SAMPLE_BLOB = json.dumps(
     {
@@ -365,3 +367,27 @@ def test_compose_는_인증_준비가_끝난_뒤에_api_를_띄운다():
     assert services["api"]["depends_on"]["auth"] == {"condition": "service_completed_successfully"}
     # 한 번 돌고 끝나야 하는 서비스다. 재시작이 붙으면 위 조건이 영원히 성립하지 않는다.
     assert services["auth"]["restart"] == "no"
+
+
+def _dockerfile_env() -> dict[str, str]:
+    """`ENV a=1 \\` 로 이어지는 줄들에서 `이름=값` 만 걷어 온다."""
+    text = DOCKERFILE.read_text(encoding="utf-8").replace("\\\n", " ")
+    declared: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("ENV "):
+            continue
+        for pair in line[4:].split():
+            name, _, value = pair.partition("=")
+            declared[name] = value
+    return declared
+
+
+def test_이미지가_굽는_리랭커가_어댑터가_고정한_그것이다():
+    """모델과 리비전이 두 곳에 적히는 유일한 자리다 — `Dockerfile` 은 앱을 import 못 한다.
+
+    어긋나면 런타임이 캐시에서 못 찾아 기동 시 2.2GB 다운로드가 조용히 되살아난다."""
+    declared = _dockerfile_env()
+    model = declared["APP_RERANKER_MODEL"]
+
+    assert model == Settings.model_fields["reranker_model"].default
+    assert declared["APP_RERANKER_REVISION"] == KNOWN_RERANKER_PROFILES[model].revision

@@ -51,26 +51,26 @@
 
 ## 6. 캐시 키 재료
 
-- [ ] 6.1 `core/cache.py` 의 `derive_cache_key`·`derive_cache_scope` 에 리랭커 서명 재료를 더한다. 두 함수가 같은 재료를 쓰는 규약을 유지한다 (`response-cache`: 리랭커 구성이 정체성 재료다)
-- [ ] 6.2 `services/cache.py` 가 그 값을 배선에서 따로 받지 않고 `RetrievalService.rerank_signature` 에서 읽게 한다 — 유도 지점을 늘리지 않는다 (design 결정 7)
-- [ ] 6.3 `CachedAnswer` 코덱이 `rerank_score` 를 왕복시키고, 그 필드가 없는 옛 페이로드도 읽을 수 있게 한다
-- [ ] 6.4 테스트 — 리랭커를 켜고 끈 두 구성에서 같은 질문이 서로 다른 항목이 되는지, 모델을 바꿔도 그런지 (`response-cache`: 리랭커를 켜면 이전 항목을 쓰지 않는다)
-- [ ] 6.5 테스트 — 리랭커가 꺼진 구성에서 기존 캐시 동작(정확 매치·유사 매치·무효화)이 그대로인지
+- [x] 6.1 `core/cache.py` 의 `derive_cache_key`·`derive_cache_scope` 에 리랭커 서명 재료를 더한다. 두 함수가 같은 재료를 쓰는 규약을 유지한다 (`response-cache`: 리랭커 구성이 정체성 재료다)
+- [x] 6.2 `services/cache.py` 가 그 값을 배선에서 따로 받지 않고 `RetrievalService.rerank_signature` 에서 읽게 한다 — 유도 지점을 늘리지 않는다 (design 결정 7)
+- [x] 6.3 `CachedAnswer` 코덱이 `rerank_score` 를 왕복시키고, 그 필드가 없는 옛 페이로드도 읽을 수 있게 한다
+- [x] 6.4 테스트 — 리랭커를 켜고 끈 두 구성에서 같은 질문이 서로 다른 항목이 되는지, 모델을 바꿔도 그런지 (`response-cache`: 리랭커를 켜면 이전 항목을 쓰지 않는다)
+- [x] 6.5 테스트 — 리랭커가 꺼진 구성에서 기존 캐시 동작(정확 매치·유사 매치·무효화)이 그대로인지
 
 ## 7. 컨테이너와 실행
 
-- [ ] 7.1 `Dockerfile` 에서 리랭커 가중치를 임베딩 가중치와 **같은 레이어**에 굽는다. `APP_RERANKER_MODEL` 환경변수가 굽는 모델과 런타임 모델의 유일한 진실 원천이다 (design 결정 8)
-- [ ] 7.2 굽는 단계가 `KNOWN_RERANKER_PROFILES` 와 **같은 리비전**을 쓰게 하고, 그 일치를 테스트가 고정한다 — `Dockerfile` 은 앱 패키지를 import 할 수 없어 값이 두 곳에 적히고, 어긋나면 런타임에 조용히 다시 받는다 (`docker-compose.yml` 을 읽어 계약을 고정하는 테스트와 같은 방식)
-- [ ] 7.3 `docker compose run --build --rm test` 로 전체 스위트를 돌린다. 리랭커 실물 층이 컨테이너 안에서 실제로 도는지 확인한다(가중치가 구워져 있다)
-- [ ] 7.4 `docker compose up -d --build --wait` 로 `/search` 를 실물로 한 번 친다. `./data` 에 남은 이전 실행 벡터를 지우고 `sample-docs/` 두 건만 올린 뒤 잰다 (`CLAUDE.md` 검증 절차)
+- [x] 7.1 `Dockerfile` 에서 리랭커 가중치를 임베딩 가중치와 **같은 레이어**에 굽는다. `APP_RERANKER_MODEL` 환경변수가 굽는 모델과 런타임 모델의 유일한 진실 원천이다 (design 결정 8)
+- [x] 7.2 굽는 단계가 `KNOWN_RERANKER_PROFILES` 와 **같은 리비전**을 쓰게 하고, 그 일치를 테스트가 고정한다 — `Dockerfile` 은 앱 패키지를 import 할 수 없어 값이 두 곳에 적히고, 어긋나면 런타임에 조용히 다시 받는다 (`docker-compose.yml` 을 읽어 계약을 고정하는 테스트와 같은 방식)
+- [x] 7.3 `docker compose run --build --rm test` 로 전체 스위트를 돌린다. 리랭커 실물 층이 컨테이너 안에서 실제로 도는지 확인한다(가중치가 구워져 있다)
+- [x] 7.4 `docker compose up -d --build --wait` 로 `/search` 를 실물로 한 번 친다. `./data` 에 남은 이전 실행 벡터를 지우고 `sample-docs/` 두 건만 올린 뒤 잰다 (`CLAUDE.md` 검증 절차)
 
 ## 8. 실측
 
-- [ ] 8.1 후보 30개 리랭킹의 CPU 지연을 컨테이너 안에서 잰다. 회귀 질의 4개 기준이며, 첫 요청(지연 로딩)과 이후 요청을 나눠 적는다 (design 결정 11)
-- [ ] 8.2 `reranker_timeout_seconds` 기본값을 그 실측의 3배 이상으로 정하고, 근거를 `config.py` 주석에 남긴다
-- [ ] 8.3 리랭킹 전후의 순위 변화를 잰다 — 같은 저장소 위에 설정만 다른 검색 서비스를 세워(`searching_with`) 비교한다. 저장소를 새로 만들면 비교가 성립하지 않는다
-- [ ] 8.4 이미지 크기 증가를 잰다(`docker image ls` 전후)
-- [ ] 8.5 실측 결과를 보고 `rerank_candidates` 기본값 30 을 유지할지 정한다 (design Open Questions)
+- [x] 8.1 후보 30개 리랭킹의 CPU 지연을 컨테이너 안에서 잰다. 회귀 질의 4개 기준이며, 첫 요청(지연 로딩)과 이후 요청을 나눠 적는다 (design 결정 11)
+- [x] 8.2 `reranker_timeout_seconds` 기본값을 그 실측의 3배 이상으로 정하고, 근거를 `config.py` 주석에 남긴다
+- [x] 8.3 리랭킹 전후의 순위 변화를 잰다 — 같은 저장소 위에 설정만 다른 검색 서비스를 세워(`searching_with`) 비교한다. 저장소를 새로 만들면 비교가 성립하지 않는다
+- [x] 8.4 이미지 크기 증가를 잰다(`docker image ls` 전후)
+- [x] 8.5 실측 결과를 보고 `rerank_candidates` 기본값 30 을 유지할지 정한다 (design Open Questions)
 
 ## 9. 품질 테스트와 회귀
 
@@ -86,7 +86,7 @@
 - [ ] 10.2 모델 후보표와 기각 사유를 적는다 — 기각의 축이 둘("한국어가 학습 분포 안에 있는가", "아키텍처가 `transformers` 안에 있는가")이라는 것과, 근거가 벤치마크가 아니라 학습 언어 구성·실물 로딩 결과라는 사실을 함께 적는다 (design 결정 1)
 - [ ] 10.3 순위 신호가 둘인 이유와 `score` 를 갈아치우지 않은 근거를 적는다 (design 결정 9)
 - [ ] 10.4 리랭킹 점수에 하한을 걸지 않은 이유를 적는다 — 「하한이 판정하는 것과 하지 않는 것」 옆에 둔다 (design 결정 5)
-- [ ] 10.5 8장의 실측표(지연·순위 변화·이미지 크기)를 적는다. **품질이 좋아졌다고 말할 근거가 없다는 사실을 함께 적는다** (design 결정 11)
+- [x] 10.5 8장의 실측표(지연·순위 변화·이미지 크기)를 적는다. **품질이 좋아졌다고 말할 근거가 없다는 사실을 함께 적는다** (design 결정 11)
 - [ ] 10.6 원격 코드를 쓰는 모델을 피한 근거와 리비전 고정을 적는다 — 첫 후보가 실물에서 깨진 기록(`transformers` 판 비호환, 코드가 다른 저장소라 고정 불가)을 함께 남긴다 (design 결정 1·8)
 - [ ] 10.7 캐시 키에 리랭커 몫만 들어갔고 **retriever 가중치는 여전히 키에 없다**는 사실을 적는다. 적지 않으면 다음 사람이 "검색 구성이 전부 키에 있다"고 읽는다 (design 결정 7)
 - [ ] 10.8 `README.md` 에 리랭커 설정(`APP_RERANKER_ENABLED`·`APP_RERANKER_MODEL`·`APP_RERANK_CANDIDATES`)과 끄는 방법, 첫 빌드가 길어진다는 사실을 적는다

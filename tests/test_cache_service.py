@@ -20,6 +20,11 @@ PROMPT_VERSION = "qa-ko-1"
 MODEL = "gpt-5-codex"
 QUESTION = "교육비 지원 한도가 얼마인가요?"
 
+#: 리랭커를 끈 구성의 서명. 기존 묶음 전부가 이 값 위에서 돌아 리랭킹이 없던 때와
+#: 같은 것을 잰다 — 켠 구성은 자기 이름의 서명을 쓴다.
+RERANKER_OFF = ""
+RERANKER_ON = "fake-reranker/none-v1"
+
 #: 뜻이 같은 두 질의를 한 벡터로 묶는다 — 유사 매치 층을 만드는 유일한 수단이다.
 SYNONYM_GROUP = {
     "교육비 지원 한도가 얼마인가요?": "교육비 한도",
@@ -123,13 +128,20 @@ def service(store, registry, embedder, clock) -> CacheService:
     return make_service(store, registry, embedder, clock=clock)
 
 
-async def lookup(service, question=QUESTION, *, top_k=5):
-    return await service.lookup(question, top_k=top_k, index_signature=SIGNATURE)
+async def lookup(service, question=QUESTION, *, top_k=5, rerank_signature=RERANKER_OFF):
+    return await service.lookup(
+        question,
+        top_k=top_k,
+        index_signature=SIGNATURE,
+        rerank_signature=rerank_signature,
+    )
 
 
-async def remember(service, question=QUESTION, *, top_k=5, item=None):
+async def remember(
+    service, question=QUESTION, *, top_k=5, item=None, rerank_signature=RERANKER_OFF
+):
     """조회 → 저장. 실제 요청이 지나는 순서 그대로 캐시에 항목 하나를 남긴다."""
-    slot = await lookup(service, question, top_k=top_k)
+    slot = await lookup(service, question, top_k=top_k, rerank_signature=rerank_signature)
     await service.store(slot, item or entry(), query=question)
     return slot
 
@@ -178,7 +190,7 @@ async def test_similar_question_hits_the_semantic_layer(store, registry, clock):
     service = make_service(store, registry, synonym_embedder(), clock=clock)
     await remember(service, "교육비 지원 한도가 얼마인가요?")
 
-    slot = await service.lookup("교육비 얼마까지 지원되나요?", top_k=5, index_signature=SIGNATURE)
+    slot = await lookup(service, "교육비 얼마까지 지원되나요?")
 
     assert slot.hit and slot.lookup.layer is CacheLayer.SEMANTIC
     assert slot.lookup.similarity == pytest.approx(1.0)
@@ -190,7 +202,7 @@ async def test_semantic_hit_is_revalidated_like_an_exact_hit(store, registry, cl
     await remember(service, "교육비 지원 한도가 얼마인가요?")
     registry.documents["doc-1"] = document(revision="rev-2")
 
-    slot = await service.lookup("교육비 얼마까지 지원되나요?", top_k=5, index_signature=SIGNATURE)
+    slot = await lookup(service, "교육비 얼마까지 지원되나요?")
 
     assert not slot.hit
 
@@ -216,7 +228,7 @@ async def test_a_different_top_k_is_unreachable_by_similarity(store, registry, c
     service = make_service(store, registry, synonym_embedder(), clock=clock)
     await remember(service, "교육비 지원 한도가 얼마인가요?", top_k=3)
 
-    slot = await service.lookup("교육비 얼마까지 지원되나요?", top_k=5, index_signature=SIGNATURE)
+    slot = await lookup(service, "교육비 얼마까지 지원되나요?")
 
     assert not slot.hit
 
@@ -225,7 +237,11 @@ async def test_a_different_index_signature_does_not_hit(service):
     """청킹·임베딩 구성이 달라지면 근거가 달라진다."""
     await remember(service)
 
-    assert not (await service.lookup(QUESTION, top_k=5, index_signature="sig-2")).hit
+    reindexed = await service.lookup(
+        QUESTION, top_k=5, index_signature="sig-2", rerank_signature=RERANKER_OFF
+    )
+
+    assert not reindexed.hit
 
 
 async def test_a_different_prompt_version_does_not_hit(store, registry, embedder):
@@ -243,6 +259,38 @@ async def test_a_different_model_does_not_hit(store, registry, embedder):
     revised = make_service(store, registry, embedder, model="gpt-5")
 
     assert not (await lookup(revised)).hit
+
+
+async def test_turning_the_reranker_on_does_not_hit_the_entry_made_without_it(service):
+    """리랭킹은 상위 K 에 들어오는 청크를 바꾼다 — 켠 배포가 끈 배포의 답을 쓰면
+    응답의 `sources` 가 그 답변이 실제로 본 근거가 아니게 된다."""
+    await remember(service, rerank_signature=RERANKER_OFF)
+
+    assert not (await lookup(service, rerank_signature=RERANKER_ON)).hit
+
+
+async def test_turning_the_reranker_off_does_not_hit_the_entry_made_with_it(service):
+    """되돌리기가 설정 한 줄이라 이 방향이 실제로 일어난다 (design Migration Plan)."""
+    await remember(service, rerank_signature=RERANKER_ON)
+
+    assert not (await lookup(service, rerank_signature=RERANKER_OFF)).hit
+
+
+async def test_a_different_reranker_model_does_not_hit(service):
+    """서명에 모델 이름이 들어 있어야 갈린다 — 켜짐/꺼짐 두 상태만으로는 부족하다."""
+    await remember(service, rerank_signature=RERANKER_ON)
+
+    assert not (await lookup(service, rerank_signature="other/reranker@abc/sigmoid-v1")).hit
+
+
+async def test_the_reranker_also_splits_the_semantic_candidate_set(store, registry, clock):
+    """L1 에서 갈린 것이 L2 에서 도로 합쳐지면 리랭커 몫이 키에만 있고 뜻은 없다."""
+    service = make_service(store, registry, synonym_embedder(), clock=clock)
+    await remember(service, "교육비 지원 한도가 얼마인가요?", rerank_signature=RERANKER_OFF)
+
+    slot = await lookup(service, "교육비 얼마까지 지원되나요?", rerank_signature=RERANKER_ON)
+
+    assert not slot.hit
 
 
 # ── 현재성 재검증 ────────────────────────────────────────────────────────
@@ -287,6 +335,7 @@ async def test_a_rejected_entry_is_removed_from_the_cache(service, registry, sto
         prompt_version=PROMPT_VERSION,
         index_signature=SIGNATURE,
         model=MODEL,
+        rerank_signature=RERANKER_OFF,
     )
     assert not (await store.lookup_exact(fingerprint)).hit
 

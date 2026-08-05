@@ -92,6 +92,8 @@ class SourcesEvent:
             results=entry.sources,
             top_k=entry.top_k,
             target_documents=entry.target_documents,
+            ordered_by=entry.ordered_by,
+            reranker=entry.reranker,
         )
 
 
@@ -228,6 +230,7 @@ class QaService:
             search_query,
             top_k=self._retrieval.resolve_top_k(top_k),
             index_signature=self._retrieval.index_signature,
+            rerank_signature=self._retrieval.rerank_signature,
         )
         context = QaContext(
             question=question,
@@ -389,6 +392,8 @@ class QaService:
                 top_k=context.result.top_k,
                 target_documents=context.result.target_documents,
                 sources=context.sources,
+                ordered_by=context.result.ordered_by,
+                reranker=context.result.reranker,
             ),
             query=context.search_query,
         )

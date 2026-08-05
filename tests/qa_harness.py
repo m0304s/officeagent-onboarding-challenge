@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 
-from app.adapters.protocols import Embedder
+from app.adapters.protocols import Embedder, Reranker
 from app.core.answers import Citation
 from app.services.qa import (
     AnswerEvent,
@@ -82,6 +82,7 @@ def make_qa_harness(
     cache: StubResponseCache | None = None,
     retrieval: Harness | None = None,
     embedder: Embedder | None = None,
+    reranker: Reranker | None = None,
     semantic_threshold: float = 0.93,
     operation_timeout_seconds: float = 0.2,
     breaker_failures: int = 3,
@@ -97,6 +98,7 @@ def make_qa_harness(
         top_k=top_k,
         min_score=min_score,
         embedder=embedder,
+        reranker=reranker,
         cache=cache or (StubResponseCache(clock=clock) if cached else None),
         semantic_threshold=semantic_threshold,
         operation_timeout_seconds=operation_timeout_seconds,
@@ -104,7 +106,10 @@ def make_qa_harness(
         breaker_cooldown_seconds=breaker_cooldown_seconds,
         clock=clock,
     )
-    searching = storage.searching_with(top_k=top_k) if retrieval else storage.retrieval
+    # 저장소를 물려받은 경우에만 설정을 갈아 끼운다 — 새로 만들면 위에서 이미 반영됐다.
+    searching = (
+        storage.searching_with(top_k=top_k, reranker=reranker) if retrieval else storage.retrieval
+    )
     generator = ScriptedGenerator(turns=turns or (GenerationTurn(),))
     harness = QaHarness(
         retrieval=storage,

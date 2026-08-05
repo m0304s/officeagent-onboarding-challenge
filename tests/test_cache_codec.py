@@ -4,6 +4,8 @@ Redis 계약 테스트는 마커 뒤라 기본 실행에서 빠진다. 왕복까
 캐시를 거치며 달라지는 회귀를 아무도 잡지 않는다.
 """
 
+import json
+
 import pytest
 
 from app.adapters.cache.codec import (
@@ -17,6 +19,7 @@ from app.core.answers import Answer, Citation, FinishReason
 from app.core.cache import CachedAnswer
 from app.core.documents import ChunkLocation, DocumentFormat
 from app.core.fusion import Contribution
+from app.core.reranking import ORDERED_BY_FUSION, ORDERED_BY_RERANK
 from app.core.retrieval import ScoredChunk
 
 
@@ -74,6 +77,43 @@ def test_sources_survive_with_their_contributions():
 
     assert restored.sources == entry.sources
     assert restored.sources[0].contributions[1].retriever == "lexical"
+
+
+def test_the_ranking_signal_survives_the_roundtrip():
+    """리랭킹 점수만 왕복하면 히트가 그 점수를 든 채 융합 순서라고 말하게 된다."""
+    entry = CachedAnswer(
+        answer=Answer(text="본문", finish_reason=FinishReason.STOP),
+        top_k=5,
+        target_documents=1,
+        sources=(chunk(rerank_score=0.9826), chunk(chunk_index=4, rerank_score=0.0)),
+        ordered_by=ORDERED_BY_RERANK,
+        reranker="BAAI/bge-reranker-v2-m3",
+    )
+
+    restored = roundtrip(entry)
+
+    assert restored == entry
+    assert [source.rerank_score for source in restored.sources] == [0.9826, 0.0]
+
+
+def test_an_entry_written_before_reranking_still_loads():
+    """세대를 올리면 되살릴 수 있는 항목까지 미스가 된다 — 없는 값은 리랭킹이 돌지
+    않았다는 뜻으로 읽는다."""
+    entry = CachedAnswer(
+        answer=Answer(text="본문", finish_reason=FinishReason.STOP),
+        top_k=5,
+        target_documents=1,
+        sources=(chunk(),),
+    )
+    payload = json.loads(dumps_entry(entry))
+    del payload["ordered_by"], payload["reranker"], payload["sources"][0]["rerank_score"]
+
+    restored = loads_entry(json.dumps(payload).encode("utf-8"))
+
+    assert restored.ordered_by == ORDERED_BY_FUSION
+    assert restored.reranker is None
+    assert restored.sources[0].rerank_score is None
+    assert restored.answer == entry.answer
 
 
 def test_pdf_page_survives():

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.core.answers import Answer
+from app.core.reranking import ORDERED_BY_FUSION
 from app.core.retrieval import ScoredChunk
 
 _WHITESPACE = re.compile(r"\s+")
@@ -34,8 +35,9 @@ def derive_cache_key(
     prompt_version: str,
     index_signature: str,
     model: str,
+    rerank_signature: str,
 ) -> str:
-    """다섯 재료에서 캐시 항목의 지문을 유도한다 — 하나만 달라도 다른 항목이 된다.
+    """여섯 재료에서 캐시 항목의 지문을 유도한다 — 하나만 달라도 다른 항목이 된다.
 
     질의를 키에 그대로 담으면 `redis-cli KEYS` 나 로그에 질문이 복원 가능하게 남는다."""
     _require_resolved_top_k(top_k)
@@ -46,6 +48,9 @@ def derive_cache_key(
             "prompt_version": prompt_version,
             "index_signature": index_signature,
             "model": model,
+            # 색인 서명에 합치지 않는다 — 리랭커를 바꿔도 저장된 청크는 그대로라,
+            # 합치면 토글 한 번이 전 문서 재수집을 요구하게 된다.
+            "rerank_signature": rerank_signature,
         }
     )
 
@@ -56,8 +61,9 @@ def derive_cache_scope(
     prompt_version: str,
     index_signature: str,
     model: str,
+    rerank_signature: str,
 ) -> str:
-    """질의를 뺀 네 재료의 지문 — 유사 매치가 훑어도 되는 후보 집합의 이름이다.
+    """질의를 뺀 다섯 재료의 지문 — 유사 매치가 훑어도 되는 후보 집합의 이름이다.
 
     K 나 프롬프트가 다른 항목이 유사도만으로 히트가 되는 것을 막는다 (`response-cache`)."""
     _require_resolved_top_k(top_k)
@@ -69,6 +75,7 @@ def derive_cache_scope(
             "prompt_version": prompt_version,
             "index_signature": index_signature,
             "model": model,
+            "rerank_signature": rerank_signature,
         }
     )[:16]
 
@@ -116,6 +123,10 @@ class CachedAnswer:
     #: 인용이 아니라 근거 전부다 — 히트가 재생하는 것은 청크 본문이고,
     #: `insufficient_evidence` 항목에는 인용이 아예 없다 (design 결정 4).
     sources: tuple[ScoredChunk, ...] = ()
+    #: 이 근거의 순서를 정한 신호와 그것을 정한 리랭커. 싣지 않으면 히트의 `sources`
+    #: 이벤트가 리랭킹 점수는 든 채 융합 순서라고 말하게 된다.
+    ordered_by: str = ORDERED_BY_FUSION
+    reranker: str | None = None
 
     @property
     def source_versions(self) -> tuple[SourceVersion, ...]:
