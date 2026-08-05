@@ -16,6 +16,7 @@ from app.api.queries import (
     SettingsDep,
     enforce_query_limits,
 )
+from app.core.reranking import ORDERED_BY_FUSION, ORDERED_BY_RERANK
 from app.services.retrieval import RetrievalResult
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,20 @@ class SearchResponse(BaseModel):
             " 설정에서 빠졌거나 이번 요청에서 실패한 것은 여기 나타나지 않는다"
         ),
     )
+    ordered_by: str = Field(
+        default=ORDERED_BY_FUSION,
+        description=(
+            f"`results` 의 순서를 정한 신호 — 리랭킹 점수면 `{ORDERED_BY_RERANK}`,"
+            f" 융합 점수면 `{ORDERED_BY_FUSION}`"
+        ),
+    )
+    reranker: str | None = Field(
+        default=None,
+        description=(
+            "이번 검색에서 실제로 순서를 정한 리랭커 이름."
+            " 설정에서 꺼졌거나 이번 요청에서 실패해 축소된 경우 나타나지 않는다"
+        ),
+    )
 
 
 @router.post("/search", response_model=SearchResponse, summary="근거 청크 검색")
@@ -76,6 +91,8 @@ async def search(
         results=[SearchResultView.of(chunk) for chunk in result.chunks],
         count=result.count,
         retrievers=list(result.retrievers),
+        ordered_by=result.ordered_by,
+        reranker=result.reranker,
     )
 
 

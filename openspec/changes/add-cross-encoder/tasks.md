@@ -43,11 +43,11 @@
 
 ## 5. API 표면
 
-- [ ] 5.1 `api/queries.py` 의 `SearchResultView` 에 `rerank_score: float | None` 을 더한다. `score` 필드의 설명과 제약(`gt=0, le=1`)은 그대로 둔다
-- [ ] 5.2 `api/routes/search.py` 의 `SearchResponse` 에 `ordered_by` 와 `reranker` 를 더한다. 두 필드의 뜻을 스키마 설명에 적는다 — 기여 retriever 목록과 같은 목적이다
-- [ ] 5.3 `api/sse.py` 의 `sources` 이벤트에 같은 두 필드를 더한다. `results` 가 `/search` 와 같은 모양이라는 계약이 여기서 지켜진다 (design 결정 9)
-- [ ] 5.4 테스트 — 리랭커를 켠 응답에 세 필드가 모두 있고, 끈 응답에서 `ordered_by` 가 융합이며 `reranker` 와 `rerank_score` 가 비어 있는지 (`retrieval`: 리랭커를 끄면 응답이 그 사실을 밝힌다)
-- [ ] 5.5 테스트 — `/qa` 의 `sources` 이벤트와 `/search` 응답의 결과 모양이 여전히 같은지
+- [x] 5.1 `api/queries.py` 의 `SearchResultView` 에 `rerank_score: float | None` 을 더한다. `score` 필드의 설명과 제약(`gt=0, le=1`)은 그대로 둔다
+- [x] 5.2 `api/routes/search.py` 의 `SearchResponse` 에 `ordered_by` 와 `reranker` 를 더한다. 두 필드의 뜻을 스키마 설명에 적는다 — 기여 retriever 목록과 같은 목적이다
+- [x] 5.3 `api/sse.py` 의 `sources` 이벤트에 같은 두 필드를 더한다. `results` 가 `/search` 와 같은 모양이라는 계약이 여기서 지켜진다 (design 결정 9)
+- [x] 5.4 테스트 — 리랭커를 켠 응답에 세 필드가 모두 있고, 끈 응답에서 `ordered_by` 가 융합이며 `reranker` 와 `rerank_score` 가 비어 있는지 (`retrieval`: 리랭커를 끄면 응답이 그 사실을 밝힌다)
+- [x] 5.5 테스트 — `/qa` 의 `sources` 이벤트와 `/search` 응답의 결과 모양이 여전히 같은지
 
 ## 6. 캐시 키 재료
 

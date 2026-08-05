@@ -9,7 +9,7 @@ import pytest
 from app.config import RetrieverSettings
 from tests.api_harness import LONG_KOREAN, upload
 from tests.pdf_fixtures import make_pdf
-from tests.stubs import FakeEmbedder, StubLexicalIndex, StubVectorStore
+from tests.stubs import FakeEmbedder, FakeReranker, StubLexicalIndex, StubVectorStore
 
 DATA = LONG_KOREAN.encode("utf-8")
 
@@ -45,13 +45,21 @@ async def search(client, query: str = NORMAL_QUERY, **body) -> tuple[int, dict]:
 # ── 성공 경로 (6.6) ──────────────────────────────────────────────────────
 
 
-async def test_a_query_answers_with_the_four_field_envelope(client):
+async def test_a_query_answers_with_the_documented_envelope(client):
     await ingest(client)
 
     status, body = await search(client)
 
     assert status == 200
-    assert set(body) == {"query", "top_k", "results", "count", "retrievers"}
+    assert set(body) == {
+        "query",
+        "top_k",
+        "results",
+        "count",
+        "retrievers",
+        "ordered_by",
+        "reranker",
+    }
     assert body["query"] == NORMAL_QUERY
     assert body["count"] == len(body["results"])
     assert body["results"], "수집된 문서가 있는데 근거가 하나도 나오지 않았다"
@@ -101,6 +109,8 @@ async def test_nothing_collected_is_an_empty_result_not_an_error(client, vector_
         "count": 0,
         # 아무도 돌지 않았으니 기여 목록도 비어 있다 — 실패와 구별되는 것은 상태 코드다.
         "retrievers": [],
+        "ordered_by": "fusion",
+        "reranker": None,
     }
     assert vector_store.queries == [], "대상이 없는데 저장소에 질의가 갔다"
 
@@ -174,6 +184,59 @@ async def test_turning_the_lexical_retriever_off_removes_it_from_both_lists(
         for result in body["results"]
         for item in result["contributions"]
     )
+
+
+# ── 순위 신호 ────────────────────────────────────────────────────────────
+# 리랭커가 빠진 배포와 정상 배포는 둘 다 `200` 을 내고 둘 다 그럴듯한 순서를 돌려준다.
+
+
+async def test_a_reranked_response_carries_both_scores_and_names_the_reranker(
+    make_client, searchable_settings
+):
+    """두 점수가 함께 실린다 — 하나를 지우면 원인이 합의 쪽인지 판정 쪽인지 못 가른다."""
+    reranker = FakeReranker()
+
+    async with make_client(settings=searchable_settings, reranker=reranker) as client:
+        await ingest(client)
+        status, body = await search(client)
+
+    assert status == 200
+    assert body["results"]
+    assert body["ordered_by"] == "rerank"
+    assert body["reranker"] == reranker.name
+    for result in body["results"]:
+        assert 0 < result["score"] <= 1, "리랭킹이 융합 점수의 자리를 대신했다"
+        assert result["rerank_score"] is not None
+        assert result["contributions"], "리랭킹이 기여 내역을 지웠다"
+
+
+async def test_turning_the_reranker_off_shows_up_in_the_response(client):
+    """끈 구성은 융합 순서라고 밝히고, 리랭커도 리랭킹 점수도 응답에 없다."""
+    await ingest(client)
+
+    _, body = await search(client)
+
+    assert body["results"]
+    assert body["ordered_by"] == "fusion"
+    assert body["reranker"] is None
+    assert all(result["rerank_score"] is None for result in body["results"])
+
+
+async def test_a_degraded_rerank_never_leaves_its_name_in_the_response(
+    make_client, searchable_settings
+):
+    """실패한 리랭커가 이름을 남기면 축소된 배포가 정상 배포와 구별되지 않는다."""
+    broken = FakeReranker(error=RuntimeError("가중치를 올리지 못했습니다"))
+
+    async with make_client(settings=searchable_settings, reranker=broken) as client:
+        await ingest(client)
+        status, body = await search(client)
+
+    assert status == 200
+    assert body["results"], "리랭커가 죽었는데 근거까지 사라졌다"
+    assert body["ordered_by"] == "fusion"
+    assert body["reranker"] is None
+    assert all(result["rerank_score"] is None for result in body["results"])
 
 
 # ── 출처 (6.7) ───────────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ from app.core.exceptions import (
     LlmUnauthenticated,
 )
 from app.core.prompting import ParsedAnswer, Verdict, VerdictSplitter, build_prompt, parse_answer
+from app.core.reranking import ORDERED_BY_FUSION
 from app.core.retrieval import ScoredChunk
 from app.services.cache import CacheService, CacheSlot
 from app.services.retrieval import RetrievalResult, RetrievalService
@@ -64,6 +65,9 @@ class SourcesEvent:
     results: tuple[ScoredChunk, ...]
     top_k: int
     target_documents: int
+    #: `/search` 응답과 같은 두 값 — 무엇이 순서를 정했고 누가 정했는가.
+    ordered_by: str = ORDERED_BY_FUSION
+    reranker: str | None = None
 
     @property
     def count(self) -> int:
@@ -75,6 +79,8 @@ class SourcesEvent:
             results=result.chunks,
             top_k=result.top_k,
             target_documents=result.target_documents,
+            ordered_by=result.ordered_by,
+            reranker=result.reranker,
         )
 
     @classmethod

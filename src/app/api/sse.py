@@ -17,6 +17,7 @@ from app.api.queries import SearchResultView
 from app.core.answers import Citation, FinishReason
 from app.core.cache import CacheLayer
 from app.core.documents import DocumentFormat
+from app.core.reranking import ORDERED_BY_FUSION, ORDERED_BY_RERANK
 from app.services.qa import (
     AnswerEvent,
     DoneEvent,
@@ -66,12 +67,25 @@ class CitationView(BaseModel):
 
 
 class SourcesPayload(BaseModel):
-    """`sources` 이벤트 — 무엇을 근거로 답하려는가."""
+    """`sources` 이벤트 — 무엇을 근거로 답하려는가.
+
+    `results` 뒤의 두 필드까지 `/search` 응답과 같다 — 뷰가 하나면 되는 이유다."""
 
     results: list[SearchResultView]
     count: int
     top_k: int
     target_documents: int
+    ordered_by: str = Field(
+        default=ORDERED_BY_FUSION,
+        description=(
+            f"`results` 의 순서를 정한 신호 — 리랭킹 점수면 `{ORDERED_BY_RERANK}`,"
+            f" 융합 점수면 `{ORDERED_BY_FUSION}`"
+        ),
+    )
+    reranker: str | None = Field(
+        default=None,
+        description="이번 검색에서 실제로 순서를 정한 리랭커 이름. 꺼졌거나 축소됐으면 null",
+    )
 
 
 class AnswerPayload(BaseModel):
@@ -171,6 +185,8 @@ def _payload(event: QaEvent) -> BaseModel:
             count=event.count,
             top_k=event.top_k,
             target_documents=event.target_documents,
+            ordered_by=event.ordered_by,
+            reranker=event.reranker,
         )
     if isinstance(event, AnswerEvent):
         return AnswerPayload(text=event.text)
