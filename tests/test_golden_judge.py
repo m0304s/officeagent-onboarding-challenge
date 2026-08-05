@@ -91,14 +91,14 @@ def comparison(harness, tmp_path_factory):
 async def _compare(harness, workspace: Path) -> dict:
     """게이트를 세우고 두 구성을 채점한다. 세션 풀은 이 함수가 열고 닫는다."""
     reranker = CrossEncoderReranker(RERANKER_MODEL)
-    gated = await _gate(harness, reranker)
-    unanswerable = load_unanswerable()
+    items, unanswerable = load_items(), load_unanswerable()
+    arrived = await _gate(harness, reranker, items)
 
     launch = SessionLaunch(env=llm_environment(), cwd=workspace, startup_timeout_seconds=60.0)
     pool = SessionPool(lambda: AppServerSession.start(launch), size=1)
     try:
         generator = CodexAnswerGenerator(pool, workspace=workspace)
-        measured = {"gated": gated, "unanswerable": unanswerable}
+        measured = {"items": items, "unanswerable": unanswerable, "arrived": arrived}
         for config in CONFIGS:
             asking = make_qa_harness(
                 retrieval=harness,
@@ -107,43 +107,57 @@ async def _compare(harness, workspace: Path) -> dict:
                 top_k=MEASURED_K,
                 timeout_seconds=TURN_TIMEOUT,
             )
-            measured[config] = await _grade(asking, generator, gated, unanswerable, config)
+            measured[config] = await _grade(
+                asking, generator, items, unanswerable, arrived[config], config
+            )
     finally:
         await pool.aclose()
     return measured
 
 
-async def _gate(harness, reranker) -> list:
-    """두 구성 모두에서 근거가 상위 K 에 온 문항만 남긴다.
+async def _gate(harness, reranker, items) -> dict[str, set]:
+    """구성마다 근거가 상위 K 에 온 문항의 id 집합.
 
-    교집합으로 좁히면 판정 통과 수의 차이가 상위 K 안의 순서에만 귀속된다."""
-    fused = harness.searching_with(top_k=MEASURED_K)
-    reranked = harness.searching_with(top_k=MEASURED_K, reranker=reranker)
-    gated = []
-    for item in load_items():
-        before = await fused.search(item.question)
-        after = await reranked.search(item.question)
-        assert after.reranker, f"{item.id}: 리랭킹이 축소됐다"
-        if rank_of(before.chunks, item.quote) and rank_of(after.chunks, item.quote):
-            gated.append(item)
-    return gated
+    교집합으로 좁히면 리랭킹이 근거를 끌어올린 문항이 통째로 채점에서 빠진다."""
+    searching = {
+        "fusion": harness.searching_with(top_k=MEASURED_K),
+        "rerank": harness.searching_with(top_k=MEASURED_K, reranker=reranker),
+    }
+    arrived: dict[str, set] = {config: set() for config in CONFIGS}
+    for config in CONFIGS:
+        for item in items:
+            result = await searching[config].search(item.question)
+            if config == "rerank":
+                assert result.reranker, f"{item.id}: 리랭킹이 축소됐다"
+            if rank_of(result.chunks, item.quote) is not None:
+                arrived[config].add(item.id)
+    return arrived
 
 
-async def _grade(asking, generator, gated, unanswerable, config: str) -> GenerationScores:
-    """게이트를 통과한 문항과 근거 없는 문항을 한 구성에서 채점한다."""
+async def _grade(
+    asking, generator, items, unanswerable, arrived: set, config: str
+) -> GenerationScores:
+    """문항 전부를 한 구성에서 돌린다. 판정은 근거가 온 문항과 근거 없는 문항만 받는다."""
     rows = []
-    for item in list(gated) + list(unanswerable):
-        answer, ran_reranker = await _answer(asking, item.question)
-        if config == "rerank":
+    for item in list(items) + list(unanswerable):
+        answer, reason, ran_reranker = await _answer(asking, item.question)
+        # 후보가 0개면 리랭커가 호출되지 않는다 — 그때 축소를 단언하면 정상 경로가 실패한다.
+        if config == "rerank" and reason != FinishReason.NO_EVIDENCE.value:
             assert ran_reranker, f"{item.id}: 답변 경로에서 리랭킹이 축소됐다"
+        retrieved = item.id in arrived or not item.answerable
+        if not retrieved:
+            # 근거가 오지 않은 답변을 생성 실패로 세면 두 지표가 함께 움직인다.
+            rows.append(Graded(item.id, item.probe, retrieved=False, finish_reason=reason))
+            continue
         if answer is None:
-            rows.append(_failed_generation(item))
+            rows.append(_failed_generation(item, reason))
             continue
         rows.append(
             Graded(
                 id=item.id,
                 probe=item.probe,
                 retrieved=True,
+                finish_reason=reason,
                 spans_ok=spans_hold(item, answer),
                 judgement=await judge(generator, item, answer, timeout_seconds=TURN_TIMEOUT),
             )
@@ -151,26 +165,27 @@ async def _grade(asking, generator, gated, unanswerable, config: str) -> Generat
     return GenerationScores(tuple(rows))
 
 
-async def _answer(asking, question: str) -> tuple[str | None, bool]:
-    """질문 하나를 끝까지 읽어 채점할 본문과 리랭킹 여부로.
+async def _answer(asking, question: str) -> tuple[str | None, str | None, bool]:
+    """질문 하나를 끝까지 읽어 채점할 본문·종료 사유·리랭킹 여부로.
 
     조각이 아니라 종료 이벤트를 읽는다 — 근거 0건은 생성기를 부르지 않고 끝난다."""
     events = await asking.ask(question)
     reranked = bool(sources_of(events).reranker)
     answer = next((event.answer for event in events if isinstance(event, DoneEvent)), None)
     if answer is None:
-        return None, reranked
+        return None, None, reranked
     if answer.finish_reason is FinishReason.NO_EVIDENCE:
-        return NO_EVIDENCE_TEXT, reranked
-    return answer.text, reranked
+        return NO_EVIDENCE_TEXT, answer.finish_reason.value, reranked
+    return answer.text, answer.finish_reason.value, reranked
 
 
-def _failed_generation(item) -> Graded:
+def _failed_generation(item, reason: str | None) -> Graded:
     """생성이 실패한 문항. 오답이 아니라 판정불가로 든다 — 판정자가 본 적이 없다."""
     return Graded(
         id=item.id,
         probe=item.probe,
         retrieved=True,
+        finish_reason=reason,
         spans_ok=None,
         judgement=Judgement(JudgeVerdict.UNJUDGED, "생성 실패 — 답변이 비었다"),
     )
@@ -178,21 +193,35 @@ def _failed_generation(item) -> Graded:
 
 def _report(measured: dict) -> None:
     """`pytest -s` 로 돌렸을 때 비교표를 그대로 읽을 수 있게 찍는다."""
-    gated, unanswerable = measured["gated"], measured["unanswerable"]
+    items, unanswerable = measured["items"], measured["unanswerable"]
     print(
-        f"\n골든셋 생성 채점 · 게이트 통과 {len(gated)}문항 + 근거없음 {len(unanswerable)}문항"
+        f"\n골든셋 생성 채점 · 근거 있음 {len(items)}문항 + 근거없음 {len(unanswerable)}문항"
         f" · 상위 {MEASURED_K}"
     )
-    print(f"{'':13} {'일치':>6} {'불일치':>7} {'판정불가':>9} {'문자열':>7}")
     for config in CONFIGS:
         scores = measured[config]
+        arrived = len(measured["arrived"][config])
+        print(f"\n[{config}]  근거 도달 {arrived}/{len(items)} · 판정 대상 {scores.judged}")
         print(
-            f"{'':13} {scores.counting(JudgeVerdict.MATCH):6}"
-            f" {scores.counting(JudgeVerdict.MISMATCH):7}"
-            f" {scores.counting(JudgeVerdict.UNJUDGED):9}"
-            f" {scores.spans_passed:7}   ← {config}"
+            f"{'':10} 종료 사유 — 답변 {scores.finishing(FinishReason.STOP.value)}"
+            f" · 근거부족 {scores.finishing(FinishReason.INSUFFICIENT_EVIDENCE.value)}"
+            f" · 근거없음 {scores.finishing(FinishReason.NO_EVIDENCE.value)}"
         )
+        print(
+            f"{'':10} 판정 — 일치 {scores.counting(JudgeVerdict.MATCH)}"
+            f" · 불일치 {scores.counting(JudgeVerdict.MISMATCH)}"
+            f" · 판정불가 {scores.counting(JudgeVerdict.UNJUDGED)}"
+            f" · 문자열 {scores.spans_passed}"
+        )
+        _report_gated_out(scores)
         _report_disagreements(scores)
+
+
+def _report_gated_out(scores: GenerationScores) -> None:
+    """근거가 오지 않은 문항이 무엇으로 끝났는지. 지어냈는지 거절했는지가 여기서 갈린다."""
+    for row in scores.graded:
+        if not row.retrieved:
+            print(f"{'':12} 게이트 탈락 {row.id} {row.probe:32} 종료={row.finish_reason}")
 
 
 def _report_disagreements(scores: GenerationScores) -> None:
@@ -202,10 +231,9 @@ def _report_disagreements(scores: GenerationScores) -> None:
 
 
 def test_the_gate_leaves_items_to_grade(comparison):
-    """교집합이 비면 아래 수치는 전부 0 이 되고, 그 0 은 품질이 아니라 게이트의 값이다."""
-    gated = comparison["gated"]
-
-    assert gated, "두 구성 모두에서 근거가 온 문항이 없다 — 채점할 것이 없다"
+    """게이트가 비면 아래 수치는 전부 0 이 되고, 그 0 은 품질이 아니라 게이트의 값이다."""
+    for config in CONFIGS:
+        assert comparison["arrived"][config], f"{config}: 근거가 온 문항이 하나도 없다"
 
 
 def test_the_judge_settles_most_of_what_it_is_asked(comparison):
@@ -219,8 +247,16 @@ def test_the_judge_settles_most_of_what_it_is_asked(comparison):
         )
 
 
-def test_both_configurations_graded_the_same_items(comparison):
-    """두 구성이 다른 문항을 풀었으면 통과 수의 차이가 순서 때문인지 알 수 없다."""
-    graded = {config: [row.id for row in comparison[config].graded] for config in CONFIGS}
+def test_both_configurations_attempted_the_same_items(comparison):
+    """구성별 게이트를 쓰므로 판정 대상은 갈릴 수 있지만, 던진 질문은 같아야 한다."""
+    attempted = {config: [row.id for row in comparison[config].graded] for config in CONFIGS}
 
-    assert graded["fusion"] == graded["rerank"]
+    assert attempted["fusion"] == attempted["rerank"]
+
+
+def test_every_item_reports_how_its_stream_closed(comparison):
+    """종료 사유가 비면 답변과 거절을 가를 수 없다 — 이 회차의 분포를 읽지 않는다."""
+    for config in CONFIGS:
+        missing = [row.id for row in comparison[config].graded if row.finish_reason is None]
+
+        assert not missing, f"{config}: 종료 이벤트 없이 끝난 문항 {missing}"

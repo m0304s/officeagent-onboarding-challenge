@@ -95,12 +95,23 @@ def test_the_loader_splits_the_two_gates():
 
 def test_the_tally_keeps_the_layers_apart():
     """층을 합산하지 않는다 — 문자열 통과 수와 판정 통과 수가 따로 센다."""
+
+    def row(id: str, *, spans_ok=None, verdict=None, retrieved=True, reason="stop") -> Graded:
+        return Graded(
+            id=id,
+            probe="grounding.x",
+            retrieved=retrieved,
+            finish_reason=reason,
+            spans_ok=spans_ok,
+            judgement=None if verdict is None else Judgement(verdict, ""),
+        )
+
     scores = GenerationScores(
         (
-            Graded("A", "grounding.x", True, True, Judgement(JudgeVerdict.MATCH, "")),
-            Graded("B", "grounding.x", True, False, Judgement(JudgeVerdict.MATCH, "")),
-            Graded("C", "grounding.x", True, None, Judgement(JudgeVerdict.UNJUDGED, "")),
-            Graded("D", "grounding.x", False),
+            row("A", spans_ok=True, verdict=JudgeVerdict.MATCH),
+            row("B", spans_ok=False, verdict=JudgeVerdict.MATCH),
+            row("C", verdict=JudgeVerdict.UNJUDGED),
+            row("D", retrieved=False, reason="no_evidence"),
         )
     )
 
@@ -108,4 +119,6 @@ def test_the_tally_keeps_the_layers_apart():
     assert scores.counting(JudgeVerdict.MATCH) == 2
     assert scores.counting(JudgeVerdict.UNJUDGED) == 1
     assert scores.gated_out == 1
+    assert scores.finishing("stop") == 3
+    assert scores.finishing("no_evidence") == 1
     assert [row.id for row in scores.disagreements] == ["B"]

@@ -109,6 +109,9 @@ class Graded:
     probe: str
     #: 검색 게이트를 통과했는가. `answerable: false` 문항은 게이트가 없어 항상 참이다.
     retrieved: bool
+    #: 스트림이 무엇으로 닫혔는가. 게이트에 걸린 문항도 이 값은 갖는다 — 근거가 오지
+    #: 않았을 때 시스템이 답을 지어냈는지 거절했는지가 여기서만 보인다.
+    finish_reason: str | None = None
     spans_ok: bool | None = None
     judgement: Judgement | None = None
 
@@ -149,3 +152,7 @@ class GenerationScores:
 
     def counting(self, verdict: JudgeVerdict) -> int:
         return sum(1 for row in self.graded if row.verdict is verdict)
+
+    def finishing(self, reason: str) -> int:
+        """스트림이 그 사유로 닫힌 문항 수. 게이트에 걸린 문항도 함께 센다."""
+        return sum(1 for row in self.graded if row.finish_reason == reason)
