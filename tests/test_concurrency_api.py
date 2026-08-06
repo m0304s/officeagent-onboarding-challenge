@@ -12,6 +12,7 @@ from tests.api_harness import LONG_KOREAN, upload
 from tests.qa_harness import QUESTION, VERDICT_ANSWERABLE
 from tests.stubs import (
     FakeEmbedder,
+    FakeReranker,
     GenerationTurn,
     ScriptedGenerator,
     StubParser,
@@ -242,6 +243,31 @@ async def test_health_answers_while_the_store_is_being_queried(make_client, sett
     assert response.json()["results"], "저장소 질의가 근거를 하나도 내지 않았다"
     assert health.status_code == 200
     assert elapsed < delay, f"헬스가 저장소 질의({delay}s)에 끌려갔다 — {elapsed:.3f}s"
+
+
+async def test_health_answers_while_the_candidates_are_being_reranked(make_client, settings):
+    """리랭킹이 진행 중이어도 다른 요청이 기다리지 않는다.
+
+    지연이 실물과 같은 자리에서 스레드풀로 나가, 오프로드를 걷어내면 같은 모양으로 깨진다."""
+    delay = 0.3
+    reranker = FakeReranker(delay=delay)
+    searchable = settings.model_copy(update={"retrieval_min_score": 0.0})
+
+    async with make_client(settings=searchable, reranker=reranker) as client:
+        created = await client.post("/documents", **upload("policy.txt", DATA))
+        assert created.status_code == 201, created.text
+
+        searching = asyncio.create_task(client.post("/search", json={"query": QUERY}))
+        await until(lambda: len(reranker.calls) > 0)  # 리랭킹이 시작된 뒤에 잰다
+
+        health, elapsed = await measure(client.get("/health"))
+
+        assert not searching.done(), "검색이 이미 끝나 이 테스트는 아무것도 확인하지 못했다"
+        response = await searching
+
+    assert response.status_code == 200
+    assert health.status_code == 200
+    assert elapsed < delay, f"헬스가 리랭킹({delay}s)에 끌려갔다 — {elapsed:.3f}s"
 
 
 async def test_health_answers_while_a_query_is_being_counted(make_client):

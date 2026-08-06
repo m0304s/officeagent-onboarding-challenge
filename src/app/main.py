@@ -27,9 +27,11 @@ from app.adapters.protocols import (
     Embedder,
     HealthProbe,
     LexicalIndex,
+    Reranker,
     VectorStore,
 )
 from app.adapters.registry import SqliteDocumentRegistry
+from app.adapters.reranking import CrossEncoderReranker
 from app.adapters.retrievers import RetrieverDependencies, build_retriever
 from app.adapters.vector_store import ChromaVectorStore, VectorStoreProbe, collection_for
 from app.api.errors import register_error_handlers
@@ -86,6 +88,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     앞의 둘은 기동 조건이 아니다 — 실패해도 뜨고 로그만 남는다. 오래 걸리는 쪽이 앞이다."""
     await _warm_up_embedder(app)
+    await _warm_up_reranker(app)
 
     if not fts5_is_available():
         # 기동을 세우지 않는다. 어휘 색인 없이도 밀집 검색은 그대로 도는데, 여기서
@@ -126,6 +129,22 @@ async def _warm_up_embedder(app: FastAPI) -> None:
     except Exception as exc:
         logger.warning(
             "임베딩 모델 선로딩에 실패했습니다 — 첫 수집 요청에서 다시 시도합니다",
+            exc_info=exc,
+        )
+
+
+async def _warm_up_reranker(app: FastAPI) -> None:
+    """리랭커 가중치를 미리 올린다. 임베더와 같은 자리, 같은 처분이다.
+
+    실패해도 뜨는 이유는 리랭킹이 얹는 단계라서다 — 없으면 순서가 덜 좋아질 뿐이다."""
+    reranker: Reranker | None = app.state.reranker
+    if reranker is None:
+        return
+    try:
+        await reranker.warm_up()
+    except Exception as exc:
+        logger.warning(
+            "리랭커 모델 선로딩에 실패했습니다 — 검색은 융합 순서로 축소됩니다",
             exc_info=exc,
         )
 
@@ -205,6 +224,7 @@ def create_app(
     lexical_index: LexicalIndex | None = None,
     registry: DocumentRegistry | None = None,
     generator: AnswerGenerator | None = None,
+    reranker: Reranker | None = None,
 ) -> FastAPI:
     """앱을 만든다.
 
@@ -262,8 +282,13 @@ def create_app(
     if registry is None:
         registry = SqliteDocumentRegistry(settings.registry_path)
 
+    # 꺼진 구성에서는 인스턴스가 아예 없다 — 중간 구현(대역 리랭커)을 두지 않는다.
+    if reranker is None and settings.reranker_enabled:
+        reranker = CrossEncoderReranker(settings.reranker_model)
+
     # 서비스 안에서 꺼내지 않는다 — 배선이 배선한 것을 들고 있는다.
     app.state.embedder = embedder
+    app.state.reranker = reranker
     # 수집과 답변이 같은 인스턴스를 본다. 나누면 차단기 상태와 연결이 둘이 되고,
     # 무효화가 어느 쪽 상태를 보는지가 갈린다.
     cache_service = _build_cache_service(settings, app, embedder, registry)
@@ -288,6 +313,9 @@ def create_app(
         index_signature=index_signature,
         top_k=settings.retrieval_top_k,
         rrf_k=settings.retrieval_rrf_k,
+        reranker=reranker,
+        rerank_candidates=settings.rerank_candidates,
+        rerank_timeout_seconds=settings.reranker_timeout_seconds,
     )
     # 풀은 지연 기동이라 여기서 프로세스가 뜨지 않는다 — 첫 `/qa` 요청이 띄운다.
     app.state.session_pool = None

@@ -548,7 +548,11 @@ def test_the_extraction_mode_reaches_the_cache_through_the_app_wiring(make_app, 
         app = make_app(settings=settings.model_copy(update={"pdf_extraction": mode}))
         signature = app.state.retrieval_service.index_signature
         signatures.append(signature)
-        materials = {"prompt_version": PROMPT_VERSION, "model": "m"}
+        materials = {
+            "prompt_version": PROMPT_VERSION,
+            "model": "m",
+            "rerank_signature": app.state.retrieval_service.rerank_signature,
+        }
         keys.append(
             derive_cache_key(query="교육비", top_k=5, index_signature=signature, **materials)
         )

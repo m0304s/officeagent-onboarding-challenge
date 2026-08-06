@@ -4,7 +4,6 @@
 인자 형태와 JSON-RPC 스키마 변화는 여기서만 드러난다.
 """
 
-import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +13,7 @@ from app.config import llm_environment
 from app.core.documents import ChunkLocation, DocumentFormat
 from app.core.prompting import Verdict, build_prompt, parse_answer
 from app.core.retrieval import ScoredChunk
+from tests.conftest import needs_credentials
 
 pytestmark = pytest.mark.llm
 
@@ -29,21 +29,6 @@ SOURCE = ScoredChunk(
     filename="company-policy.txt",
     format=DocumentFormat.TXT,
     score=0.9,
-)
-
-
-def credentials_are_present() -> bool:
-    """자격증명 파일이 있는지만 본다. CLI 는 부르지 않는다."""
-    home = os.environ.get("CODEX_HOME") or f"{os.environ.get('HOME', '')}/.codex"
-    return Path(home, "auth.json").is_file()
-
-
-needs_credentials = pytest.mark.skipif(
-    not credentials_are_present(),
-    reason=(
-        "codex 자격증명이 없습니다 — `docker compose up` 이 한 번 돌아야 "
-        "`.secrets/codex/auth.json` 이 생깁니다"
-    ),
 )
 
 

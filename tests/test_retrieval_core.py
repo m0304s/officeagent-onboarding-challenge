@@ -92,6 +92,17 @@ class TestContributionsRideAlong:
         assert make().contributions == ()
 
 
+class TestRerankScoreIsAbsentUntilSomethingRanksIt:
+    def test_defaults_to_none(self):
+        """리랭킹이 돌지 않은 결과와 깊이 밖 결과가 같은 표현을 갖는다 — 둘 다 판정이 없다."""
+        assert make().rerank_score is None
+
+    @pytest.mark.parametrize("rerank_score", [-3.2, 0.0, 12.7])
+    def test_accepts_values_the_fusion_score_would_reject(self, rerank_score):
+        """범위를 걸지 않는다 — 척도가 질의마다 달라 `(0, 1]` 이 뜻을 갖지 않는다."""
+        assert make(rerank_score=rerank_score).rerank_score == rerank_score
+
+
 # ── 하한은 융합 앞에서, 각자의 단위로 (6.5) ──────────────────────────────
 
 

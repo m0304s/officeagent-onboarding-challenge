@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.adapters.parsers.selection import PdfExtraction
+from app.adapters.reranking import KNOWN_RERANKER_PROFILES
 from app.adapters.retrievers import RETRIEVER_NAMES
 from app.core.chunking import ChunkStrategy
 from app.core.exceptions import ConfigurationError
@@ -107,6 +108,18 @@ class Settings(BaseSettings):
     # 임베더가 선언한 입력 창이 막는다 — 문자 수로 막으면 상한이 101자가 된다.
     retrieval_max_query_chars: int = Field(default=1000, gt=0)
 
+    # ── 리랭킹 ────────────────────────────────────────────────────────
+    # 끄면 리랭커를 아예 배선하지 않는다 — 되돌리기가 설정 한 줄이어야 한다.
+    reranker_enabled: bool = True
+    # 학습 언어에 한국어가 있고 원격 코드가 없는 모델. 후보 비교는 `ARCHITECTURE.md` 에 있다.
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # 실측 뒤에도 30 을 유지한다 — 실제로 도는 후보 수는 밀집 하한이 정하고, 낮춰서
+    # 사는 구간이 없다 (`ARCHITECTURE.md` 리랭킹 절의 실측표).
+    rerank_candidates: int = Field(default=30, gt=0)
+    # `sample-docs` 실측 최악값(첫 요청 5.13초)의 세 배. 완주 보장이 아니라 지연 예산이라,
+    # 코퍼스가 커지면 예산을 넘겨 융합 순서로 축소된다 (`ARCHITECTURE.md` 리랭킹 절).
+    reranker_timeout_seconds: float = Field(default=15.0, gt=0)
+
     # ── 답변 생성 ──────────────────────────────────────────────────────
     # 한 시도의 상한. 실측 최악값(18.9초)이 이 값의 1/3 이라 정상 경로가 닿지 않는다.
     qa_llm_timeout_seconds: float = Field(default=60.0, gt=0)
@@ -188,6 +201,36 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"retriever {shallow} 의 candidate_depth 가 "
                 f"retrieval_max_top_k({self.retrieval_max_top_k}) 보다 작습니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _rerank_depth_must_cover_the_k_ceiling(self) -> "Settings":
+        """깊이가 K 상한보다 작으면 응답 뒷자리가 리랭킹되지 않은 채로 채워진다.
+
+        검사를 활성 여부 아래 두는 이유는 끄는 것이 롤백 수단이기 때문이다."""
+        if self.reranker_enabled and self.rerank_candidates < self.retrieval_max_top_k:
+            raise ValueError(
+                f"rerank_candidates({self.rerank_candidates}) 가 "
+                f"retrieval_max_top_k({self.retrieval_max_top_k}) 보다 작습니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _rerank_window_must_hold_a_query_and_a_chunk(self) -> "Settings":
+        """창을 넘으면 토크나이저가 뒤에서부터 조용히 자른다 — 오류 없이 점수만 틀어진다."""
+        profile = KNOWN_RERANKER_PROFILES.get(self.reranker_model)
+        # 표에 없는 이름은 어댑터가 사용 가능한 값과 함께 거절한다 — 사유를 두 벌로 두지 않는다.
+        if not self.reranker_enabled or profile is None:
+            return self
+        # 창은 토큰, 상한은 문자다. 한국어 서브워드는 문자보다 적게 나오므로 문자 합을
+        # 토큰 상한으로 두는 쪽이 안전한 방향이다.
+        needed = self.retrieval_max_query_chars + self.chunk_size
+        if profile.max_input_tokens < needed:
+            raise ValueError(
+                f"리랭커 입력 창({profile.max_input_tokens})이 "
+                f"retrieval_max_query_chars({self.retrieval_max_query_chars}) 와 "
+                f"chunk_size({self.chunk_size}) 의 합을 담지 못합니다"
             )
         return self
 

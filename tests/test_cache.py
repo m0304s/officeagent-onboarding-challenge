@@ -29,6 +29,7 @@ KEY_MATERIALS = {
     "prompt_version": "qa-ko-1",
     "index_signature": "a1b2c3d4e5f60718",
     "model": "gpt-5-codex",
+    "rerank_signature": "BAAI/bge-reranker-v2-m3@abc123/sigmoid-v1",
 }
 
 
@@ -111,12 +112,14 @@ def test_key_ignores_unicode_composition():
         ("prompt_version", "qa-ko-2"),
         ("index_signature", "ffffffffffffffff"),
         ("model", "gpt-5"),
+        ("rerank_signature", ""),
+        ("rerank_signature", "BAAI/bge-reranker-base@def456/sigmoid-v1"),
     ],
 )
 def test_key_changes_when_any_single_material_changes(material, other):
-    """다섯 재료 중 하나만 달라도 다른 항목이어야 한다 (`response-cache` 스펙의 표).
+    """여섯 재료 중 하나만 달라도 다른 항목이어야 한다 (`response-cache` 스펙의 표).
 
-    K 나 프롬프트나 모델을 바꾼 뒤 이전 세대의 답이 새 구성의 답인 척 남는 경로를 막는다."""
+    이전 세대의 답이 새 구성의 답인 척 남는 경로를 막는다 (리랭커가 두 줄인 이유는 README)."""
     assert derive_cache_key(**{**KEY_MATERIALS, material: other}) != derive_cache_key(
         **KEY_MATERIALS
     )
@@ -222,6 +225,7 @@ def test_scope_ignores_the_top_k():
         ("prompt_version", "qa-ko-2"),
         ("index_signature", "ffffffffffffffff"),
         ("model", "gpt-5"),
+        ("rerank_signature", ""),
     ],
 )
 def test_scope_splits_on_every_material_that_changes_the_answer(material, other):

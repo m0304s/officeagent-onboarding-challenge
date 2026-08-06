@@ -13,6 +13,7 @@ from app.core.answers import Answer, Citation, FinishReason
 from app.core.cache import CachedAnswer
 from app.core.documents import ChunkLocation, DocumentFormat
 from app.core.fusion import Contribution
+from app.core.reranking import ORDERED_BY_FUSION
 from app.core.retrieval import ScoredChunk
 
 #: 페이로드 구조가 바뀌면 올린다. 세대가 다른 항목은 되살리지 않고 미스로 떨어뜨린다 —
@@ -33,6 +34,8 @@ def dumps_entry(entry: CachedAnswer) -> bytes:
         "top_k": entry.top_k,
         "target_documents": entry.target_documents,
         "sources": [_dump_source(chunk) for chunk in entry.sources],
+        "ordered_by": entry.ordered_by,
+        "reranker": entry.reranker,
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -56,6 +59,10 @@ def loads_entry(raw: bytes | str) -> CachedAnswer:
         top_k=payload["top_k"],
         target_documents=payload["target_documents"],
         sources=tuple(_load_source(item) for item in payload["sources"]),
+        # 리랭킹이 붙기 전에 쓰인 항목에는 이 셋이 없다. 세대를 올려 버리면 되살릴 수
+        # 있는 항목까지 미스가 되므로, 없는 값은 "리랭킹이 돌지 않았다"로 읽는다.
+        ordered_by=payload.get("ordered_by", ORDERED_BY_FUSION),
+        reranker=payload.get("reranker"),
     )
 
 
@@ -110,6 +117,7 @@ def _dump_source(chunk: ScoredChunk) -> dict[str, Any]:
         "filename": chunk.filename,
         "format": chunk.format.value,
         "score": chunk.score,
+        "rerank_score": chunk.rerank_score,
         # 기여 내역이 빠지면 히트의 `sources` 이벤트가 미스의 것과 달라진다.
         "contributions": [
             {
@@ -133,6 +141,7 @@ def _load_source(data: dict[str, Any]) -> ScoredChunk:
         filename=data["filename"],
         format=DocumentFormat(data["format"]),
         score=data["score"],
+        rerank_score=data.get("rerank_score"),
         contributions=tuple(
             Contribution(
                 retriever=item["retriever"],

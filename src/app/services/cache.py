@@ -143,14 +143,19 @@ class CacheService:
 
     # ── 조회 ────────────────────────────────────────────────────────────
 
-    async def lookup(self, query: str, *, top_k: int, index_signature: str) -> CacheSlot:
+    async def lookup(
+        self, query: str, *, top_k: int, index_signature: str, rerank_signature: str
+    ) -> CacheSlot:
         """L1 정확 매치 → (미스면) 질의 임베딩 → L2 유사 매치 → 현재성 재검증.
 
         정확 매치가 성공하면 임베딩을 만들지 않는다 — 앞 층이 더 싸다."""
+        # 검색 구성에서 오는 둘은 생성자가 아니라 호출부가 준다 — 유도 지점을 늘리면
+        # 배선의 값과 검색 서비스의 값이 갈린 순간 조용히 다른 항목이 된다 (design 결정 7).
         materials = {
             "prompt_version": self._prompt_version,
             "index_signature": index_signature,
             "model": self._model,
+            "rerank_signature": rerank_signature,
         }
         fingerprint = derive_cache_key(query=query, top_k=top_k, **materials)
         scope = derive_cache_scope(**materials)

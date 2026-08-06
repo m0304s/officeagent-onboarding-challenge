@@ -74,9 +74,11 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
 # 실물 CLI 층과 실물 Redis 층은 기본 실행에서 뺀다 — 한 줄이 구독·저장소에 묶이면 안 된다.
-# 돌리려면 `pytest -m llm` / `pytest -m redis` (README "테스트").
-addopts = ["-m", "not llm and not redis"]
+# 골든셋 비교도 같은 이유로 뺀다. 평가자가 도는 한 줄이 30분을 넘으면 실행 용이성이 깨진다.
+# 돌리려면 `pytest -m llm` / `-m redis` / `-m slow` (README "테스트").
+addopts = ["-m", "not llm and not redis and not slow"]
 markers = [
     "llm: 실물 codex CLI 를 부르는 테스트 (구독 필요, 기본 실행 제외)",
     "redis: 실물 Redis 를 쓰는 캐시 계약 테스트 (저장소 필요, 기본 실행 제외)",
+    "slow: 골든셋을 두 구성으로 돌리는 비교 — 순위는 `-m slow`, 생성 채점은 `-m \"llm and slow\"` (기본 실행 제외)",
 ]

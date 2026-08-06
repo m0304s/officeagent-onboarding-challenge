@@ -67,7 +67,7 @@ class ContributionView(BaseModel):
 
 
 class SearchResultView(BaseModel):
-    """근거 청크 하나 — 정체성·본문·출처·융합 점수·기여 내역.
+    """근거 청크 하나 — 정체성·본문·출처·점수 둘·기여 내역.
 
     출처를 함께 싣는 것은 인용에 문서를 다시 조회하지 않게 하려는 것이다."""
 
@@ -85,6 +85,14 @@ class SearchResultView(BaseModel):
             " 활성 retriever 들이 이 청크를 얼마나 나란히 상위로 꼽았는가를 뜻하며,"
             " 질의와 청크가 얼마나 가까운지를 뜻하지 않는다."
             " 관련성 판정은 각 retriever 가 융합 전에 자기 점수 단위로 끝냈다"
+        ),
+    )
+    rerank_score: float | None = Field(
+        default=None,
+        description=(
+            "리랭킹 점수 — 크로스인코더가 질의와 이 본문을 함께 읽어 매긴 관련도."
+            " 리랭킹되지 않은 결과에서는 null 이다."
+            " 범위를 걸지 않는 것은 척도가 질의마다 달라, 같은 응답 안에서만 비교되기 때문이다"
         ),
     )
     char_start: int
@@ -105,6 +113,7 @@ class SearchResultView(BaseModel):
             chunk_index=chunk.chunk_index,
             text=chunk.text,
             score=chunk.score,
+            rerank_score=chunk.rerank_score,
             char_start=chunk.location.char_start,
             char_end=chunk.location.char_end,
             page=chunk.location.page,

@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.adapters.protocols import HealthProbe
+from app.adapters.reranking import KNOWN_RERANKER_PROFILES
 from app.adapters.vector_store.client import parse_url
 from app.config import Settings
 from app.main import create_app
@@ -97,12 +98,14 @@ needs_cache = pytest.mark.skipif(
 EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 
 
-def weights_are_cached(model_name: str = EMBEDDING_MODEL) -> bool:
-    """네트워크를 건드리지 않고 캐시만 확인한다."""
+def weights_are_cached(model_name: str = EMBEDDING_MODEL, *, revision: str | None = None) -> bool:
+    """네트워크를 건드리지 않고 캐시만 확인한다.
+
+    커밋으로 받은 캐시에는 `main` 참조가 없어, 고정한 모델은 리비전까지 물어야 찾힌다."""
     try:
         from huggingface_hub import snapshot_download
 
-        snapshot_download(model_name, local_files_only=True)
+        snapshot_download(model_name, revision=revision, local_files_only=True)
     except Exception:
         return False
     return True
@@ -116,6 +119,35 @@ needs_weights = pytest.mark.skipif(
 )
 
 
+#: 실물 리랭킹을 쓰는 테스트가 요구하는 모델. `Settings.reranker_model` 의 기본값과 같아야
+#: 하는 이유는 임베딩 쪽과 같다.
+RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+
+#: 어댑터가 고정한 것과 같은 커밋. 표에서 읽어 두 벌이 되지 않게 한다.
+RERANKER_REVISION = KNOWN_RERANKER_PROFILES[RERANKER_MODEL].revision
+
+needs_reranker_weights = pytest.mark.skipif(
+    not weights_are_cached(RERANKER_MODEL, revision=RERANKER_REVISION),
+    reason=f"{RERANKER_MODEL} 가중치가 로컬에 없습니다 (컨테이너 이미지에는 구워져 있습니다)",
+)
+
+
+def credentials_are_present() -> bool:
+    """자격증명 파일이 있는지만 본다. CLI 는 부르지 않는다."""
+    home = os.environ.get("CODEX_HOME") or f"{os.environ.get('HOME', '')}/.codex"
+    return Path(home, "auth.json").is_file()
+
+
+#: 실물 CLI 를 부르는 테스트의 공통 스킵. 실물 층이 둘(생성·판정)이 되어 여기로 올렸다.
+needs_credentials = pytest.mark.skipif(
+    not credentials_are_present(),
+    reason=(
+        "codex 자격증명이 없습니다 — `docker compose up` 이 한 번 돌아야 "
+        ".secrets/codex/auth.json 이 생깁니다"
+    ),
+)
+
+
 def make_settings(data_dir: Path) -> Settings:
     """`settings` 픽스처가 만드는 것과 같은 설정.
 
@@ -126,6 +158,8 @@ def make_settings(data_dir: Path) -> Settings:
         registry_path=data_dir / "registry.sqlite3",
         probe_timeout_seconds=0.2,
         health_total_timeout_seconds=0.5,
+        # 실물 가중치를 배선하지 않는다 — 리랭킹을 보는 테스트는 페이크를 직접 주입한다.
+        reranker_enabled=False,
     )
 
 

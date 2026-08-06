@@ -1,0 +1,798 @@
+{
+  "meta": {
+    "name": "insurance-golden-set",
+    "version": "1.0.0",
+    "created": "2026-08-05",
+    "purpose": "RAG 파이프라인 단계별 고장 위치를 특정하기 위한 진단용 평가셋. 정답률이 아니라 어느 단계가 무너졌는지를 읽는 데 쓴다.",
+    "source": {
+      "path": "sample-docs/insurance-summary.pdf",
+      "title": "LIFE MD 자격시험 핵심요약집 (1~10p 발췌)",
+      "pages": 10,
+      "sha256": "040de645e04b807963ee88826ab61860996eec9034c616c93cce8adfe55e712c",
+      "extractor": "PyMuPDF 1.28.0 (MuPDF 1.29.0)"
+    },
+    "extraction_caveats": [
+      "이 PDF는 텍스트 추출 시 한국어 어절 사이 공백이 소실된다 — '보험회사를위하여계약체결을중개또는대리하는것'. evidence.quote 는 그 추출 결과 그대로다.",
+      "따라서 expected_spans·must_not_contain 대조는 양쪽에서 공백을 모두 제거한 뒤 수행한다.",
+      "이 PDF는 원본 요약집의 1~10p 발췌다. 2p 목차는 16개 절을 나열하지만 본문은 Part 2 '01. 손해보험법규와약관' 초반(10p)까지만 존재한다. grounding.partial-evidence 문항이 이 성질을 근거로 삼는다."
+    ],
+    "matching_rules": {
+      "normalization": "비교 전 양쪽 문자열에서 모든 공백 문자를 제거한다.",
+      "expected_spans": "생성된 답변에 전부 포함되어야 한다. answerable=false 인 문항에서는 빈 배열이다.",
+      "must_not_contain": "생성된 답변에 하나라도 있으면 실패. 예/아니오 문항에서는 판정의 무게가 expected_spans 가 아니라 이 필드에 실린다.",
+      "evidence": "검색 결과 청크 대상. evidence.quote 가 상위 K 청크 어디에도 없으면 검색 단계 실패로 기록하고 생성 단계는 채점하지 않는다.",
+      "reference_answer": "LLM-judge 채점용 기준 답변. 문자열 대조 대상이 아니다."
+    },
+    "probes": {
+      "parsing.table-cell": "표의 행·열 대응이 추출에서 살아남는가",
+      "parsing.spaceless-token": "공백이 소실된 한국어 복합어를 색인·질의가 매칭하는가",
+      "parsing.glyph": "로마 숫자·기호 글리프가 값의 일부로 보존되는가",
+      "chunking.cross-boundary": "답이 인접한 두 블록에 걸쳐 있을 때 둘 다 회수되는가",
+      "chunking.list-integrity": "열거 목록이 청크 경계에서 잘리지 않는가",
+      "retrieval.lexical-exact": "임베딩이 의미를 못 잡는 희귀 문자열을 어휘 검색이 구제하는가",
+      "retrieval.semantic-paraphrase": "문서와 어휘가 겹치지 않는 구어체 질의를 밀집 검색이 잡는가",
+      "retrieval.numeric-neighbor": "같은 문맥을 공유하는 근접 수치 구간을 변별하는가",
+      "retrieval.multi-hop": "서로 다른 페이지의 근거 둘을 함께 회수하는가",
+      "retrieval.distractor-dense": "어휘가 거의 동일한 오답 후보 사이에서 리랭킹이 1위를 바로잡는가",
+      "grounding.negation-trap": "'오답유형' 박스의 (X) 표시된 거짓 명제를 사실로 채택하지 않는가",
+      "grounding.exception-clause": "단서·예외 조항을 원칙과 함께 읽는가",
+      "grounding.no-evidence": "문서에 없는 것을 지어내지 않는가",
+      "grounding.partial-evidence": "제목·목차가 일치한다는 이유로 본문이 없는 답을 만들지 않는가",
+      "grounding.citation-precision": "출처 페이지가 근거 청크의 것과 일치하는가",
+      "cache.paraphrase-hit": "같은 사실을 다르게 물었을 때 캐시가 히트하는가",
+      "cache.near-miss": "표면이 닮았으나 답이 달라야 하는 질의를 캐시가 히트로 오판하지 않는가"
+    },
+    "counts": {
+      "total": 50,
+      "by_stage": { "parsing": 6, "chunking": 5, "retrieval": 15, "grounding": 16, "cache": 8 },
+      "answerable": { "true": 44, "false": 6 }
+    }
+  },
+
+  "items": [
+    {
+      "id": "GS-001",
+      "question": "보험중개사의 등록기관은 어디인가요?",
+      "probe": "parsing.table-cell",
+      "answerable": true,
+      "reference_answer": "금융위원회이며, 등록 업무는 금융감독원에 위탁되어 있습니다.",
+      "evidence": {
+        "page": 3,
+        "section": "1. 보험의모집 — 나. 보험모집을할수있는자 (권한 비교표)",
+        "quote": "중개사\nX\nX\nX\n금융위원회(금융감독원위탁)"
+      },
+      "expected_spans": ["금융감독원"],
+      "must_not_contain": ["손보협회", "손해보험협회"],
+      "failure_hint": "손보협회라고 답하면 → 표의 행 정렬이 무너져 설계사·대리점 행의 등록기관 값이 중개사 행에 붙었다. 파싱 단계 고장이며 검색·생성을 볼 필요가 없다."
+    },
+    {
+      "id": "GS-002",
+      "question": "혈중알코올농도 0.08% 이상으로 적발되면 면허 취득이 몇 년간 제한되나요?",
+      "probe": "parsing.table-cell",
+      "answerable": true,
+      "reference_answer": "면허가 취소되고 1년간 면허 취득이 불가합니다.",
+      "evidence": {
+        "page": 7,
+        "section": "4. 음주운전시운전자에게주어지는처벌 — 면허 행정처분표",
+        "quote": "0.08% 이상또는음주측정불응시\n면허취소\n1년간면허취득불가"
+      },
+      "expected_spans": ["1년"],
+      "must_not_contain": ["2년간", "3년간", "5년간"],
+      "failure_hint": "2년이면 → 바로 위 행(0.03~0.08% 사고 시)의 결격기간이 붙었다. 3년·5년이면 → 아래 행(2회 교통사고·도주)의 값이다. 어느 쪽이든 이 표의 행 경계가 추출에서 소실됐다는 뜻이다."
+    },
+    {
+      "id": "GS-003",
+      "question": "계약체결권·고지의무 수령권·보험료 수령권을 모두 가진 모집종사자는 누구인가요?",
+      "probe": "parsing.table-cell",
+      "answerable": true,
+      "reference_answer": "보험대리점입니다. 설계사와 중개사는 세 권한을 모두 가지지 않습니다.",
+      "evidence": {
+        "page": 3,
+        "section": "1. 보험의모집 — 권한 비교표 및 Plus Tip",
+        "quote": "대리점만계약체결권, 고지의무수령권,\n보험료수령권다있음(설계사와\n중계사는아무것도가지지않음)"
+      },
+      "expected_spans": ["대리점"],
+      "must_not_contain": ["설계사입니다", "중개사입니다", "모두 가집니다"],
+      "failure_hint": "설계사·중개사라고 답하면 → O/X 열이 이름 행과 어긋났다. '셋 다 가진다'고 답하면 → O/X 값 자체가 소실되고 이름만 남았다."
+    },
+    {
+      "id": "GS-004",
+      "question": "수지상등의 원칙이 무엇인가요?",
+      "probe": "parsing.spaceless-token",
+      "answerable": true,
+      "reference_answer": "순보험료 총액이 전체 보험금 총액과 일치해야 한다는 원칙으로, 보험회사 관점의 수입=지출 원칙입니다.",
+      "evidence": {
+        "page": 6,
+        "section": "3. 보험의기본원칙",
+        "quote": "수지상등의원칙: 순보험료총액= 전체보험금총액과합치(보험회사의관점)"
+      },
+      "expected_spans": ["순보험료", "보험금", "총액"],
+      "must_not_contain": ["실제 손해액", "Lexis"],
+      "failure_hint": "근거 0건 → 어휘 색인이 '수지상등의원칙'을 통짜 토큰으로 넣어 '수지상등' 질의와 매칭되지 않았다. 토크나이저가 공백 없는 한국어를 다루지 못한다는 신호. 다른 원칙 내용이 오면 → 밀집이 같은 목록의 이웃 항목을 골랐다."
+    },
+    {
+      "id": "GS-005",
+      "question": "급부·반대급부의 원칙을 다른 이름으로 뭐라고 부르나요?",
+      "probe": "parsing.spaceless-token",
+      "answerable": true,
+      "reference_answer": "Lexis의 법칙이라고도 합니다.",
+      "evidence": {
+        "page": 6,
+        "section": "3. 보험의기본원칙",
+        "quote": "급부·반대급부의원칙: 보험료는보험금을지급하는데과부족이없어야한다는원칙\n(“Lexis의법칙＂이라고도함. 개개인의관점)"
+      },
+      "expected_spans": ["Lexis"],
+      "must_not_contain": ["대수의 법칙", "안분의 원칙", "실손보상"],
+      "failure_hint": "근거 0건 → 라틴 문자가 공백 없는 한글 사이에 끼고 여닫는 따옴표가 서로 다른 글자(＂)라, 토크나이저가 'Lexis'를 독립 토큰으로 뽑지 못했다. '대수의 법칙'이 오면 → 같은 번호 목록의 다른 항목이며 리랭킹 부재 신호다."
+    },
+    {
+      "id": "GS-006",
+      "question": "의무보험에 해당하는 자동차보험의 담보 두 가지는 무엇인가요?",
+      "probe": "parsing.glyph",
+      "answerable": true,
+      "reference_answer": "대인배상 Ⅰ과 대물배상입니다.",
+      "evidence": {
+        "page": 6,
+        "section": "4. 보험의분류 — 가. 운영형태에따른분류",
+        "quote": "의무보험: 대표적으로자동차보험(대인배상Ⅰ+ 대물배상)"
+      },
+      "expected_spans": ["대인배상", "대물배상"],
+      "must_not_contain": ["자기신체사고", "자기차량손해", "대인배상Ⅱ"],
+      "failure_hint": "'대인배상'만 나오고 Ⅰ(U+2160)이 사라지면 → 글리프 정규화가 로마 숫자를 버렸다. 대인배상Ⅱ가 나오면 → 문서에 없는 글리프를 생성기가 지어냈다. 임의보험 예시가 오면 → 강제성 분류 축을 놓쳤다."
+    },
+
+    {
+      "id": "GS-007",
+      "question": "음주측정을 거부하면 사고가 나지 않았어도 면허가 취소되나요?",
+      "probe": "chunking.cross-boundary",
+      "answerable": true,
+      "reference_answer": "취소됩니다. 음주측정 불응은 사고 발생 여부를 불문하고 면허취소 사유입니다.",
+      "evidence": {
+        "page": 7,
+        "section": "4. 음주운전시운전자에게주어지는처벌 — 행정처분표 + 오답유형 박스",
+        "quote": "음주측정을불응한경우사고발생\n여부를불문하고면허취소된다."
+      },
+      "expected_spans": ["취소"],
+      "must_not_contain": ["사고가 발생한 경우에만", "취소되지 않", "정지"],
+      "failure_hint": "'사고가 나야 취소된다'고 답하면 → 표만 회수되고, 사고 여부 무관함을 (O)로 못 박은 오답유형 박스가 다른 청크로 잘렸다. 표와 그 아래 주석 박스를 같은 청크에 담는 청킹 규칙이 필요하다는 신호다."
+    },
+    {
+      "id": "GS-008",
+      "question": "개인 보험대리점이 직접 업무를 폐지할 때 계약해지와 업무폐지 중 무엇을 먼저 하나요?",
+      "probe": "chunking.cross-boundary",
+      "answerable": true,
+      "reference_answer": "업무폐지가 먼저이고 계약해지가 나중입니다.",
+      "evidence": {
+        "page": 4,
+        "section": "3. 보험대리점 — 가. 보험대리점의분류",
+        "quote": "개인대리점= 직접업무폐지가능(先업무폐지, 後계약해지)"
+      },
+      "expected_spans": ["업무폐지", "먼저"],
+      "must_not_contain": ["계약해지가 먼저", "계약을 해지한 후"],
+      "failure_hint": "순서를 뒤집어 답하면 → 오답유형 박스의 (X) 문장('계약해지 후에 업무폐지를 신청한다')이 든 청크만 왔고 본문 '先업무폐지, 後계약해지'가 다른 청크에 있다. 본문과 오답 박스가 분리 배치된 레이아웃이 원인이다."
+    },
+    {
+      "id": "GS-009",
+      "question": "보험설계사 등록이 취소된 지 25개월이 지났습니다. 다시 등록할 수 있나요?",
+      "probe": "chunking.cross-boundary",
+      "answerable": true,
+      "reference_answer": "등록할 수 있습니다. 등록취소 후 2년이 지나야 등록 가능하며 25개월은 2년을 넘습니다.",
+      "evidence": {
+        "page": 3,
+        "section": "2. 보험설계사 — 나. 설계사등록제한 + Plus Tip",
+        "quote": "등록취소후25개월경과자\n⇒ 등록가능"
+      },
+      "expected_spans": ["가능", "2년"],
+      "must_not_contain": ["등록할 수 없", "3년"],
+      "failure_hint": "'불가'라 답하면 → 본문 제한 규정(집행종료 후 2년 미경과자)만 회수되고 Plus Tip의 적용례가 다른 청크로 갈렸다. 3년이 나오면 → 같은 절의 보험료 유용(3년) 규정과 혼동한 것이며 이건 청킹이 아니라 생성 문제다."
+    },
+    {
+      "id": "GS-010",
+      "question": "재무설계에서 말하는 5대 필요자금을 모두 알려주세요.",
+      "probe": "chunking.list-integrity",
+      "answerable": true,
+      "reference_answer": "생활비, 양육비(교육·결혼), 주택구입비, 노후자금, 긴급예비자금입니다.",
+      "evidence": {
+        "page": 4,
+        "section": "5. 보험모집프로세스",
+        "quote": "5대필요자금: 생활비, 양육비(교육, 결혼), 주택구입비, 노후자금, 긴급예비자금"
+      },
+      "expected_spans": ["생활비", "양육비", "주택구입비", "노후자금", "긴급예비자금"],
+      "must_not_contain": ["장례비"],
+      "failure_hint": "다섯 중 일부만 나오면 → 청크 경계가 목록 중간을 잘랐다. 장례비가 들어가면 → 바로 옆 출제유형 박스('5대 필요자금이 아닌 것은? - 장례비')를 긍정 근거로 읽은 것이며 이건 청킹이 아니라 생성 고장이다."
+    },
+    {
+      "id": "GS-011",
+      "question": "부가보험료는 어떤 항목들로 구성되나요?",
+      "probe": "chunking.list-integrity",
+      "answerable": true,
+      "reference_answer": "신계약비, 유지비, 수금비로 구성됩니다.",
+      "evidence": {
+        "page": 9,
+        "section": "3. (영업)보험료의구성",
+        "quote": "부가보험료= 신계약비+ 유지비+ 수금비"
+      },
+      "expected_spans": ["신계약비", "유지비", "수금비"],
+      "must_not_contain": ["위험보험료", "저축보험료"],
+      "failure_hint": "위험·저축보험료가 나오면 → 바로 위 줄의 순보험료 구성과 뒤바뀌었다. 셋 중 하나가 빠지면 → 각 항목의 설명(⒜⒝⒞)이 붙은 긴 목록이 청크 경계에서 잘렸다."
+    },
+
+    {
+      "id": "GS-012",
+      "question": "이재차손익은 무엇과 무엇의 차이인가요?",
+      "probe": "retrieval.lexical-exact",
+      "answerable": true,
+      "reference_answer": "예정위험률(이재율)과 실제손해율의 차이입니다.",
+      "evidence": {
+        "page": 10,
+        "section": "4. 보험료계산3요소및손익3요소",
+        "quote": "위험보험료= 예정위험률(이재율) ↔ 실제손해율과의차이= 위험률차손익(이재차손익)"
+      },
+      "expected_spans": ["예정위험률", "실제손해율"],
+      "must_not_contain": ["예정이율", "예정사업비율", "실제수익률"],
+      "failure_hint": "근거 0건 → 밀집 단독으로는 못 잡는다. '이재차손익'은 임베딩이 의미를 얻을 수 없는 희귀 한자 조어라 코사인이 하한 아래로 떨어진다. 어휘 retriever 를 끄고 같은 질의를 다시 던져 이 진단을 확정하라."
+    },
+    {
+      "id": "GS-013",
+      "question": "비차손익은 무엇인가요?",
+      "probe": "retrieval.lexical-exact",
+      "answerable": true,
+      "reference_answer": "예정사업비율과 실제사업비율의 차이입니다.",
+      "evidence": {
+        "page": 10,
+        "section": "4. 보험료계산3요소및손익3요소",
+        "quote": "부가보험료= 예정사업비율↔ 실제사업비율과의차이= 비차손익"
+      },
+      "expected_spans": ["예정사업비율", "실제사업비율"],
+      "must_not_contain": ["예정위험률", "예정이율"],
+      "failure_hint": "GS-012 와 같은 절을 보지만 세 손익이 나란히 있어, 절만 맞히고 항목을 틀리는 실패가 따로 존재한다. 이차손익·이재차손익 내용이 오면 → 검색은 성공, 생성이 목록 안에서 잘못된 줄을 골랐다."
+    },
+    {
+      "id": "GS-014",
+      "question": "1사전속 예외제도에 해당하는 설계사를 뭐라고 부르나요?",
+      "probe": "retrieval.lexical-exact",
+      "answerable": true,
+      "reference_answer": "교차설계사입니다. 손해보험사 1개와 생명보험사 1개를 함께 영위하는 설계사를 말합니다.",
+      "evidence": {
+        "page": 3,
+        "section": "2. 보험설계사 — 가. 등록요건",
+        "quote": "교차설계사: 손보사1개+ 생보사1개를함께하는설계사(1사전속예외제도)"
+      },
+      "expected_spans": ["교차설계사"],
+      "must_not_contain": ["전속설계사입니다", "우수인증설계사"],
+      "failure_hint": "'1사전속'은 괄호 안에 공백 없이 붙어 있는 단 한 번 등장하는 문자열이다. 근거 0건이면 어휘 색인이 괄호 내부를 토큰화하지 않는다는 뜻이다."
+    },
+    {
+      "id": "GS-015",
+      "question": "보험계약의 법적 성질 중 부합계약은 무엇을 뜻하나요?",
+      "probe": "retrieval.lexical-exact",
+      "answerable": true,
+      "reference_answer": "보험회사가 정형화된 약관을 제시하고 계약자가 이를 포괄적으로 승인하는 계약이라는 뜻입니다.",
+      "evidence": {
+        "page": 10,
+        "section": "8. 보험계약의특성(법적성질)",
+        "quote": "부합계약(정형화된보험약관제시, 계약자가포괄적승인)"
+      },
+      "expected_spans": ["약관", "승인"],
+      "must_not_contain": ["사행계약", "낙성계약", "쌍무계약"],
+      "failure_hint": "다른 성질의 설명이 오면 → 여섯 항목이 한 줄씩 붙은 목록에서 검색이 절 단위까지만 좁혀졌다. 청크를 더 잘게 쪼개거나 리랭킹이 필요하다는 신호다."
+    },
+    {
+      "id": "GS-016",
+      "question": "보험 가입할 때 아팠던 걸 숨기면 회사가 계약을 끊을 수 있나요?",
+      "probe": "retrieval.semantic-paraphrase",
+      "answerable": true,
+      "reference_answer": "가능합니다. 계약 전 알릴 의무(고지의무)를 위반하면 보험회사가 계약해지권을 가집니다.",
+      "evidence": {
+        "page": 9,
+        "section": "1. 보험계약관계자 — 나. 보험계약자 주요의무",
+        "quote": "계약전알릴의무(상법제651조) : 고지의무⇨ 위반시보험회사는계약해지권을가짐"
+      },
+      "expected_spans": ["고지의무", "해지"],
+      "must_not_contain": ["취소할 수 있습니다", "무효"],
+      "failure_hint": "근거 0건 → 어휘 단독으로는 못 잡는다. 질의에 '고지'·'알릴'·'해지'·'상법' 어느 것도 없어 겹치는 문자열이 0이다. 밀집 retriever 를 끄고 재현하면 이 진단이 확정된다."
+    },
+    {
+      "id": "GS-017",
+      "question": "사고가 나긴 났는데 치료비를 부풀려서 받았다면 어떤 유형에 해당하나요?",
+      "probe": "retrieval.semantic-paraphrase",
+      "answerable": true,
+      "reference_answer": "연성사기입니다. 사고는 실제로 발생했으나 과잉청구한 경우를 말합니다.",
+      "evidence": {
+        "page": 6,
+        "section": "03. 보험범죄및교통사고예방 — 1. 보험사기행위",
+        "quote": "연성사기: 사고는났으나과잉청구/ 경성사기: 의도적, 고의적인조작"
+      },
+      "expected_spans": ["연성사기"],
+      "must_not_contain": ["경성사기입니다"],
+      "failure_hint": "질의와 문서가 '사고' 한 단어만 공유한다. 근거 0건이면 밀집 검색의 구어체 흡수력이 부족하다는 뜻. 경성사기라 답하면 → 검색은 성공, 생성이 같은 줄의 두 정의를 뒤바꿨다."
+    },
+    {
+      "id": "GS-018",
+      "question": "차 열쇠를 꽂아둔 채로 주차해서 도난을 당했다면 이건 어떤 종류의 위태인가요?",
+      "probe": "retrieval.semantic-paraphrase",
+      "answerable": true,
+      "reference_answer": "정신적 위태입니다. 고의는 없으나 부주의에서 비롯된 해이에 해당합니다.",
+      "evidence": {
+        "page": 5,
+        "section": "1. 위험과관련된개념 — 가. 위태",
+        "quote": "정신적위태: 고의는없으나부주의, 무관심, 풍기문란, 사기저하/\n(예시) 졸음운전, 자동차키를꽂아두고주차(정신적인해이)"
+      },
+      "expected_spans": ["정신적"],
+      "must_not_contain": ["도덕적 위태입니다", "물리적 위태입니다"],
+      "failure_hint": "도덕적이라 답하면 → '고의 유무'라는 판별 축을 생성기가 놓쳤다(세 정의가 한 청크에 있으면 검색 문제가 아니다). 근거 0건이면 → 예시 문장이 정의 문장 뒤에 붙어 있어 청크 후반부의 의미가 임베딩에서 희석됐다."
+    },
+    {
+      "id": "GS-019",
+      "question": "주식이나 복권처럼 돈을 벌 수도 잃을 수도 있는 것도 보험에 들 수 있나요?",
+      "probe": "retrieval.semantic-paraphrase",
+      "answerable": true,
+      "reference_answer": "들 수 없습니다. 손해와 이익이 모두 상존하는 투기위험은 보험이 불가능합니다.",
+      "evidence": {
+        "page": 5,
+        "section": "2. 위험의분류 — 라. 투기위험",
+        "quote": "투기위험: 손해와이익이모두상존하는위험/ (예시) 주식투자, 도박, 복권\n• 개인은손해입어도사회전체는이익을얻을수있음. 보험불가능"
+      },
+      "expected_spans": ["투기위험", "불가"],
+      "must_not_contain": ["순수위험", "가입할 수 있습니다"],
+      "failure_hint": "순수위험 설명이 오면 → 바로 위 항목이며 두 정의가 인접해 밀집 점수가 붙었다. 리랭킹이 손해/이익 상존이라는 판별 축을 잡아야 하는 자리다."
+    },
+    {
+      "id": "GS-020",
+      "question": "보험회사가 청약에 대해 아무 통지도 하지 않으면 며칠이 지나야 승낙한 것으로 보나요?",
+      "probe": "retrieval.numeric-neighbor",
+      "answerable": true,
+      "reference_answer": "30일이 지나면 승낙한 것으로 간주합니다(승낙의제).",
+      "evidence": {
+        "page": 9,
+        "section": "1. 보험계약관계자 — 가. 보험회사 주요의무",
+        "quote": "승낙의제: 통지하지않고30일경과시승낙한것으로간주"
+      },
+      "expected_spans": ["30일", "승낙"],
+      "must_not_contain": ["15일", "3개월"],
+      "failure_hint": "15일이면 → 10p '계약의 성립요건 = 보험회사의 승낙(승낙 = 15일 이내)'을 끌어왔다. 두 규정이 '승낙'이라는 같은 단어를 공유해 밀집이 구분하지 못한다. 3개월이면 → 같은 페이지 위쪽 약관 교부·설명의무 위반 취소기간이다."
+    },
+    {
+      "id": "GS-021",
+      "question": "혈중알코올농도 0.05%로 운전하다 사람을 다치게 하면 면허는 어떻게 되나요?",
+      "probe": "retrieval.numeric-neighbor",
+      "answerable": true,
+      "reference_answer": "면허가 취소되고 2년간 면허 취득이 불가합니다.",
+      "evidence": {
+        "page": 7,
+        "section": "4. 음주운전시운전자에게주어지는처벌 — 면허 행정처분표",
+        "quote": "0.03% ~ 0.08% 미만\n벌점100점(면허정지100일), \n사고가난경우면허취소(2년간면허취득불가),\n사람을사망하게한경우면허취소(5년간재취득불가)"
+      },
+      "expected_spans": ["취소", "2년"],
+      "must_not_contain": ["면허정지 100일", "5년", "1년간"],
+      "failure_hint": "0.08% 이상 행을 인용하면 → 검색이 숫자 구간을 변별하지 못한다(임베딩은 0.05가 0.03~0.08 사이임을 모른다). 면허정지 100일이라 답하면 → 한 셀 안의 세 조건(무사고/사고/사망)을 생성기가 뭉갰다. 5년이면 → 사상(死傷) 구분 실패다."
+    },
+    {
+      "id": "GS-022",
+      "question": "의료기관이 교통사고 입원환자의 외출·외박 기록 의무를 위반하면 과태료가 얼마인가요?",
+      "probe": "retrieval.numeric-neighbor",
+      "answerable": true,
+      "reference_answer": "과태료 300만원입니다.",
+      "evidence": {
+        "page": 7,
+        "section": "2. 나이롱환자근절을위한자동차손해배상보장법(병원)",
+        "quote": "위반시과태료300만원/ 외출. 외박기록은3년간보존"
+      },
+      "expected_spans": ["300만원"],
+      "must_not_contain": ["100만원"],
+      "failure_hint": "100만원이면 → 바로 다음 절(3. 자동차관리법 정비공장)의 과태료를 끌어왔다. 두 절이 한 청크에 담겼거나, 나뉘었더라도 리랭킹이 '병원'과 '정비공장'을 구분하지 못했다는 뜻이다."
+    },
+    {
+      "id": "GS-023",
+      "question": "순보험료를 이루는 두 항목에는 각각 어떤 예정률이 대응되나요?",
+      "probe": "retrieval.multi-hop",
+      "answerable": true,
+      "reference_answer": "위험보험료에는 예정위험률이, 저축보험료에는 예정이율이 대응됩니다.",
+      "evidence": {
+        "page": 9,
+        "section": "3. (영업)보험료의구성 (9p) × 4. 보험료계산3요소및손익3요소 (10p)",
+        "quote": "순보험료= 위험보험료(보험금재원) + 저축보험료(만기금, 해지금재원)"
+      },
+      "expected_spans": ["위험보험료", "예정위험률", "저축보험료", "예정이율"],
+      "must_not_contain": ["예정사업비율"],
+      "failure_hint": "구성만 답하고 예정률이 빠지면 → 상위 K가 9p 청크로만 채워졌다. 예정률만 답하면 → 10p 로만 채워졌다. 어느 쪽이든 다중 근거 질의에서 검색 폭이 한 페이지에 갇혔다는 신호이며, K 를 늘리거나 질의 분해가 필요하다. 예정사업비율이 섞이면 → 부가보험료 항목까지 끌어와 범위를 넓혔다."
+    },
+    {
+      "id": "GS-024",
+      "question": "보험설계사와 개인 보험대리점은 각각 보험관계업무 경력이 몇 년 이상이면 등록할 수 있나요?",
+      "probe": "retrieval.multi-hop",
+      "answerable": true,
+      "reference_answer": "보험설계사는 1년 이상, 개인 보험대리점은 2년 이상입니다.",
+      "evidence": {
+        "page": 3,
+        "section": "2. 보험설계사 가. 등록요건 (3p) × 3. 보험대리점 나. 등록요건 (4p)",
+        "quote": "등록요건: 연수과정이수후시험합격1년이내or 보험관계업무에1년이상\n종사자"
+      },
+      "expected_spans": ["1년", "2년"],
+      "must_not_contain": ["3년", "둘 다"],
+      "failure_hint": "한쪽 연수만 답하면 → 상위 K가 한 절에 몰렸다. 두 근거가 인접 페이지라 청크 유사도가 높아 중복 회수되기 쉬운 자리이므로, MMR 같은 다양성 제어가 없으면 재현적으로 실패한다. 3년이 나오면 → 5p 우수인증설계사 근속 3년과 혼동한 생성 오류다."
+    },
+    {
+      "id": "GS-025",
+      "question": "어린이 보호구역에서 속도위반을 하면 과태료는 얼마인가요?",
+      "probe": "retrieval.distractor-dense",
+      "answerable": true,
+      "reference_answer": "7만원에서 16만원입니다.",
+      "evidence": {
+        "page": 8,
+        "section": "6. 교통사고및법규위반별벌점및범칙금 — 3) 주요과태료",
+        "quote": "주요과태료\n⦁위반행위(일반도로/ 보호구역)\n①속도위반: 4~13만원/ 7~16만원"
+      },
+      "expected_spans": ["7", "16만원"],
+      "must_not_contain": ["6~15만원", "3~12만원", "4~13만원"],
+      "failure_hint": "6~15만원이면 → 범칙금 표를 끌어왔다(과태료/범칙금 구분 실패). 4~13만원이면 → 같은 표의 일반도로 열이다. 8p 한 페이지에 범칙금·과태료·벌점 세 목록이 '속도위반 / 일반도로 / 보호구역'이라는 거의 동일한 어휘로 나열되어 있어, 리랭킹이 없으면 1위가 실행마다 흔들린다. 여러 번 돌려 순위가 바뀌는지 확인하라."
+    },
+    {
+      "id": "GS-026",
+      "question": "보호구역에서 보행자 보호의무를 이행하지 않으면 승용차 기준 벌점은 몇 점인가요?",
+      "probe": "retrieval.distractor-dense",
+      "answerable": true,
+      "reference_answer": "20점입니다.",
+      "evidence": {
+        "page": 8,
+        "section": "6. 교통사고및법규위반별벌점및범칙금 — 4) 주요벌점",
+        "quote": "③보행자보호의무불이행: 10점/ 20점"
+      },
+      "expected_spans": ["20점"],
+      "must_not_contain": ["10점", "30점", "12만원"],
+      "failure_hint": "10점이면 → 같은 줄의 일반도로 값이다. 30점이면 → 바로 위 신호·지시위반 행이다. 12만원이면 → 벌점 목록이 아니라 범칙금 목록을 골랐다. 세 오답이 각각 다른 축(열/행/표)의 혼동이라, 어느 것이 나왔는지로 리랭킹 실패의 종류가 특정된다."
+    },
+
+    {
+      "id": "GS-027",
+      "question": "보험설계사는 보험계약을 대리하는 자인가요?",
+      "probe": "grounding.negation-trap",
+      "answerable": true,
+      "reference_answer": "아닙니다. 설계사는 계약을 중개하는 자이며, 대리하는 자는 대리점입니다.",
+      "evidence": {
+        "page": 3,
+        "section": "1. 보험의모집 — 가. 모집이란? + 오답유형 박스",
+        "quote": "중개하는자: 설계사, 중개사\n2) 대리하는자: 대리점"
+      },
+      "expected_spans": ["중개"],
+      "must_not_contain": ["대리하는 자입니다", "대리합니다", "맞습니다"],
+      "failure_hint": "'대리한다'고 답하면 → 오답유형 박스의 '설계사는계약을대리하는자이다. (X)' 를 사실 문장으로 읽었다. 검색은 정확히 맞았고 생성만 틀리는 유일한 경로이므로, 이 문항이 실패하면 프롬프트에 (X) 표기 처리 지침이 없다는 뜻이다."
+    },
+    {
+      "id": "GS-028",
+      "question": "보험회사는 교통사고 입원환자의 동의 없이도 외출·외박 기록을 열람할 수 있나요?",
+      "probe": "grounding.negation-trap",
+      "answerable": true,
+      "reference_answer": "가능합니다. 보험회사의 열람청구권이 인정되며 환자 동의 없이 열람할 수 있습니다.",
+      "evidence": {
+        "page": 7,
+        "section": "2. 나이롱환자근절을위한자동차손해배상보장법(병원)",
+        "quote": "보험회사의외출외박기록열람청구권인정(환자동의없이가능)"
+      },
+      "expected_spans": ["가능", "동의"],
+      "must_not_contain": ["열람할 수 없", "동의가 필요", "진료정보이므로"],
+      "failure_hint": "'동의가 필요하다'고 답하면 → 오답유형 박스의 (X) 문장을 채택했다. '진료정보이므로'라는 어구가 답변에 등장하면 확정 진단이다 — 그 표현은 (X) 문장에만 있다."
+    },
+    {
+      "id": "GS-029",
+      "question": "순수위험은 모두 보험으로 담보할 수 있나요?",
+      "probe": "grounding.negation-trap",
+      "answerable": true,
+      "reference_answer": "아닙니다. 위험 측정이 가능하고 보험사의 담보력이 있는 경우에만 보험화가 가능합니다.",
+      "evidence": {
+        "page": 5,
+        "section": "2. 위험의분류 — 다. 순수위험 + 오답유형 박스",
+        "quote": "순수위험은모두보험화가가능하다.\n(X) / 위험측정이가능하고보험사\n담보력이있는경우만가능"
+      },
+      "expected_spans": ["측정", "담보력"],
+      "must_not_contain": ["모두 가능", "전부 보험화"],
+      "failure_hint": "'모두 가능'이라 답하면 → 본문의 '보험화 가능성 높음'과 오답 박스의 (X) 문장을 합쳐 읽었다. 이 문항은 (X) 바로 뒤에 정답이 이어 붙은 형태라, (X) 표기를 무시하는 생성기는 앞 절만 취하고 뒤 절을 버린다."
+    },
+    {
+      "id": "GS-030",
+      "question": "점포유지비는 신계약비에 포함되나요?",
+      "probe": "grounding.negation-trap",
+      "answerable": true,
+      "reference_answer": "아닙니다. 점포유지비는 유지비에 포함됩니다.",
+      "evidence": {
+        "page": 9,
+        "section": "3. (영업)보험료의구성 — 부가보험료 ⒝ 유지비",
+        "quote": "유지비: 보험계약을유지·관리하는데사용(직원인건비, 점포유지비)"
+      },
+      "expected_spans": ["유지비"],
+      "must_not_contain": ["신계약비에 포함", "신계약비입니다"],
+      "failure_hint": "'신계약비에 포함된다'고 답하면 → 오답유형 박스의 (X) 문장을 채택했다. 본문 근거는 괄호 안 예시 목록이라 눈에 덜 띄고 (X) 문장은 완결된 서술문이어서, 생성기가 후자를 선호하는 전형적 함정이다."
+    },
+    {
+      "id": "GS-031",
+      "question": "일부보험에서 비례보상은 어떤 비율로 계산하나요?",
+      "probe": "grounding.negation-trap",
+      "answerable": true,
+      "reference_answer": "보험가액에 대한 보험가입금액의 비율로 비례보상합니다.",
+      "evidence": {
+        "page": 10,
+        "section": "6. 보험가입금액과보험가액 — 오답유형 박스",
+        "quote": "일부보험가입시가입금액에대한\n가액비율로비례보상한다.(X)\n= 보험가액에대한보험가입금액의\n비율로비례보상한다.(O)"
+      },
+      "expected_spans": ["보험가액에 대한", "보험가입금액의 비율"],
+      "must_not_contain": ["가입금액에 대한 가액", "보험가입금액에 대한 보험가액"],
+      "failure_hint": "분모·분자를 뒤집어 답하면 → (X) 문장을 채택했다. 이 문항이 이 평가셋에서 가장 어려운 자리다: (X)와 (O) 두 문장이 완전히 같은 명사 집합을 쓰므로 검색 점수가 사실상 동일하고, 판별은 오직 (X)/(O) 표기 독해 하나에 달려 있다. 다른 negation 문항이 통과하는데 이것만 실패하면 표기 처리가 '있으나 약한' 상태다."
+    },
+    {
+      "id": "GS-032",
+      "question": "신용불량자는 보험설계사 등록이 제한되나요?",
+      "probe": "grounding.exception-clause",
+      "answerable": true,
+      "reference_answer": "아닙니다. 신용불량자는 등록제한 해당자가 아닙니다.",
+      "evidence": {
+        "page": 3,
+        "section": "2. 보험설계사 — 나. 설계사등록제한",
+        "quote": "설계사등록제한→ 신용불량자는등록제한해당자가아님"
+      },
+      "expected_spans": ["신용불량자"],
+      "must_not_contain": ["등록이 제한됩니다", "등록할 수 없습니다", "등록제한 대상입니다", "파산자"],
+      "failure_hint": "'제한된다'고 답하면 → 제목 줄에 화살표로 붙은 예외 단서를 건너뛰고 아래 제한 사유 목록만 읽었다. 답변에 '파산자'가 등장하면 확정이다 — 인접한 제한 사유를 근거로 삼았다는 뜻이다."
+    },
+    {
+      "id": "GS-033",
+      "question": "자동차 판매업을 하면 보험대리점 등록이 불가능한가요?",
+      "probe": "grounding.exception-clause",
+      "answerable": true,
+      "reference_answer": "원칙적으로 자동차판매업자는 등록이 제한되지만, 중고차·수입차 판매업자 등은 가능합니다.",
+      "evidence": {
+        "page": 4,
+        "section": "3. 보험대리점 — 다. 등록제한",
+        "quote": "자동차판매업자(단, 중고차, 수입차판매업자등은가능)"
+      },
+      "expected_spans": ["중고차", "가능"],
+      "must_not_contain": ["모든 자동차 판매업자", "예외 없이"],
+      "failure_hint": "단서 없이 '불가'만 답하면 → 괄호 안 예외 절이 청크 경계에서 잘렸거나 생성기가 괄호 내용을 부차 정보로 버렸다. 근거 청크에 '(단, 중고차'가 들어 있는지부터 확인하면 두 원인이 갈린다."
+    },
+    {
+      "id": "GS-034",
+      "question": "은행 같은 금융기관이 보험대리점을 할 때도 영업보증금을 예탁해야 하나요?",
+      "probe": "grounding.exception-clause",
+      "answerable": true,
+      "reference_answer": "면제됩니다. 금융기관보험대리점은 영업보증금 예탁의무가 면제됩니다.",
+      "evidence": {
+        "page": 4,
+        "section": "3. 보험대리점 — 라. 영업보증금",
+        "quote": "금융기관보험대리점은영업보증금예탁의무가면제"
+      },
+      "expected_spans": ["면제"],
+      "must_not_contain": ["3억원을 예탁", "1억원을 예탁", "예탁해야 합니다"],
+      "failure_hint": "1억·3억을 답하면 → 바로 위 줄의 일반 규정만 읽고 화살표로 붙은 면제 단서를 버렸다. GS-032·GS-033 과 같은 실패 모양이면 '단서 조항 무시'가 계통적 결함이라는 뜻이므로 프롬프트 수준에서 고쳐야 한다."
+    },
+    {
+      "id": "GS-035",
+      "question": "보험수익자도 고지의무를 지나요?",
+      "probe": "grounding.exception-clause",
+      "answerable": true,
+      "reference_answer": "지지 않습니다. 고지의무 당사자는 계약자, 피보험자, 이들의 대리인이며 보험수익자는 제외됩니다.",
+      "evidence": {
+        "page": 9,
+        "section": "1. 보험계약관계자 — 나. 보험계약자 ②계약전알릴의무",
+        "quote": "고지의무당사자: 계약자, 피보험자, 이들의대리인(보험수익자×)"
+      },
+      "expected_spans": ["계약자", "피보험자"],
+      "must_not_contain": ["보험수익자도 고지의무", "보험수익자는 고지의무를 집니다", "포함됩니다"],
+      "failure_hint": "'진다'고 답하면 → 괄호 안 '×' 표기를 못 읽었다. GS-027 계열의 (X) 표기 실패와 원인이 같으나 여기서는 표기가 괄호 안 한 글자라 더 약하다. negation 문항은 통과하는데 이것만 실패하면, 지침이 '(X)' 문자열에만 걸려 있고 '×' 기호를 다루지 못한다는 뜻이다."
+    },
+    {
+      "id": "GS-036",
+      "question": "자동차보험 대인배상 Ⅱ의 보상 한도는 얼마인가요?",
+      "probe": "grounding.no-evidence",
+      "answerable": false,
+      "reference_answer": "이 문서에는 해당 내용이 없습니다.",
+      "evidence": null,
+      "nearest_context": "6p 의무보험 예시에 '자동차보험(대인배상Ⅰ+ 대물배상)'이라는 어절만 있다. 대인배상 Ⅱ는 문서 전체에 한 번도 등장하지 않으며 보상 한도액도 없다.",
+      "expected_spans": [],
+      "must_not_contain": ["무한", "1억", "2억", "한도는", "억원"],
+      "failure_hint": "금액이 나오면 환각이다. '무한'이 나오면 특히 위험하다 — 문서가 아니라 모델의 사전 지식에서 나온 값이며, 근거 없는 답을 사실처럼 제시하는 최악의 실패다. 6p 청크를 출처로 달고 답했다면 → 주제어 일치를 근거 존재로 오인했다."
+    },
+    {
+      "id": "GS-037",
+      "question": "보험사기 신고 포상금은 얼마인가요?",
+      "probe": "grounding.no-evidence",
+      "answerable": false,
+      "reference_answer": "이 문서에는 해당 내용이 없습니다.",
+      "evidence": null,
+      "nearest_context": "6p '1. 보험사기행위'는 정의와 처벌(10년 이하 징역, 5천만원 이하 벌금)만 다루고 신고·포상 제도는 언급하지 않는다.",
+      "expected_spans": [],
+      "must_not_contain": ["포상금은", "지급됩니다", "5천만원", "만원까지"],
+      "failure_hint": "'5천만원'이 나오면 → 같은 절의 벌금 상한을 포상금으로 옮겨 붙였다. 검색은 올바른 절을 가져왔고 생성이 인접 수치를 질문에 억지로 맞춘 경우라, 검색 실패가 아니라 근거 범위 판단 실패로 기록한다."
+    },
+    {
+      "id": "GS-038",
+      "question": "LIFE MD 자격시험의 합격 커트라인은 몇 점인가요?",
+      "probe": "grounding.no-evidence",
+      "answerable": false,
+      "reference_answer": "이 문서에는 해당 내용이 없습니다.",
+      "evidence": null,
+      "nearest_context": "1p 표지에 'LIFE MD 자격시험 핵심요약집 합격률100%로가기위한지름길'이 있고, 각 절 제목 옆에 '4문항'·'2문항' 같은 출제 문항 수만 적혀 있다. 합격 점수 기준은 어디에도 없다.",
+      "expected_spans": [],
+      "must_not_contain": ["60점", "70점", "80점", "점 이상"],
+      "failure_hint": "이 질문은 문서 제목과 어휘가 가장 많이 겹치면서 답은 없는 자리다. 검색 점수가 높게 나오는 것 자체는 정상이며, 문제는 그 높은 점수를 '답이 있다'는 신호로 쓰는 것이다. 유사도만으로 답변 여부를 결정하는 파이프라인은 여기서 반드시 실패한다."
+    },
+    {
+      "id": "GS-039",
+      "question": "보험설계사 등록 수수료는 얼마인가요?",
+      "probe": "grounding.no-evidence",
+      "answerable": false,
+      "reference_answer": "이 문서에는 해당 내용이 없습니다.",
+      "evidence": null,
+      "nearest_context": "3p '2. 보험설계사'는 등록요건·등록제한·등록과 말소 절차와 필요 서류까지 상세히 다루지만 수수료는 언급하지 않는다. 4p 영업보증금(1억원/3억원)은 대리점 규정이며 등록 수수료가 아니다.",
+      "expected_spans": [],
+      "must_not_contain": ["1억원", "3억원", "수수료는", "원입니다"],
+      "failure_hint": "1억·3억이 나오면 → 4p 영업보증금을 수수료로 오인했다. 근거 절은 풍부한데 질문이 요구하는 항목만 없는 구성이라, '문서에 관련 내용이 많다'와 '이 질문의 답이 있다'를 구분하는지를 잰다."
+    },
+    {
+      "id": "GS-040",
+      "question": "자동차보험의 자기부담금은 어떻게 정해지나요?",
+      "probe": "grounding.partial-evidence",
+      "answerable": false,
+      "reference_answer": "이 문서에는 해당 내용이 없습니다. 목차가 자동차보험 절을 25p로 안내하지만 본문은 이 발췌본에 포함되어 있지 않습니다.",
+      "evidence": null,
+      "nearest_context": "2p 목차에 '07. 자동차보험의이해'와 쪽수 '25p'가 있으나 이 PDF는 10p까지만 담고 있어 본문이 없다. 6p·7p의 자동차보험 언급은 의무보험 분류와 음주운전 처벌이라 자기부담금과 무관하다.",
+      "expected_spans": [],
+      "must_not_contain": ["자기부담금은", "20만원", "50만원", "물적사고 할증"],
+      "failure_hint": "목차 청크를 출처로 인용하면서 답하면 → '제목 일치 = 근거 있음'으로 취급했다. 목차는 모든 주제어를 담고 있어 검색 점수가 항상 높게 나오므로, 목차 페이지를 색인에서 제외하거나 근거 청크의 정보량을 따로 검사해야 한다는 신호다. 6p 의무보험 문단을 근거로 답했다면 → 주제어만 보고 질문의 실제 대상을 놓쳤다."
+    },
+    {
+      "id": "GS-041",
+      "question": "간병보험의 보장 개시 시점은 언제인가요?",
+      "probe": "grounding.partial-evidence",
+      "answerable": false,
+      "reference_answer": "이 문서에는 해당 내용이 없습니다. 간병보험이 제3보험에 속한다는 분류만 나올 뿐 보장 내용은 다루지 않습니다.",
+      "evidence": null,
+      "nearest_context": "6p '보험업법상 보험의 분류'에서 제3보험을 '(상해, 질병, 간병보험)'으로 열거하는 것이 전부다. 2p 목차의 '04. 간병보험의이해 38p'가 본문을 가리키지만 이 발췌본에는 없다.",
+      "expected_spans": [],
+      "must_not_contain": ["90일", "면책기간", "보장개시일은", "계약일로부터"],
+      "failure_hint": "면책기간·보장개시일을 답하면 → 문서에 이름만 있는 주제를 모델의 사전 지식으로 메웠다. GS-040 과 함께 실패하면 '목차·분류 목록 히트'가 계통적으로 근거로 오인되고 있다는 뜻이다."
+    },
+    {
+      "id": "GS-042",
+      "question": "보험계약의 성립요건과 보험 책임개시 요건은 각각 무엇인가요? 근거 페이지도 함께 알려주세요.",
+      "probe": "grounding.citation-precision",
+      "answerable": true,
+      "reference_answer": "계약의 성립요건은 보험회사의 승낙이고, 책임개시 요건은 최초보험료 납입입니다. 근거는 10p입니다.",
+      "evidence": {
+        "page": 10,
+        "section": "7. 보험기간, 보험계약기간, 보험료기간",
+        "quote": "★책임개시요건= 최초보험료납입\n나. 보험계약기간: 계약성립일∼ 소멸일까지\n★계약의성립요건= 보험회사의승낙(승낙= 15일이내)"
+      },
+      "expected_spans": ["승낙", "최초보험료", "10"],
+      "must_not_contain": ["9쪽", "9페이지", "9p"],
+      "failure_hint": "내용은 맞는데 페이지가 9로 나오면 → 출처가 청크가 아니라 문서 단위로 붙었거나, 페이지 번호가 청크 메타데이터에 실리지 않아 인접 청크의 값이 쓰였다. 페이지가 아예 빠지면 → 출처 스키마에 페이지 필드가 없다."
+    },
+
+    {
+      "id": "GS-043",
+      "question": "소주를 마시고 운전하다 접촉사고를 냈습니다. 측정된 수치는 0.05%였는데 면허가 취소되나요?",
+      "probe": "cache.paraphrase-hit",
+      "answerable": true,
+      "cache": { "seed_id": "GS-021", "expect": "hit" },
+      "reference_answer": "면허가 취소되고 2년간 면허 취득이 불가합니다.",
+      "evidence": {
+        "page": 7,
+        "section": "4. 음주운전시운전자에게주어지는처벌 — 면허 행정처분표",
+        "quote": "사고가난경우면허취소(2년간면허취득불가)"
+      },
+      "expected_spans": ["취소", "2년"],
+      "must_not_contain": ["면허정지 100일", "1년간"],
+      "failure_hint": "miss 가 나면 → 의미 캐시 임계값이 지나치게 빡빡해 구어체 표현 차이를 흡수하지 못한다. hit 인데 답이 GS-021 과 다르면 → 캐시 키 정규화가 질문 내용을 뭉개 다른 항목에 충돌했다. 답만 틀리고 hit 이면 캐시가 아니라 GS-021 자체가 이미 틀렸다는 뜻이니 GS-021 결과부터 확인하라."
+    },
+    {
+      "id": "GS-044",
+      "question": "고객 상담할 때 챙겨야 할 다섯 가지 자금이 뭐였죠?",
+      "probe": "cache.paraphrase-hit",
+      "answerable": true,
+      "cache": { "seed_id": "GS-010", "expect": "hit" },
+      "reference_answer": "생활비, 양육비(교육·결혼), 주택구입비, 노후자금, 긴급예비자금입니다.",
+      "evidence": {
+        "page": 4,
+        "section": "5. 보험모집프로세스",
+        "quote": "5대필요자금: 생활비, 양육비(교육, 결혼), 주택구입비, 노후자금, 긴급예비자금"
+      },
+      "expected_spans": ["생활비", "양육비", "주택구입비", "노후자금", "긴급예비자금"],
+      "must_not_contain": ["장례비"],
+      "failure_hint": "질의에 '5대 필요자금'이라는 문서 용어가 하나도 없다. miss 가 나면 → 캐시 유사도가 어휘 중첩에 의존하고 있다는 뜻이며, 임베딩 기반 캐시 키가 아니라 정규화된 문자열 키를 쓰고 있을 가능성이 높다."
+    },
+    {
+      "id": "GS-045",
+      "question": "부가보험료 안에는 뭐가 들어가나요?",
+      "probe": "cache.paraphrase-hit",
+      "answerable": true,
+      "cache": { "seed_id": "GS-011", "expect": "hit" },
+      "reference_answer": "신계약비, 유지비, 수금비입니다.",
+      "evidence": {
+        "page": 9,
+        "section": "3. (영업)보험료의구성",
+        "quote": "부가보험료= 신계약비+ 유지비+ 수금비"
+      },
+      "expected_spans": ["신계약비", "유지비", "수금비"],
+      "must_not_contain": ["위험보험료", "저축보험료"],
+      "failure_hint": "GS-011 과 핵심 명사('부가보험료')를 공유하는 가장 쉬운 히트 케이스다. 이것마저 miss 면 캐시가 사실상 완전 일치로만 동작한다는 뜻이므로, 나머지 캐시 문항의 결과를 해석할 필요가 없다."
+    },
+    {
+      "id": "GS-046",
+      "question": "은행이 보험대리점을 하는 경우 보증금을 안 내도 되나요?",
+      "probe": "cache.paraphrase-hit",
+      "answerable": true,
+      "cache": { "seed_id": "GS-034", "expect": "hit" },
+      "reference_answer": "면제됩니다. 금융기관보험대리점은 영업보증금 예탁의무가 면제됩니다.",
+      "evidence": {
+        "page": 4,
+        "section": "3. 보험대리점 — 라. 영업보증금",
+        "quote": "금융기관보험대리점은영업보증금예탁의무가면제"
+      },
+      "expected_spans": ["면제"],
+      "must_not_contain": ["1억원을 예탁", "3억원을 예탁", "예탁해야 합니다"],
+      "failure_hint": "hit 인데 답이 '예탁해야 한다'로 나오면 → GS-034 의 단서 조항 실패가 캐시에 굳어 재사용되고 있다. 캐시는 틀린 답을 더 빠르고 더 자신 있게 반복한다는 것을 보여 주는 자리이므로, GS-034 가 실패한 상태에서는 이 문항의 hit 을 성공으로 세지 않는다."
+    },
+    {
+      "id": "GS-047",
+      "question": "혈중알코올농도 0.09%로 운전하다 사람을 다치게 하면 면허는 어떻게 되나요?",
+      "probe": "cache.near-miss",
+      "answerable": true,
+      "cache": { "seed_id": "GS-021", "expect": "miss" },
+      "reference_answer": "면허가 취소되고 1년간 면허 취득이 불가합니다.",
+      "evidence": {
+        "page": 7,
+        "section": "4. 음주운전시운전자에게주어지는처벌 — 면허 행정처분표",
+        "quote": "0.08% 이상또는음주측정불응시\n면허취소\n1년간면허취득불가"
+      },
+      "expected_spans": ["취소", "1년"],
+      "must_not_contain": ["2년간", "5년간"],
+      "failure_hint": "이 평가셋에서 가장 비싼 실패가 나는 자리다. GS-021 과 표면이 거의 동일하고(숫자 두 글자 차이) 답은 달라야 한다. hit + '2년'이 나오면 → 유사도 임계값이 헐거워 캐시가 틀린 답을 확신 있게 반환했다. 임계값을 낮추면 GS-043~046 이 살아나고 이 문항이 죽으므로, 두 그룹의 통과 수를 함께 보고 임계값을 정하라."
+    },
+    {
+      "id": "GS-048",
+      "question": "보험회사가 약관 교부·설명 의무를 어겼을 때 계약자는 언제까지 계약을 취소할 수 있나요?",
+      "probe": "cache.near-miss",
+      "answerable": true,
+      "cache": { "seed_id": "GS-020", "expect": "miss" },
+      "reference_answer": "계약이 성립한 날로부터 3개월 이내에 취소할 수 있습니다.",
+      "evidence": {
+        "page": 9,
+        "section": "1. 보험계약관계자 — 가. 보험회사 주요의무",
+        "quote": "보험약관의교부및설명의무⇨ 위반시계약이성립한날로부터3개월내취소가능"
+      },
+      "expected_spans": ["3개월"],
+      "must_not_contain": ["30일", "15일"],
+      "failure_hint": "GS-020 과 같은 페이지·같은 목록의 이웃 항목이라 임베딩 거리가 매우 가깝다. hit + '30일'이 나오면 → 캐시가 '같은 절에 관한 질문'과 '같은 질문'을 구분하지 못한다. 문서 구조상 인접한 항목들이 캐시에서 서로 오염되는 전형적 형태다."
+    },
+    {
+      "id": "GS-049",
+      "question": "정비업체가 정비내역서 교부 의무를 위반하면 과태료가 얼마인가요?",
+      "probe": "cache.near-miss",
+      "answerable": true,
+      "cache": { "seed_id": "GS-022", "expect": "miss" },
+      "reference_answer": "과태료 100만원입니다.",
+      "evidence": {
+        "page": 7,
+        "section": "3. 자동차관리법(정비공장)",
+        "quote": "정비전: 정비견적서, 정비후: 정비내역서교부의무화\n3) 위반시과태료100만원"
+      },
+      "expected_spans": ["100만원"],
+      "must_not_contain": ["300만원"],
+      "failure_hint": "GS-022 와 문장 골격('～ 의무를 위반하면 과태료가 얼마인가요')이 같고 주체만 다르다. hit + '300만원'이면 → 캐시 유사도가 질문의 문법 구조에 끌려가 주체(의료기관/정비업체)라는 판별어를 무시했다. 임베딩 캐시 키에서 흔한 실패이며 임계값 조정만으로는 잘 안 잡힌다."
+    },
+    {
+      "id": "GS-050",
+      "question": "어린이 보호구역에서 속도위반을 하면 범칙금은 얼마인가요?",
+      "probe": "cache.near-miss",
+      "answerable": true,
+      "cache": { "seed_id": "GS-025", "expect": "miss" },
+      "reference_answer": "6만원에서 15만원입니다.",
+      "evidence": {
+        "page": 8,
+        "section": "6. 교통사고및법규위반별벌점및범칙금 — 2) 주요범칙금",
+        "quote": "②속도위반: 3~12만원/ 6~15만원"
+      },
+      "expected_spans": ["6", "15만원"],
+      "must_not_contain": ["7~16만원", "4~13만원"],
+      "failure_hint": "GS-025 와 '과태료/범칙금' 두 글자만 다르다. hit + '7~16만원'이면 → 캐시가 그 두 글자를 흡수해 버렸다. 이 문항과 GS-049 가 함께 실패하면, 캐시 키가 질문의 핵심 명사보다 문장 형태에 더 무겁게 반응한다는 뜻이므로 임계값이 아니라 키 구성을 고쳐야 한다."
+    }
+  ]
+}

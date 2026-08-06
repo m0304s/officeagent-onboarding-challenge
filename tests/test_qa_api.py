@@ -16,7 +16,13 @@ from tests.qa_harness import (
     AsgiStream,
     parse_sse,
 )
-from tests.stubs import FakeEmbedder, GenerationTurn, ScriptedGenerator, StubVectorStore
+from tests.stubs import (
+    FakeEmbedder,
+    FakeReranker,
+    GenerationTurn,
+    ScriptedGenerator,
+    StubVectorStore,
+)
 
 DATA = LONG_KOREAN.encode("utf-8")
 
@@ -110,7 +116,28 @@ async def test_the_sources_event_is_shaped_like_the_search_response(client):
     assert sources["count"] == search["count"]
     assert sources["top_k"] == search["top_k"]
     assert sources["results"] == search["results"]
+    assert sources["ordered_by"] == search["ordered_by"]
+    assert sources["reranker"] == search["reranker"]
     assert sources["target_documents"] >= 1
+
+
+async def test_the_sources_event_keeps_that_shape_when_reranking_runs(
+    make_client, qa_settings, generator
+):
+    """새 필드가 한쪽에만 붙으면 근거를 읽는 코드가 두 벌이 된다 — 켠 구성에서도 잰다."""
+    async with make_client(
+        settings=qa_settings, generator=generator, reranker=FakeReranker()
+    ) as client:
+        await ingest(client)
+        search = (await client.post("/search", json={"query": QUESTION})).json()
+
+        sources = parse_sse((await ask(client)).text).only("sources")
+
+    assert search["ordered_by"] == "rerank", "리랭커를 배선했는데 융합 순서로 끝났다"
+    assert sources["ordered_by"] == search["ordered_by"]
+    assert sources["reranker"] == search["reranker"]
+    assert sources["results"] == search["results"]
+    assert all(result["rerank_score"] is not None for result in sources["results"])
 
 
 async def test_answer_chunks_join_into_the_done_answer(client):

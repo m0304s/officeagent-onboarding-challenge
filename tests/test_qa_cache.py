@@ -23,7 +23,13 @@ from tests.qa_harness import (
     sources_of,
 )
 from tests.retrieval_harness import GUIDE, POLICY
-from tests.stubs import GenerationTurn, ScriptedGenerator, StubResponseCache, SynonymEmbedder
+from tests.stubs import (
+    FakeReranker,
+    GenerationTurn,
+    ScriptedGenerator,
+    StubResponseCache,
+    SynonymEmbedder,
+)
 
 ANSWER = "교육비는 연 200만원까지 지원됩니다 [1]."
 
@@ -346,6 +352,76 @@ async def test_retrieval_and_cache_share_one_index_signature():
     harness = await cached_harness()
 
     assert harness.service._retrieval.index_signature == harness.retrieval.index_signature
+
+
+async def test_turning_the_reranker_on_does_not_reuse_the_entry():
+    """켠 배포가 끈 배포의 답을 그대로 내면, 응답의 `sources` 가 그 답변이 실제로 본
+    근거가 아니게 된다 (`response-cache`)."""
+    harness = await cached_harness()
+    await harness.ask()
+
+    # 저장소도 캐시도 그대로 둔 채 리랭커만 켠 재기동이다.
+    reranked = make_qa_harness(
+        answering(),
+        retrieval=harness.retrieval,
+        cache=harness.cache,
+        reranker=FakeReranker(),
+    )
+    second = await reranked.ask()
+
+    assert not done_of(second).cache.hit
+    assert reranked.generator.calls == 1
+
+
+async def test_a_different_reranker_model_does_not_reuse_the_entry():
+    """서명이 켜짐/꺼짐 두 상태뿐이면 모델 교체가 캐시에 가려 관측되지 않는다."""
+    harness = await cached_harness(reranker=FakeReranker(name="first"))
+    await harness.ask()
+
+    replaced = make_qa_harness(
+        answering(),
+        retrieval=harness.retrieval,
+        cache=harness.cache,
+        reranker=FakeReranker(name="second"),
+    )
+    second = await replaced.ask()
+
+    assert not done_of(second).cache.hit
+    assert replaced.generator.calls == 1
+
+
+async def test_a_hit_replays_the_ranking_signal_it_was_generated_under():
+    """리랭킹 점수만 왕복하면 히트가 그 점수를 든 채 융합 순서라고 말하게 된다."""
+    harness = await cached_harness(reranker=FakeReranker())
+    miss = await harness.ask()
+
+    hit = await harness.ask()
+
+    assert done_of(hit).cache.hit
+    assert sources_of(miss).ordered_by == "rerank", "리랭커를 배선했는데 융합 순서로 끝났다"
+    assert sources_of(hit).ordered_by == sources_of(miss).ordered_by
+    assert sources_of(hit).reranker == sources_of(miss).reranker
+    assert sources_of(hit).results == sources_of(miss).results
+    assert all(source.rerank_score is not None for source in sources_of(hit).results)
+
+
+async def test_the_reranker_being_off_leaves_the_existing_cache_behaviour_alone():
+    """끈 구성에서 정확 매치·유사 매치·무효화가 리랭킹 도입 이전과 같아야 한다.
+
+    빈 서명이 요청마다 다른 값이면 히트가 아예 나지 않는다 — 여기서 먼저 깨진다."""
+    harness = await cached_harness(answering(), answering(), embedder=SynonymEmbedder(SYNONYMS))
+    await harness.ask(QUESTION)
+
+    exact = await harness.ask(QUESTION)
+    semantic = await harness.ask(SIMILAR)
+    await harness.ingest("policy.txt", POLICY + "\n교육비 한도가 300만원으로 올랐습니다.\n")
+    after_change = await harness.ask(QUESTION)
+
+    assert done_of(exact).cache.layer.value == "exact"
+    assert done_of(semantic).cache.layer.value == "semantic"
+    assert not done_of(after_change).cache.hit, "문서가 바뀌었는데 옛 답변이 나갔다"
+    assert sources_of(exact).ordered_by == "fusion"
+    assert sources_of(exact).reranker is None
 
 
 # ── 캐시를 껐을 때 ───────────────────────────────────────────────────────

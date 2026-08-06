@@ -21,6 +21,7 @@ change 단위로 점진적으로 구현합니다. **아래 표에서 "구현됨"
 | 어휘 색인 — SQLite FTS5, BM25 순위, 한국어 토큰화 | 구현됨 (검색 경로에 연결됨) |
 | 벡터 검색 — 질의 임베딩 → 대상 필터 → 상위 K (`POST /search`) | 구현됨 |
 | 하이브리드 검색 — 밀집·어휘 팬아웃 + RRF 융합 | 구현됨 |
+| 크로스인코더 리랭킹 — 융합 뒤 상위 후보 재정렬, 실패 시 융합 순서로 축소 | 구현됨 (설정으로 끌 수 있음) |
 | LLM 답변 생성 + SSE 스트리밍 — 출처 표기·환각 억제·재시도 (`POST /qa`) | 구현됨 |
 | 데모 UI — 문서 패널 + 스트리밍 Q&A 콘솔 ([`demo-ui/`](./demo-ui/)) | 구현됨 (선택 실행) |
 | 응답 캐싱 — 정확 매치(L1) + 유사 매치(L2), TTL·총량 상한, 타임아웃·차단기 | 구현됨 |
@@ -172,17 +173,20 @@ curl -s -X POST http://127.0.0.1:8000/search \
 
 ```json
 {"query":"교육비는 얼마까지 지원되나요?","top_k":3,"count":1,"retrievers":["dense","lexical"],
+ "ordered_by":"rerank","reranker":"BAAI/bge-reranker-v2-m3",
  "results":[{"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt","format":"txt",
              "revision":"5baf958963e1...","chunk_index":0,
              "text":"[사내 복리후생 안내]\n\n1. 교육비 지원\n임직원은 연간 최대 200만원까지 직무 관련 교육비를 지원받을 수 있습니다.\n신청은 매월 15일까지 HR팀에 신청서를 제출해야 하며, 승인 후 비용이 환급됩니다. ...",
-             "score":1.0,"char_start":0,"char_end":527,"page":null,
-             "contributions":[{"retriever":"dense","rank":1,"native_score":0.86091968},
+             "score":1.0,"rerank_score":0.7388216138591319,"char_start":0,"char_end":527,"page":null,
+             "contributions":[{"retriever":"dense","rank":1,"native_score":0.86091983},
                               {"retriever":"lexical","rank":1,"native_score":0.6117184199523331}]}]}
 ```
 
 문서 둘을 올렸는데 결과가 하나인 것은 오류가 아닙니다. 기본 청크 크기(600자)에서 `company-policy.txt`는 청크 하나가 되고, `development-guide.md`의 청크 둘은 이 질의에서 **양쪽 하한에 모두 걸려 떨어집니다** — 밀집 쪽은 코사인 하한, 어휘 쪽은 변별력 판정입니다. 검색이 하는 판정이 바로 이것입니다.
 
 점수가 정확히 `1.0`인 것도 오류가 아닙니다. **이 값은 유사도가 아니라 합의의 정도**라서, 활성 retriever 둘이 모두 이 청크를 1위로 꼽으면 정의상 최댓값이 됩니다. 실제로 각자가 매긴 원점수는 `contributions`에 그대로 남아 있습니다(밀집 0.861, 어휘 0.612).
+
+`score`와 `rerank_score`가 함께 실리는 것도 의도한 것입니다. **두 값은 서로 다른 질문에 답합니다** — `score`는 "몇 개의 목록이 이것을 위에 뒀는가", `rerank_score`는 "이것이 이 질문에 답하는가"입니다. 그래서 하나를 다른 하나로 갈아치우지 않았습니다. 결과가 하나뿐인 이 응답에서 `rerank_score`가 `1.0`에 한참 못 미치는 `0.739`인 것도 정상입니다 — 이 값은 교정되지 않았고 질의마다 척도가 달라, **같은 질의 안에서 다른 결과와 비교할 때만** 뜻이 있습니다.
 
 **검색은 답변을 만들지 않습니다.** 응답에 답변 필드도 거절 문구도 없습니다 — "이 근거로 답할 수 있는가"는 본문을 읽어야 하는 판정이라 [답변 생성](#답변-api-sse)의 몫이고, 검색이 하는 판정은 "이 청크를 다음 단계에 보여줄 가치가 있는가"(각 retriever의 하한)까지입니다. 그래서 이 엔드포인트는 `/qa`가 생긴 뒤에도 남습니다. **답이 이상할 때 원인이 검색인지 생성인지 가르는 관측 지점**이 이것입니다 — 근거가 애초에 안 잡혔는지, 잡혔는데 답이 틀렸는지가 여기서 갈립니다.
 
@@ -191,12 +195,22 @@ curl -s -X POST http://127.0.0.1:8000/search \
 | 필드 | 의미 |
 |---|---|
 | `score` | **융합 점수**. `0`보다 크고 `1` 이하이며 클수록 상위입니다. **유사도가 아닙니다** — 활성 retriever들이 이 청크를 얼마나 나란히 상위로 꼽았는가를 뜻하지, 질의와 얼마나 가까운지를 뜻하지 않습니다. 여기에 관련성 하한을 걸면 안 됩니다 |
+| `rerank_score` | **크로스인코더 점수**. `0`보다 크고 `1`보다 작으며 클수록 상위입니다. 리랭킹되지 않은 결과에서는 `null`입니다. **같은 질의 안에서만 비교할 수 있습니다** — 질의마다 척도가 달라 서로 다른 질문의 값을 비교하거나 고정 임계값을 걸 수 없습니다 |
 | `contributions` | 이 청크를 올린 retriever별 `retriever`·`rank`(1이 최상위)·`native_score`. **항상 한 건 이상**이고, 못 찾은 retriever는 여기 없습니다. `native_score`는 retriever마다 척도가 달라 서로 비교하거나 합산해서는 안 됩니다 |
 | `char_start` · `char_end` | 원문 문자 오프셋 구간. `text`는 언제나 추출된 원문의 그 구간과 같습니다 |
 | `page` | PDF에서 온 청크만 채워집니다. 이때 오프셋은 **그 쪽 안의** 위치입니다 |
 | `revision` · `chunk_index` | 근거가 어느 세대 문서의 몇 번째 청크인지 |
 
 응답 최상위의 `retrievers`는 **이번 검색에 실제로 기여한 retriever의 이름**입니다. 설정에서 빠졌거나 이번 요청에서 실패한 것은 여기 나타나지 않습니다 — 설정 오타 하나로 어휘 색인이 빠진 배포와 정상 배포를 구별하는 유일한 신호가 이 목록입니다. 둘 다 `200`을 내고 둘 다 그럴듯한 근거를 돌려주기 때문입니다.
+
+`ordered_by`와 `reranker`가 같은 목적으로 한 쌍 더 있습니다.
+
+| 필드 | 의미 |
+|---|---|
+| `ordered_by` | `results`의 순서를 정한 신호. `"rerank"`(크로스인코더 점수) 또는 `"fusion"`(융합 점수). **항상 있습니다** |
+| `reranker` | 이번 검색에서 실제로 순서를 정한 리랭커의 모델 이름. 꺼져 있거나, 실패했거나, 제한 시간을 넘겨 축소됐으면 `null` |
+
+**리랭커가 죽어도 검색은 `200`입니다.** 융합 순서 그대로 돌아오고 `ordered_by`가 `"fusion"`이 됩니다 — retriever가 죽으면 근거가 사라지지만 리랭커가 죽으면 사라지는 것은 순서의 질뿐이라, 답할 수 있는 질문을 답하지 못하게 만들지 않습니다. 그래서 이 두 필드가 없으면 **축소된 배포와 정상 배포를 구별할 방법이 없습니다.**
 
 검색 대상은 **지금 유효한 청크뿐**입니다. 이전 리비전·이전 색인 구성·삭제된 문서·[`stale`](#index_status--그-문서가-지금-검색-가능한가) 문서의 청크는 저장소에 남아 있더라도 결과에 나타나지 않습니다. 하한에 걸려 결과가 비는 것은 오류가 아니라 `200`과 빈 목록입니다.
 
@@ -227,7 +241,7 @@ curl -s -X POST http://127.0.0.1:8000/search \
 검색 로그도 한 줄입니다. **질의 문자열과 청크 본문은 싣지 않습니다.**
 
 ```json
-{"level":"INFO","logger":"app.api.routes.search","message":"검색 요청을 처리했습니다","request_id":"212efc995dd4...","top_k":3,"result_count":1,"top_fusion_score":1.0,"contributing_retrievers":["dense","lexical"],"target_documents":2}
+{"level":"INFO","logger":"app.api.routes.search","message":"검색 요청을 처리했습니다","request_id":"9917baf0630a...","top_k":3,"result_count":1,"top_fusion_score":1.0,"contributing_retrievers":["dense","lexical"],"ordered_by":"rerank","reranker":"BAAI/bge-reranker-v2-m3","reranked_candidates":1,"target_documents":2}
 ```
 
 `target_documents`가 있어야 빈 결과의 이유가 갈립니다 — `0`이면 올린 문서가 없거나 전부 `stale`인 것이고, 대상이 있는데 결과가 `0`이면 각 retriever의 하한에 걸린 것입니다. `contributing_retrievers`는 하이브리드가 실제로 돌았는지를 로그만으로 확인하는 자리입니다.
@@ -251,8 +265,12 @@ curl -N -X POST http://127.0.0.1:8000/qa \
 ```
 event: sources
 data: {"results":[{"document_id":"0de0c0a1-311b-5fc7-a4f7-763b45bc2444","filename":"company-policy.txt",
-       "format":"txt","revision":"2ccbdc608106...","chunk_index":0,"text":"[사내 복리후생 안내]\n\n1. 교육비 지원\n...",
-       "score":0.86091971,"char_start":0,"char_end":527,"page":null}],"count":1,"top_k":3,"target_documents":2}
+       "format":"txt","revision":"5baf958963e1...","chunk_index":0,"text":"[사내 복리후생 안내]\n\n1. 교육비 지원\n...",
+       "score":1.0,"rerank_score":0.7388216138591319,"char_start":0,"char_end":527,"page":null,
+       "contributions":[{"retriever":"dense","rank":1,"native_score":0.86091983},
+                        {"retriever":"lexical","rank":1,"native_score":0.6117184199523331}]}],
+       "count":1,"top_k":3,"target_documents":2,
+       "ordered_by":"rerank","reranker":"BAAI/bge-reranker-v2-m3"}
 
 event: answer
 data: {"text":"임"}
@@ -273,7 +291,7 @@ data: {"finish_reason":"stop","answer":"임직원은 연간 최대 200만 원까
 
 | 이벤트 | 횟수 | 내용 |
 |---|---|---|
-| `sources` | 정확히 1회, **항상 먼저** | `results`(`/search`와 같은 모양)·`count`·`top_k`·`target_documents` |
+| `sources` | 정확히 1회, **항상 먼저** | `results`(`/search`와 같은 모양)·`count`·`top_k`·`target_documents`·`ordered_by`·`reranker` |
 | `answer` | 0회 이상 | `text` — 답변 조각. 이어 붙이면 `done`의 `answer`와 같습니다 |
 | `done` | 0 또는 1회, **마지막** | `finish_reason`·`answer`·`citations`·`dropped_markers`·`elapsed_ms` |
 | `error` | 0 또는 1회, **마지막** | `code`·`message`·`attempts`·`reason` |
@@ -294,13 +312,15 @@ data: {"finish_reason":"stop","answer":"임직원은 연간 최대 200만 원까
 
 ```
 event: sources
-data: {"results":[],"count":0,"top_k":3,"target_documents":3}
+data: {"results":[],"count":0,"top_k":3,"target_documents":2,"ordered_by":"fusion","reranker":null}
 
 event: done
-data: {"finish_reason":"no_evidence","answer":"","citations":[],"dropped_markers":0,"elapsed_ms":75}
+data: {"finish_reason":"no_evidence","answer":"","citations":[],"dropped_markers":0,"elapsed_ms":67}
 ```
 
-문서가 셋 있는데 근거가 0건인 것은 오류가 아닙니다 — 질문("태양계에서 가장 큰 행성은?")이 어느 문서와도 가깝지 않아 [유사도 하한](#설정)에 전부 걸린 것입니다. 그 판정에 LLM이 필요하지 않으므로 **호출도 하지 않고 75밀리초에 끝납니다.**
+문서가 둘 있는데 근거가 0건인 것은 오류가 아닙니다 — 질문("태양계에서 가장 큰 행성은?")이 어느 문서와도 가깝지 않아 [유사도 하한](#설정)에 전부 걸린 것입니다. 그 판정에 LLM이 필요하지 않으므로 **호출도 하지 않고 67밀리초에 끝납니다.**
+
+`reranker`가 `null`인 것도 같은 이유입니다. 리랭커는 켜져 있지만 **재정렬할 후보가 하나도 없어 모델이 호출되지 않았고**, 돌지 않은 리랭커를 응답이 자기 공으로 적지 않습니다.
 
 근거는 잡혔는데 질문을 뒷받침하지 않으면 **모델이 그렇게 판정하고 사유를 직접 씁니다.** 아래도 실제 출력입니다.
 
@@ -493,6 +513,8 @@ docker compose run --build --rm test
 
 깨끗한 체크아웃에서 이 한 줄이면 됩니다. 호스트에 **파이썬도 가상환경도 자격증명도 필요 없습니다** — Docker만 있으면 됩니다.
 
+> **알려진 환경 의존 실패 1건.** `test_concurrency_api.py::test_different_documents_are_not_serialized`가 **Docker Desktop(Windows/macOS)에서 실패합니다.** 이 테스트는 캐시를 일부러 닿지 않는 호스트로 겨눠 두고 "두 문서 업로드가 직렬화되지 않는가"를 벽시계로 재는데, 리눅스 도커에서는 없는 호스트 이름이 즉시 실패하는 반면 Docker Desktop의 내장 DNS는 상위로 넘겨 **4초**를 기다립니다. 캐시 호출마다 상한 0.2초가 꽉 차고, 업로드 하나에 무효화가 3회라 예산 0.4초를 넘습니다. 리랭킹과도 캐시 로직과도 무관하며 측정 방식의 문제입니다 — 진단과 고치는 방법은 [`CLAUDE.md`](./CLAUDE.md)에 적어 두었습니다.
+
 의존성 상태는 대역을 주입해 결정론적으로 구성합니다. 실제 컨테이너를 죽여가며 상태를 만들면 느리고 불안정하기 때문입니다. **기본값은 임베딩 모델도 대역입니다** — 실제 가중치를 받으면 이 한 줄이 수백 MB 다운로드에 묶입니다. 실제 모델이 필요한 것(차원·역할 접두사·서명 같은 계약, 그리고 아래의 검색 품질)은 가중치가 이미 캐시된 환경에서만 돌고, 없으면 건너뜁니다.
 
 문서 레지스트리(SQLite)는 임시 파일에 실물로 띄워 검증합니다. **벡터 스토어는 별도 서버**라 실물 어댑터 테스트에는 서버가 필요한데, 위 명령이 `depends_on`으로 함께 띄우므로 그 층도 실행됩니다. 대역으로 대체하지 않은 이유는 그 테스트가 확인하려는 것이 "우리 메타데이터·필터·id 규약이 *실제 Chroma*에서 성립하는가"이기 때문입니다 — 대역으로 바꾸면 확인 대상 자체가 사라집니다.
@@ -532,7 +554,43 @@ docker compose run --build --rm test pytest -m redis
 docker compose run --build --rm test python -m pytest -m llm
 ```
 
-**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`1028 passed, 25 deselected` — 제외된 25건은 실물 CLI 2건과 실물 Redis 23건입니다).
+**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`1121 passed, 33 deselected` — 제외된 33건은 실물 CLI 2건, 실물 Redis 23건, 골든셋 순위 비교 4건, 골든셋 판정 채점 4건입니다).
+
+### 골든셋 리랭킹 비교
+
+크로스인코더를 켠 구성과 끈 구성을 **같은 저장소 위에서** 비교하는 층입니다. 보험 요약집 PDF 한 건에 대한 진단용 평가셋(`tests/fixtures/golden/`) 44문항을 두 구성으로 돌려 근거 인용문의 순위를 잽니다. CPU에서 30분대라 `slow` 마커 뒤에 두었습니다 — 평가자가 도는 한 줄이 여기 묶이면 안 됩니다.
+
+```bash
+docker compose run --build --rm test pytest -m slow -s
+```
+
+`-s`를 붙이면 비교표가 그대로 출력됩니다. 이 층이 재는 것은 **검색 순서**입니다 — 답변 품질은 아래 판정 층이 잽니다.
+
+### 골든셋 판정 채점 (LLM-Judge)
+
+순위가 좋아졌다고 답이 좋아진 것은 아닙니다. 그래서 같은 골든셋의 `reference_answer`를 기준으로, 두 구성이 각자의 상위 K로 만든 **답변**을 판정자에게 대조시키는 층을 따로 두었습니다.
+
+채점은 세 층이고 **합산하지 않습니다.**
+
+| 층 | 무엇을 보는가 | 성질 |
+|---|---|---|
+| ① 검색 게이트 | `evidence.quote`가 상위 K에 왔는가 | 결정적. 통과하지 못하면 **생성 채점을 하지 않습니다** |
+| ② 문자열 검사 | `expected_spans` 전부 포함·`must_not_contain` 0건 | 결정적. 예상 밖 표현으로 틀린 답은 놓칩니다 |
+| ③ LLM-Judge | 답변이 기준 답변과 같은 말을 하는가 | 비결정적. ②가 놓치는 구멍을 메웁니다 |
+
+①이 있는 이유는 근거가 오지 않은 답변을 생성 실패로 세면 두 지표가 함께 움직여 어느 층이 무너졌는지 알 수 없기 때문입니다(골든셋 README의 규칙입니다).
+
+```bash
+docker compose run --build --rm test pytest -m "llm and slow" -s
+```
+
+**구독과 실물 가중치가 모두 필요합니다.** `.secrets/codex/auth.json`이 없거나 가중치가 캐시에 없으면 사유와 함께 건너뜁니다. 문항 하나가 구성마다 실물 턴 둘(생성·판정)을 쓰므로 한 바퀴가 **턴 197번, 실측 44분**입니다.
+
+**게이트는 구성마다 따로 섭니다.** 두 구성의 교집합으로 좁히면 리랭킹이 근거를 상위 K 안으로 끌어올린 문항이 통째로 채점에서 빠져, 이 단계가 실제로 값을 만든 자리를 측정이 지웁니다. 그래서 분모가 갈리고(융합 47, 리랭킹 50) **그 차이 자체를 결과로 읽습니다.** 종료 사유(`stop`/`insufficient_evidence`/`no_evidence`)는 게이트와 무관하게 전부 기록해, 근거가 오지 않은 문항에서 시스템이 답을 만들었는지 거절했는지를 따로 봅니다.
+
+**이 층은 품질을 단언하지 않습니다.** 판정이 비결정적이라 같은 답변을 다시 물으면 달라질 수 있고, 재지 않은 임계값을 회귀 게이트로 쓰지 않는다는 규칙을 여기에도 적용했습니다. 회귀를 세우는 것은 결정적인 층(순위 지표·`tests/test_retrieval_quality.py`의 회귀 질의)이고, 이 층이 단언하는 것은 하네스 건전성 하나입니다 — **판정불가가 과반이면 그 회차의 통과 수를 읽지 않습니다.**
+
+판정 프롬프트의 설계 의도는 [`PROMPT_DESIGN.md`](./PROMPT_DESIGN.md)에, 결과는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)의 실측표에 있습니다.
 
 호스트에서 직접 돌리고 싶다면 아래도 됩니다. 이때 실물 Chroma 층은 `docker compose up -d --wait vector-store`로 서버를 띄워야 실행되고, 검색 품질 층은 임베딩 가중치가 캐시돼 있어야 실행됩니다.
 
@@ -575,6 +633,10 @@ docker compose run --build --rm test ruff format --check .
 | `APP_RETRIEVAL_MAX_TOP_K` | 요청이 지정할 수 있는 `top_k`의 상한. 후보 깊이와 함께 봅니다(아래) | `20` |
 | `APP_RETRIEVAL_MIN_SCORE` | **밀집 retriever의** 코사인 유사도 하한. 이 값 미만인 청크는 그 목록에 실리지 않습니다 | `0.82` |
 | `APP_RETRIEVAL_MAX_QUERY_CHARS` | 질의 문자 수 상한 | `1000` |
+| `APP_RERANKER_ENABLED` | 크로스인코더 리랭킹 사용 여부. 끄면 융합 순서를 그대로 씁니다 | `true` |
+| `APP_RERANKER_MODEL` | 리랭커 모델 이름. 아는 모델이 아니면 **기동에 실패합니다** | `BAAI/bge-reranker-v2-m3` |
+| `APP_RERANK_CANDIDATES` | 리랭커에게 넘길 융합 상위 후보 수. `APP_RETRIEVAL_MAX_TOP_K` 이상이어야 합니다 | `30` |
+| `APP_RERANKER_TIMEOUT_SECONDS` | 리랭킹 한 번의 시간 상한(초). 넘기면 융합 순서로 축소 | `15.0` |
 | `APP_QA_LLM_TIMEOUT_SECONDS` | 생성 **한 시도**의 시간 상한(초) | `60.0` |
 | `APP_QA_LLM_MAX_ATTEMPTS` | 최대 시도 횟수. `1`이면 재시도하지 않음 | `3` |
 | `APP_QA_LLM_RETRY_BACKOFF_SECONDS` | 재시도 백오프 기준(초). 대기가 1초 → 2초로 늘어남 | `1.0` |
@@ -599,6 +661,10 @@ docker compose run --build --rm test ruff format --check .
 같은 이유로 **`APP_RETRIEVAL_TOP_K`와 `APP_RETRIEVAL_MAX_TOP_K`는 함께 검증됩니다** — 기본 K가 상한보다 크면 어떤 요청도 통과할 수 없으므로 기동을 막습니다. 두 값이 각각은 멀쩡한데 조합이 성립하지 않는 자리라, 첫 검색 요청이 아니라 기동에서 드러나야 합니다.
 
 **`APP_QA_LLM_MODEL`을 비워 두면 캐시 키에 빈 문자열이 들어갑니다.** 빈 값은 "CLI 기본 모델을 쓴다"는 뜻인데, 그 기본값이 CLI 업그레이드로 바뀌어도 캐시 키는 `""` 그대로입니다. 그러면 **옛 모델이 만든 답변이 새 모델의 답인 척 남습니다.** 모델을 명시하면 이 구멍이 닫히고, 모델을 바꾸는 순간 캐시가 저절로 갈립니다.
+
+**리랭커를 끄는 것이 이 change의 되돌리기입니다.** `APP_RERANKER_ENABLED=false`로 기동하면 파이프라인이 리랭킹 도입 이전과 같아집니다 — 순서가 융합 점수 그대로이고, 응답의 `ordered_by`가 `"fusion"`이 되며, `reranker`와 `rerank_score`가 비어 옵니다. 리랭커 서명이 캐시 키 재료라, 껐다 켜는 순간 캐시는 무효화 호출 없이 저절로 갈립니다.
+
+**첫 빌드가 깁니다.** 리랭커 가중치 2.2GB를 이미지에 굽기 때문이고(임베딩 가중치와 같은 레이어), 실측으로 내려받기에만 2분 반이 걸렸습니다. 그 레이어가 `COPY src`보다 앞이라 **코드를 고쳐 다시 빌드할 때는 다시 받지 않습니다.** 가중치를 굽는 이유는 첫 요청이 다운로드를 기다리지 않게 하기 위해서이고, 오프라인 환경에서도 그대로 돌기 위해서입니다.
 
 **활성 retriever 목록만은 이 표에 없습니다.** 값이 항목 넷을 가진 목록이라 환경변수 한 줄로 적기에 맞지 않아, `config.py`에 두고 아래처럼 바꿉니다.
 

@@ -16,6 +16,7 @@ from app.api.queries import (
     SettingsDep,
     enforce_query_limits,
 )
+from app.core.reranking import ORDERED_BY_FUSION, ORDERED_BY_RERANK
 from app.services.retrieval import RetrievalResult
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,20 @@ class SearchResponse(BaseModel):
             " 설정에서 빠졌거나 이번 요청에서 실패한 것은 여기 나타나지 않는다"
         ),
     )
+    ordered_by: str = Field(
+        default=ORDERED_BY_FUSION,
+        description=(
+            f"`results` 의 순서를 정한 신호 — 리랭킹 점수면 `{ORDERED_BY_RERANK}`,"
+            f" 융합 점수면 `{ORDERED_BY_FUSION}`"
+        ),
+    )
+    reranker: str | None = Field(
+        default=None,
+        description=(
+            "이번 검색에서 실제로 순서를 정한 리랭커 이름."
+            " 설정에서 꺼졌거나 이번 요청에서 실패해 축소된 경우 나타나지 않는다"
+        ),
+    )
 
 
 @router.post("/search", response_model=SearchResponse, summary="근거 청크 검색")
@@ -76,6 +91,8 @@ async def search(
         results=[SearchResultView.of(chunk) for chunk in result.chunks],
         count=result.count,
         retrievers=list(result.retrievers),
+        ordered_by=result.ordered_by,
+        reranker=result.reranker,
     )
 
 
@@ -94,6 +111,11 @@ def _log_search(request: Request, result: RetrievalResult) -> None:
             "top_fusion_score": result.top_score,
             # 이름 하나가 빠진 것이 하이브리드가 꺼진 배포의 유일한 신호다.
             "contributing_retrievers": list(result.retrievers),
+            # 리랭커가 빠진 배포와 정상 배포는 둘 다 `200` 을 낸다 — 로그가 말해 주지
+            # 않으면 구별할 방법이 없다.
+            "ordered_by": result.ordered_by,
+            "reranker": result.reranker,
+            "reranked_candidates": result.reranked_candidates,
             "target_documents": result.target_documents,
         },
     )

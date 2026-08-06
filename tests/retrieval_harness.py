@@ -14,7 +14,7 @@ from app.adapters.parsers import (
     default_parsers,
     select_pdf_extraction,
 )
-from app.adapters.protocols import Embedder, LexicalIndex
+from app.adapters.protocols import Embedder, LexicalIndex, Reranker
 from app.adapters.retrievers import RetrieverDependencies, build_retriever
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import Document, derive_index_signature
@@ -36,6 +36,9 @@ _PDF_EXTRACTION = select_pdf_extraction(PdfExtraction.MARKDOWN)
 
 #: 후보 깊이. `Settings` 기본값과 같은 값이라 하네스가 배포 구성과 같은 깊이로 돈다.
 CANDIDATE_DEPTH = 50
+
+#: 리랭크 깊이. 같은 이유로 `Settings.rerank_candidates` 기본값과 같다.
+RERANK_DEPTH = 30
 
 #: 여러 청크로 쪼개지는 길이의 한국어 문서 둘. 주제를 갈라 둔 이유는 "다른 문서의 청크가
 #: 섞였는가"를 본문으로 눈에 보이게 확인하기 위해서다.
@@ -85,6 +88,9 @@ class Harness:
     _retrievers: tuple[str, ...]
     _weights: dict[str, float]
     _required: tuple[str, ...]
+    _reranker: Reranker | None
+    _rerank_candidates: int
+    _rerank_timeout_seconds: float
 
     async def ingest(self, filename: str, text: str) -> Document:
         return (await self.ingestion.ingest(filename, text.encode())).document
@@ -97,6 +103,9 @@ class Harness:
         retrievers: Sequence[str] | None = None,
         weights: dict[str, float] | None = None,
         required: Sequence[str] | None = None,
+        reranker: Reranker | None = None,
+        rerank_candidates: int | None = None,
+        rerank_timeout_seconds: float | None = None,
     ) -> RetrievalService:
         """같은 대역을 보되 설정만 다른 검색 서비스.
 
@@ -112,6 +121,15 @@ class Harness:
             retrievers=self._retrievers if retrievers is None else retrievers,
             weights=self._weights if weights is None else weights,
             required=self._required if required is None else required,
+            reranker=self._reranker if reranker is None else reranker,
+            rerank_candidates=(
+                self._rerank_candidates if rerank_candidates is None else rerank_candidates
+            ),
+            rerank_timeout_seconds=(
+                self._rerank_timeout_seconds
+                if rerank_timeout_seconds is None
+                else rerank_timeout_seconds
+            ),
         )
 
     def chunk_text(self, document_id: str, chunk_index: int) -> str:
@@ -140,6 +158,9 @@ def make_harness(
     retrievers: Sequence[str] = ("dense",),
     weights: dict[str, float] | None = None,
     required: Sequence[str] = ("dense",),
+    reranker: Reranker | None = None,
+    rerank_candidates: int = RERANK_DEPTH,
+    rerank_timeout_seconds: float = 5.0,
 ) -> Harness:
     embedder = embedder or FakeEmbedder()
     store = vector_store or StubVectorStore()
@@ -196,6 +217,9 @@ def make_harness(
             retrievers=retrievers,
             weights=weights,
             required=required,
+            reranker=reranker,
+            rerank_candidates=rerank_candidates,
+            rerank_timeout_seconds=rerank_timeout_seconds,
         ),
         embedder=embedder,
         store=store,
@@ -209,6 +233,9 @@ def make_harness(
         _retrievers=tuple(retrievers),
         _weights=weights,
         _required=tuple(required),
+        _reranker=reranker,
+        _rerank_candidates=rerank_candidates,
+        _rerank_timeout_seconds=rerank_timeout_seconds,
     )
 
 
@@ -224,6 +251,9 @@ def _service(
     retrievers: Sequence[str],
     weights: dict[str, float],
     required: Sequence[str],
+    reranker: Reranker | None,
+    rerank_candidates: int,
+    rerank_timeout_seconds: float,
 ) -> RetrievalService:
     """이름 목록을 배선이 하는 것과 같은 경로로 인스턴스에 옮긴다.
 
@@ -248,4 +278,7 @@ def _service(
         registry,
         index_signature=signature,
         top_k=top_k,
+        reranker=reranker,
+        rerank_candidates=rerank_candidates,
+        rerank_timeout_seconds=rerank_timeout_seconds,
     )

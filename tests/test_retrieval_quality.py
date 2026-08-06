@@ -11,8 +11,14 @@ import pytest
 
 from app.adapters.embedding import SentenceTransformerEmbedder
 from app.adapters.lexical.sqlite import SqliteLexicalIndex
+from app.adapters.reranking import CrossEncoderReranker
 from app.config import Settings
-from tests.conftest import EMBEDDING_MODEL, needs_weights
+from tests.conftest import (
+    EMBEDDING_MODEL,
+    RERANKER_MODEL,
+    needs_reranker_weights,
+    needs_weights,
+)
 from tests.retrieval_harness import make_harness
 
 pytestmark = needs_weights
@@ -44,6 +50,10 @@ IDENTIFIERS = [("P3", GUIDE), ("hotfix", GUIDE), ("develop", GUIDE)]
 #: 무조건 참이 되므로 절 단위로 쪼갠다.
 CHUNK_SIZE = 200
 CHUNK_OVERLAP = 40
+
+#: 실측 1.14초(design 결정 11)보다 크게 잡는다. 첫 질의가 가중치를 올리느라 배포 상한을
+#: 넘기면 융합 순서가 돌아오는데, 그러면 이 비교가 융합 대 융합이 된다.
+GENEROUS_RERANK_TIMEOUT = 120.0
 
 
 @pytest.fixture(scope="module")
@@ -166,13 +176,78 @@ async def test_the_same_query_twice_gives_the_same_ranking(harness):
     ]
 
 
+@pytest.fixture(scope="module")
+def reranker():
+    """실물 크로스인코더 하나. 생성만으로는 가중치를 올리지 않는다."""
+    return CrossEncoderReranker(RERANKER_MODEL)
+
+
+@needs_reranker_weights
+@pytest.mark.parametrize(
+    ("query", "expected_file", "expected_text"),
+    RELEVANT,
+    ids=["교육비", "재택근무", "코드리뷰", "장애대응"],
+)
+async def test_reranking_keeps_the_first_result_of_each_regression_query(
+    harness, reranker, query, expected_file, expected_text
+):
+    """리랭킹을 켜도 회귀 질의의 1위가 같은 청크다 (`retrieval` 스펙).
+
+    리랭킹이 원래 맞히던 것을 틀리면 오류도 로그도 없이 1위만 바뀐다."""
+    fused, reranked = _two_configurations(harness, reranker)
+
+    before = await fused.search(query)
+    after = await reranked.search(query)
+
+    assert after.reranker, "리랭킹이 축소됐다 — 이 비교가 융합 대 융합이 됐다"
+    assert _identity(after.chunks[0]) == _identity(before.chunks[0]), (
+        f"1위가 바뀌었다 — 융합 {_identity(before.chunks[0])}, 리랭킹 {_identity(after.chunks[0])}"
+    )
+    assert after.chunks[0].filename == expected_file
+    assert expected_text in after.chunks[0].text
+
+
+@needs_reranker_weights
+@pytest.mark.parametrize(("identifier", "expected_file"), IDENTIFIERS)
+async def test_reranking_keeps_the_hybrid_rescue(harness, reranker, identifier, expected_file):
+    """하이브리드가 구제한 식별자 질의가 리랭킹 뒤에도 같은 결과 집합을 갖는다.
+
+    리랭킹은 순서만 바꾸므로 구제된 청크가 사라지면 그것은 걸러 낸 것이다."""
+    fused, reranked = _two_configurations(harness, reranker)
+
+    before = await fused.search(identifier)
+    after = await reranked.search(identifier)
+
+    assert after.reranker, "리랭킹이 축소됐다"
+    assert {_identity(chunk) for chunk in after.chunks} == {
+        _identity(chunk) for chunk in before.chunks
+    }, f"리랭킹이 {identifier!r} 의 결과 집합을 바꿨다"
+    assert any(identifier in chunk.text for chunk in after.chunks), (
+        f"리랭킹 뒤에 {identifier!r} 를 담은 청크가 사라졌다"
+    )
+
+
+def _two_configurations(harness, reranker):
+    """배포 하한 위에 선 융합 구성과 리랭킹 구성. 저장소는 하나다."""
+    return (
+        harness.searching_with(min_score=SHIPPED_FLOOR),
+        harness.searching_with(
+            min_score=SHIPPED_FLOOR,
+            reranker=reranker,
+            rerank_timeout_seconds=GENEROUS_RERANK_TIMEOUT,
+        ),
+    )
+
+
+def _identity(chunk) -> tuple[str, int]:
+    return chunk.document_id, chunk.chunk_index
+
+
 async def _top_score(harness, query: str) -> float | None:
     """1위 청크에 밀집 retriever 가 매긴 코사인. 근거가 없으면 `None`."""
     chunks = (await harness.retrieval.search(query)).chunks
     if not chunks:
         return None
     return next(
-        credit.native_score
-        for credit in chunks[0].contributions
-        if credit.retriever == "dense"
+        credit.native_score for credit in chunks[0].contributions if credit.retriever == "dense"
     )

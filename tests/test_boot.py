@@ -16,10 +16,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.adapters.llm import AppServerSession
+from app.adapters.reranking import KNOWN_RERANKER_PROFILES
 from app.config import Settings
 from app.main import create_app
 from tests.conftest import booted
-from tests.stubs import FakeEmbedder, ScriptedGenerator
+from tests.stubs import FakeEmbedder, FakeReranker, ScriptedGenerator
 
 
 @pytest.fixture
@@ -191,9 +192,59 @@ async def test_a_failing_warm_up_does_not_stop_startup(make_app):
     )
 
 
+# ── 리랭커 선로딩 ────────────────────────────────────────────────────────
+# 임베딩과 같은 자리·같은 처분이다. 다른 것은 백스톱이 지연 로딩이 아니라 축소라는 점뿐이다.
+
+
+async def test_startup_warms_up_the_reranker(make_app):
+    """배선된 리랭커도 기동 훅이 미리 올린다 — 비용이 첫 검색에 청구되지 않게."""
+    reranker = FakeReranker()
+
+    async with booted(make_app(reranker=reranker)) as client:
+        assert (await client.get("/health")).status_code == 200
+
+    assert reranker.warm_ups == 1, "기동 훅이 리랭커 선로딩을 부르지 않았다"
+
+
+async def test_a_failing_reranker_warm_up_does_not_stop_startup(make_app):
+    """가중치를 올릴 수 없어도 서비스는 뜬다 — 리랭킹은 얹는 단계다."""
+    reranker = FakeReranker(warm_up_error=RuntimeError("가중치를 찾지 못했습니다"))
+    app = make_app(reranker=reranker)
+
+    with capture("app.main") as records:
+        async with booted(app) as client:
+            health = await client.get("/health")
+            search = await client.post("/search", json={"query": "교육비"})
+
+    assert health.status_code == 200
+    assert search.status_code == 200, "선로딩 실패가 검색까지 막았다"
+    assert any("선로딩에 실패" in record.getMessage() for record in records), (
+        "무엇이 준비되지 않았는지가 로그에 남지 않았다"
+    )
+
+
+def test_the_reranker_switch_decides_whether_one_is_wired(settings, healthy_probes):
+    """끄고 켜는 데 코드 변경이 들지 않는다 — 설정 한 줄이 인스턴스의 유무를 정한다.
+
+    켠 쪽이 가중치를 올리지 않는 것도 여기서 고정된다. 올리면 이 테스트가 2.2GB 를 받는다."""
+    switched = {
+        enabled: create_app(
+            settings=settings.model_copy(update={"reranker_enabled": enabled}),
+            probes=healthy_probes,
+        )
+        for enabled in (False, True)
+    }
+
+    assert switched[False].state.reranker is None
+    assert switched[False].state.retrieval_service.rerank_signature == ""
+    assert switched[True].state.reranker is not None
+    assert switched[True].state.retrieval_service.rerank_signature
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SYNC_SCRIPT = REPO_ROOT / "scripts" / "sync-credentials.sh"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+DOCKERFILE = REPO_ROOT / "Dockerfile"
 
 SAMPLE_BLOB = json.dumps(
     {
@@ -316,3 +367,27 @@ def test_compose_는_인증_준비가_끝난_뒤에_api_를_띄운다():
     assert services["api"]["depends_on"]["auth"] == {"condition": "service_completed_successfully"}
     # 한 번 돌고 끝나야 하는 서비스다. 재시작이 붙으면 위 조건이 영원히 성립하지 않는다.
     assert services["auth"]["restart"] == "no"
+
+
+def _dockerfile_env() -> dict[str, str]:
+    """`ENV a=1 \\` 로 이어지는 줄들에서 `이름=값` 만 걷어 온다."""
+    text = DOCKERFILE.read_text(encoding="utf-8").replace("\\\n", " ")
+    declared: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("ENV "):
+            continue
+        for pair in line[4:].split():
+            name, _, value = pair.partition("=")
+            declared[name] = value
+    return declared
+
+
+def test_이미지가_굽는_리랭커가_어댑터가_고정한_그것이다():
+    """모델과 리비전이 두 곳에 적히는 유일한 자리다 — `Dockerfile` 은 앱을 import 못 한다.
+
+    어긋나면 런타임이 캐시에서 못 찾아 기동 시 2.2GB 다운로드가 조용히 되살아난다."""
+    declared = _dockerfile_env()
+    model = declared["APP_RERANKER_MODEL"]
+
+    assert model == Settings.model_fields["reranker_model"].default
+    assert declared["APP_RERANKER_REVISION"] == KNOWN_RERANKER_PROFILES[model].revision

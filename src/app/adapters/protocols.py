@@ -192,6 +192,25 @@ class Retriever(Protocol):
 
 
 @runtime_checkable
+class Reranker(Protocol):
+    """질의와 후보 본문을 함께 읽어 후보별 관련도를 매긴다.
+
+    정렬도 절단도 하지 않는다 — 순서를 만드는 규칙은 `core/reranking.py` 에 있다."""
+
+    name: str
+    #: 캐시 항목의 정체성 재료. 가중치를 올리지 않고 읽힌다 (`reranking`).
+    signature: str
+
+    async def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        """후보와 같은 개수·같은 순서의 점수. 클수록 그 질의에 더 잘 답한다.
+
+        척도가 질의마다 달라 같은 질의 안에서만 비교된다. 빈 목록이면 모델을 부르지 않는다."""
+        ...
+
+    async def warm_up(self) -> None: ...
+
+
+@runtime_checkable
 class AnswerGenerator(Protocol):
     """프롬프트 문자열 하나를 받아 답변 조각을 흘려보낸다.
 
