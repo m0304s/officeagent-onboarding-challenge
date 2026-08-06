@@ -8,6 +8,7 @@ import os
 
 import pytest
 
+from app.adapters.parsers import PdfExtraction
 from app.config import Settings, get_settings, llm_environment
 from app.core.chunking import ChunkStrategy
 from app.core.exceptions import ConfigurationError
@@ -29,6 +30,7 @@ def test_boots_with_no_configuration_at_all(monkeypatch, tmp_path):
     assert settings.health_total_timeout_seconds > 0
 
     # 수집 설정도 기본값만으로 성립해야 한다.
+    assert settings.pdf_extraction is PdfExtraction.MARKDOWN
     assert settings.chunk_strategy is ChunkStrategy.RECURSIVE
     assert settings.chunk_size > settings.chunk_overlap >= 0
     assert settings.embedding_batch_size > 0
@@ -374,3 +376,22 @@ def test_unimplemented_chunk_strategy_fails_startup(monkeypatch, tmp_path):
     assert "chunk_strategy" in message
     for implemented in ChunkStrategy:
         assert implemented.value in message, "받아들여지는 값 목록이 드러나야 한다"
+
+
+def test_unimplemented_pdf_extraction_fails_startup(monkeypatch, tmp_path):
+    """구현되지 않은 추출 방식을 설정으로 고를 수 없어야 한다.
+
+    고를 수 있게 두면 그 방식으로 색인된 적 없는 서명이 저장물에 박힌다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_PDF_EXTRACTION", "ocr")  # 아직 구현되지 않았다
+
+    get_settings.cache_clear()
+    with pytest.raises(ConfigurationError) as exc_info:
+        get_settings()
+    get_settings.cache_clear()
+
+    message = str(exc_info.value)
+    assert "pdf_extraction" in message
+    for implemented in PdfExtraction:
+        assert implemented.value in message, "받아들여지는 값 목록이 드러나야 한다"
+

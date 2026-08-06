@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.adapters.parsers.selection import PdfExtraction
 from app.adapters.retrievers import RETRIEVER_NAMES
 from app.core.chunking import ChunkStrategy
 from app.core.exceptions import ConfigurationError
@@ -74,6 +75,9 @@ class Settings(BaseSettings):
     # 모델(128 토큰)은 청크 뒷부분이 조용히 잘린다.
     embedding_model: str = "intfloat/multilingual-e5-small"
 
+    # 값이 라이브러리 이름이 아니라 결과의 모양인 이유는, 같은 마크다운을 다른 구현으로
+    # 내도 설정값과 스펙이 그대로여야 하기 때문이다.
+    pdf_extraction: PdfExtraction = PdfExtraction.MARKDOWN
     # 크기가 문자 기준인 이유는 토큰 기준이면 `core/` 가 임베딩 라이브러리를 알게 되어서다.
     chunk_strategy: ChunkStrategy = ChunkStrategy.RECURSIVE
     chunk_size: int = Field(default=600, gt=0)

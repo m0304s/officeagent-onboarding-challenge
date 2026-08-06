@@ -6,11 +6,28 @@
 
 import pytest
 
-from app.adapters.parsers import ParserRegistry, PdfParser, TextParser, default_parsers
+from app.adapters.parsers import (
+    ParserRegistry,
+    PdfExtraction,
+    PdfMarkdownParser,
+    PdfParser,
+    TextParser,
+    default_parsers,
+    select_pdf_extraction,
+)
 from app.adapters.protocols import DocumentParser
 from app.core.documents import DocumentFormat, ExtractedDocument
 from app.core.exceptions import DocumentParseError, UnsupportedDocumentFormat
-from tests.pdf_fixtures import BLANK_PAGE, make_pdf
+from tests.pdf_fixtures import (
+    BLANK_PAGE,
+    SCANNED_PAGES,
+    STRUCTURED_PAGES,
+    make_encrypted_pdf,
+    make_layered_and_scanned_pdf,
+    make_pdf,
+    make_scanned_pdf,
+    make_structured_pdf,
+)
 
 KOREAN = "사내 복리후생 안내\n\n교육비는 연 200만원까지 지원한다."
 
@@ -18,7 +35,7 @@ KOREAN = "사내 복리후생 안내\n\n교육비는 연 200만원까지 지원�
 # ── 프로토콜 준수 ────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("parser", [TextParser(), PdfParser()])
+@pytest.mark.parametrize("parser", [TextParser(), PdfParser(), PdfMarkdownParser()])
 def test_parsers_satisfy_the_protocol(parser):
     """레지스트리가 구체 타입이 아니라 프로토콜에만 의존해야 교체가 성립한다."""
     assert isinstance(parser, DocumentParser)
@@ -29,7 +46,8 @@ def test_every_declared_format_has_a_parser_in_the_default_wiring():
     """열거형에 있는데 파서가 없는 포맷이 있으면 "지원한다"가 거짓이 된다.
 
     거짓의 방향은 둘 중 하나여야 한다 — 열거형에서 빼거나, 파서를 만들거나."""
-    registry = ParserRegistry(default_parsers())
+    choice = select_pdf_extraction(PdfExtraction.MARKDOWN)
+    registry = ParserRegistry(default_parsers(choice))
 
     assert set(registry.supported_formats) == {f.value for f in DocumentFormat}
 
@@ -115,9 +133,25 @@ def test_documents_without_text_yield_no_segments(data):
 
 # ── PDF ──────────────────────────────────────────────────────────────────
 
+#: 두 구현을 한 계약에 묶는다. 상속으로 공통 로직을 뽑지 않는 근거는 `tests/README.md`
+#: 에 있다 — 지켜야 하는 것은 구현의 공유가 아니라 관측되는 계약의 동일성이다.
+PDF_MODES = [PdfExtraction.PLAIN, PdfExtraction.MARKDOWN]
 
-def test_pdf_yields_one_segment_per_page_with_one_based_numbers():
-    extracted = PdfParser().parse(make_pdf(["first page", "second page"]))
+
+@pytest.fixture(params=PDF_MODES, ids=[mode.value for mode in PDF_MODES])
+def pdf_parser(request) -> DocumentParser:
+    return select_pdf_extraction(request.param).parser
+
+
+def markdown_parser() -> DocumentParser:
+    return select_pdf_extraction(PdfExtraction.MARKDOWN).parser
+
+
+# ── 방식에 무관한 계약 ──────────────────────────────────────────────────
+
+
+def test_pdf_yields_one_segment_per_page_with_one_based_numbers(pdf_parser):
+    extracted = pdf_parser.parse(make_pdf(["first page", "second page"]))
 
     assert extracted.page_count == 2
     assert [segment.page for segment in extracted.segments] == [1, 2]
@@ -125,55 +159,77 @@ def test_pdf_yields_one_segment_per_page_with_one_based_numbers():
     assert "second page" in extracted.segments[1].text
 
 
-def test_pdf_text_is_extracted_for_korean():
+def test_page_numbers_never_exceed_the_page_count(pdf_parser):
+    """쪽 번호가 쪽 수를 넘으면 출처가 존재하지 않는 쪽을 가리킨다."""
+    extracted = pdf_parser.parse(make_pdf(["a", "b", "c"]))
+
+    assert extracted.page_count == 3
+    assert all(1 <= segment.page <= 3 for segment in extracted.segments)
+
+
+def test_pdf_text_is_extracted_for_korean(pdf_parser):
     """샘플 문서가 한국어다. 여기서 깨지면 이후 전부가 무의미해진다."""
-    extracted = PdfParser().parse(make_pdf(["사내 복리후생 안내"]))
+    extracted = pdf_parser.parse(make_pdf(["사내 복리후생 안내"]))
 
     assert "사내 복리후생 안내" in extracted.segments[0].text
 
 
-def test_pdf_without_a_text_layer_keeps_its_page_count():
+def test_pdf_without_a_text_layer_keeps_its_page_count(pdf_parser):
     """스캔본은 "쪽은 있는데 텍스트가 없다"로 드러나야 한다.
 
-    `page_count` 를 버리면 빈 파일과 구분되지 않아 OCR 필요 여부를 알 수 없다."""
-    extracted = PdfParser().parse(make_pdf([BLANK_PAGE, BLANK_PAGE]))
+    `page_count` 를 버리면 빈 파일과 구분되지 않아 두 경우가 같은 오류 코드가 된다."""
+    extracted = pdf_parser.parse(make_pdf([BLANK_PAGE, BLANK_PAGE]))
 
     assert extracted.segments == ()
     assert extracted.has_text is False
     assert extracted.page_count == 2
 
 
-def test_pages_without_text_are_skipped_and_numbering_still_matches():
+def test_image_only_pdf_yields_no_text(pdf_parser):
+    """글자가 이미지로만 있는 쪽은 텍스트가 없는 쪽이다 — OCR 은 이번 범위 밖이다."""
+    extracted = pdf_parser.parse(make_scanned_pdf())
+
+    assert extracted.has_text is False
+    assert extracted.page_count == len(SCANNED_PAGES)
+
+
+def test_pages_without_text_are_skipped_and_numbering_still_matches(pdf_parser):
     """일부 쪽에만 텍스트가 있는 PDF 는 그 쪽에서만 청크가 나온다.
 
     번호는 원본 쪽 번호여야 출처가 성립한다."""
-    extracted = PdfParser().parse(make_pdf([BLANK_PAGE, "본문이 있는 쪽", BLANK_PAGE]))
+    extracted = pdf_parser.parse(make_pdf([BLANK_PAGE, "본문이 있는 쪽", BLANK_PAGE]))
 
     assert [segment.page for segment in extracted.segments] == [2]
     assert extracted.page_count == 3
 
 
-def test_empty_bytes_are_not_reported_as_a_broken_pdf():
+def test_empty_bytes_are_not_reported_as_a_broken_pdf(pdf_parser):
     """0 바이트를 파싱 실패로 옮기면 빈 파일이 422 `document_parse_error` 가 된다.
 
     `empty_document` 와 뭉개지므로, 쪽도 텍스트도 없는 상태로 돌려준다."""
-    extracted = PdfParser().parse(b"")
+    extracted = pdf_parser.parse(b"")
 
     assert extracted.segments == ()
     assert extracted.page_count == 0
 
 
-def test_non_pdf_bytes_with_a_pdf_extension_raise_a_domain_error():
+def test_non_pdf_bytes_with_a_pdf_extension_raise_a_domain_error(pdf_parser):
     with pytest.raises(DocumentParseError):
-        PdfParser().parse(b"this is definitely not a pdf" * 10)
+        pdf_parser.parse(b"this is definitely not a pdf" * 10)
 
 
-def test_pdf_parse_error_does_not_leak_the_library_exception(caplog):
+def test_password_protected_pdf_is_rejected(pdf_parser):
+    """암호 PDF 를 빈 문서로 돌려주면 "내용이 없는 문서"로 조용히 수집된다."""
+    with pytest.raises(DocumentParseError):
+        pdf_parser.parse(make_encrypted_pdf())
+
+
+def test_pdf_parse_error_does_not_leak_the_library_exception(pdf_parser, caplog):
     """`pymupdf.FileDataError` 가 라우터까지 새면 계층 경계가 무의미해진다.
 
     진단에 필요한 원문은 사라지면 안 되므로 로그에는 남아 있어야 한다."""
     with pytest.raises(DocumentParseError) as exc_info:
-        PdfParser().parse(b"%PDF-1.7 broken")
+        pdf_parser.parse(b"%PDF-1.7 broken")
 
     message = str(exc_info.value)
     assert "pymupdf" not in message.lower()
@@ -181,12 +237,106 @@ def test_pdf_parse_error_does_not_leak_the_library_exception(caplog):
     assert caplog.records, "원인은 로그로 남아야 한다"
 
 
+def test_a_previous_document_does_not_change_the_next_extraction(pdf_parser):
+    """이미지가 든 문서를 먼저 읽어도 다음 문서의 본문이 같아야 한다.
+
+    라이브러리의 레이아웃 경로가 다시 켜지면 여기서 깨진다 (design 결정 8)."""
+    alone = [segment.text for segment in pdf_parser.parse(make_structured_pdf()).segments]
+
+    pdf_parser.parse(make_layered_and_scanned_pdf("레이어에만", "이미지에만"))
+    after = [segment.text for segment in pdf_parser.parse(make_structured_pdf()).segments]
+
+    assert after == alone
+
+
+# ── 구조 보존 (markdown 방식) ───────────────────────────────────────────
+
+
+def _lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.strip()]
+
+
+def _headings(text: str) -> list[str]:
+    return [line.strip() for line in _lines(text) if line.lstrip().startswith("#")]
+
+
+def test_headings_are_marked_and_larger_type_gets_a_higher_level():
+    """조판 크기의 차이가 헤딩 레벨의 차이로 남아야 후속 계층형 색인의 재료가 된다."""
+    page = STRUCTURED_PAGES[0]
+
+    text = markdown_parser().parse(make_structured_pdf()).segments[0].text
+    headings = _headings(text)
+    levels = {
+        heading.split(" ", 1)[1]: len(heading) - len(heading.lstrip("#")) for heading in headings
+    }
+
+    assert page.heading in levels and page.subheading in levels
+    assert levels[page.heading] < levels[page.subheading]
+
+
+def test_body_lines_do_not_get_heading_markers():
+    """본문까지 제목으로 승격되면 레벨이 아무것도 구분하지 못한다."""
+    page = STRUCTURED_PAGES[0]
+
+    text = markdown_parser().parse(make_structured_pdf()).segments[0].text
+
+    for line in page.body:
+        assert line in text
+        assert not any(line in heading for heading in _headings(text))
+
+
+def test_table_rows_keep_their_cells_on_one_line():
+    """셀이 행 순서대로 흩어지면 어느 값이 어느 항목의 것인지 복원할 수 없다."""
+    page = STRUCTURED_PAGES[0]
+
+    text = markdown_parser().parse(make_structured_pdf()).segments[0].text
+    rows = [line for line in _lines(text) if line.strip().startswith("|")]
+
+    assert rows, "표 표기가 있어야 한다"
+    for left, right in page.table:
+        assert any(left in row and right in row for row in rows), f"{left}/{right} 가 한 줄에 없다"
+
+
+def test_original_sentences_and_numbers_survive_unchanged():
+    """표기는 구조를 나타내는 기호다. 원문 문장과 수치는 그대로 남는다."""
+    page = STRUCTURED_PAGES[0]
+
+    text = markdown_parser().parse(make_structured_pdf()).segments[0].text
+
+    assert all(line in text for line in page.body)
+    assert all(cell in text for row in page.table for cell in row)
+
+
+def test_the_two_modes_produce_different_text_for_the_same_pdf():
+    """둘이 같은 결과를 내면 설정 축이 아무것도 고르지 못한다는 뜻이다."""
+    data = make_structured_pdf()
+
+    markdown = markdown_parser().parse(data).segments[0].text
+    plain = select_pdf_extraction(PdfExtraction.PLAIN).parser.parse(data).segments[0].text
+
+    assert markdown != plain
+    assert "#" in markdown and "|" in markdown
+    assert "#" not in plain and "|" not in plain
+
+
+def test_structure_does_not_break_page_boundaries():
+    """쪽마다 제목과 표가 있어도 서로 다른 쪽의 내용이 한 세그먼트에 섞이지 않는다."""
+    extracted = markdown_parser().parse(make_structured_pdf())
+
+    assert [segment.page for segment in extracted.segments] == [1, 2]
+    for segment, source in zip(extracted.segments, STRUCTURED_PAGES, strict=True):
+        assert source.heading in segment.text
+        others = [page for page in STRUCTURED_PAGES if page is not source]
+        assert all(other.heading not in segment.text for other in others)
+
+
 # ── 레지스트리 ──────────────────────────────────────────────────────────
 
 
 @pytest.fixture
 def registry() -> ParserRegistry:
-    return ParserRegistry(default_parsers())
+    choice = select_pdf_extraction(PdfExtraction.MARKDOWN)
+    return ParserRegistry(default_parsers(choice))
 
 
 @pytest.mark.parametrize(
@@ -194,7 +344,7 @@ def registry() -> ParserRegistry:
     [
         ("policy.txt", DocumentFormat.TXT, TextParser),
         ("guide.md", DocumentFormat.MD, TextParser),
-        ("manual.pdf", DocumentFormat.PDF, PdfParser),
+        ("manual.pdf", DocumentFormat.PDF, PdfMarkdownParser),
     ],
 )
 def test_extension_selects_the_format_and_the_parser(

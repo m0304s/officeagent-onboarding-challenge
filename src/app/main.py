@@ -19,7 +19,7 @@ from app.adapters.cache.store import RedisResponseCache
 from app.adapters.embedding import SentenceTransformerEmbedder
 from app.adapters.lexical import SqliteLexicalIndex, fts5_is_available
 from app.adapters.llm import AppServerSession, CodexAnswerGenerator, SessionLaunch, SessionPool
-from app.adapters.parsers import ParserRegistry, default_parsers
+from app.adapters.parsers import ParserRegistry, default_parsers, select_pdf_extraction
 from app.adapters.protocols import (
     AnswerGenerator,
     DocumentParser,
@@ -239,6 +239,9 @@ def create_app(
             min_token_rarity=settings.lexical_min_token_rarity,
         )
 
+    # 한 번만 고른다 — 파서와 서명 재료가 이 객체 하나에서 함께 나온다.
+    pdf_extraction = select_pdf_extraction(settings.pdf_extraction)
+
     # 한 번만 유도한다 — 두 서비스가 각자 유도하면 한쪽만 고쳐진 순간 방금 올린 문서가
     # 오류 없이 검색되지 않는다.
     index_signature = derive_index_signature(
@@ -250,6 +253,9 @@ def create_app(
         # 하나의 서명이 두 색인을 함께 지배한다 — 나누면 문서 하나가 "밀집으로는 검색
         # 가능하고 어휘로는 stale" 인 상태를 가질 수 있게 된다 (design 결정 8).
         tokenizer_signature=DEFAULT_TOKENIZER.signature_material,
+        # 파서와 같은 객체에서 꺼낸다 — 따로 지정하면 마크다운으로 뽑은 청크가 평문
+        # 서명으로 저장되어도 아무 데서도 오류가 나지 않는다 (design 결정 2).
+        pdf_extraction_signature=pdf_extraction.signature_material,
     )
 
     # 두 서비스가 같은 인스턴스를 본다 — 아니면 업로드 직후 문서가 검색되지 않는다.
@@ -262,7 +268,7 @@ def create_app(
     # 무효화가 어느 쪽 상태를 보는지가 갈린다.
     cache_service = _build_cache_service(settings, app, embedder, registry)
     app.state.ingestion_service = IngestionService(
-        ParserRegistry(default_parsers() if parsers is None else parsers),
+        ParserRegistry(default_parsers(pdf_extraction) if parsers is None else parsers),
         embedder,
         vector_store,
         lexical_index,

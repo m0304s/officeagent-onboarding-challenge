@@ -9,6 +9,13 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.adapters.parsers import (
+    PDF_EXTRACTION_VERSION,
+    PdfExtraction,
+    PdfExtractionChoice,
+    PdfMarkdownParser,
+    select_pdf_extraction,
+)
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import (
     Chunk,
@@ -32,6 +39,9 @@ BASE_SIGNATURE_MATERIALS = {
     "chunk_size": 600,
     "chunk_overlap": 100,
     "tokenizer_signature": DEFAULT_TOKENIZER.signature_material,
+    "pdf_extraction_signature": PdfExtractionChoice(
+        mode=PdfExtraction.MARKDOWN, parser=PdfMarkdownParser()
+    ).signature_material,
 }
 
 
@@ -123,6 +133,10 @@ def test_same_materials_yield_the_same_signature():
         # 지배하므로 이 변경도 재색인을 유발해야 한다.
         ("tokenizer_signature", Tokenizer(version=99).signature_material),
         ("tokenizer_signature", Tokenizer(suffixes=("는", "은")).signature_material),
+        # 추출 방식이 달라지면 같은 PDF 에서 다른 본문이 나온다. 버전만 오르는 경우도
+        # 같다 — 방식 이름은 그대로인데 산출물이 달라지는 변경을 잡을 다른 수단이 없다.
+        ("pdf_extraction_signature", f"plain:v{PDF_EXTRACTION_VERSION}"),
+        ("pdf_extraction_signature", f"markdown:v{PDF_EXTRACTION_VERSION + 1}"),
     ],
 )
 def test_each_material_changes_the_signature(material, changed):
@@ -211,6 +225,21 @@ def test_the_tokenizer_configuration_reaches_the_signature():
     )
 
     assert retuned != baseline
+
+
+def test_the_pdf_extraction_configuration_reaches_the_signature():
+    """두 방식이 같은 서명을 받으면 추출기를 바꿔도 기존 문서가 `stale` 이 되지 않는다.
+
+    `revision` 은 바이트 해시라 그대로여서, 재업로드가 `unchanged` 로 끝난다."""
+    markdown = select_pdf_extraction(PdfExtraction.MARKDOWN)
+    plain = select_pdf_extraction(PdfExtraction.PLAIN)
+
+    assert markdown.signature_material != plain.signature_material
+    assert derive_index_signature(
+        **{**BASE_SIGNATURE_MATERIALS, "pdf_extraction_signature": markdown.signature_material}
+    ) != derive_index_signature(
+        **{**BASE_SIGNATURE_MATERIALS, "pdf_extraction_signature": plain.signature_material}
+    )
 
 
 def test_signature_is_short_enough_to_embed_in_a_chunk_id():

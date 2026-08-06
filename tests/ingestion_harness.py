@@ -5,7 +5,13 @@
 """
 
 from app.adapters.cache.null import NullResponseCache
-from app.adapters.parsers import ParserRegistry, default_parsers
+from app.adapters.parsers import (
+    ParserRegistry,
+    PdfExtraction,
+    PdfExtractionChoice,
+    default_parsers,
+    select_pdf_extraction,
+)
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
 from app.core.documents import derive_index_signature
 from app.core.lexical import DEFAULT_TOKENIZER
@@ -34,6 +40,7 @@ def make_service(
     registry=None,
     cache: StubResponseCache | None = None,
     tokenizer=DEFAULT_TOKENIZER,
+    pdf_extraction: PdfExtractionChoice | None = None,
     size: int = 200,
     overlap: int = 40,
     batch_size: int = 64,
@@ -44,8 +51,11 @@ def make_service(
     서명을 여기서 유도하는 것은 배선이 하는 일을 그대로 재현하기 위해서다."""
     embedder = embedder or FakeEmbedder()
     registry = registry or StubDocumentRegistry()
+    # 파서와 서명 재료를 같은 객체에서 꺼낸다 — 한쪽만 지정하는 길을 남기면 그것이
+    # 가장 쓰기 쉬운 코드가 되고, 어긋난 하네스는 오류 없이 통과한다.
+    pdf_extraction = pdf_extraction or select_pdf_extraction(PdfExtraction.MARKDOWN)
     return IngestionService(
-        ParserRegistry(default_parsers() if parsers is None else parsers),
+        ParserRegistry(default_parsers(pdf_extraction) if parsers is None else parsers),
         embedder,
         vector_store or StubVectorStore(),
         lexical_index or StubLexicalIndex(),
@@ -60,6 +70,7 @@ def make_service(
             chunk_size=size,
             chunk_overlap=overlap,
             tokenizer_signature=tokenizer.signature_material,
+            pdf_extraction_signature=pdf_extraction.signature_material,
         ),
         chunk_strategy=ChunkStrategy.RECURSIVE,
         chunk_size=size,

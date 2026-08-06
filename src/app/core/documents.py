@@ -301,6 +301,7 @@ def derive_index_signature(
     chunk_size: int,
     chunk_overlap: int,
     tokenizer_signature: str,
+    pdf_extraction_signature: str,
 ) -> str:
     """색인 구성에서 서명을 유도한다 — 저장물을 바꾸는 값만 들어온다.
 
@@ -320,6 +321,9 @@ def derive_index_signature(
             # 토큰화가 달라지면 어휘 색인의 내용이 달라진다. 서명을 따로 두지 않는 근거는
             # `document-ingestion` 델타의 「색인 서명은 저장 시점의 색인 구성에서」에 있다.
             "tokenizer_signature": tokenizer_signature,
+            # PDF 추출 방식은 청크의 본문 자체를 바꾸는데 `revision` 은 바이트 해시라
+            # 그대로다. 포맷별로 쪼개지 않는 근거도 같은 델타에 있다.
+            "pdf_extraction_signature": pdf_extraction_signature,
         },
         ensure_ascii=False,
         sort_keys=True,

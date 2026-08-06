@@ -8,7 +8,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.adapters.cache.null import NullResponseCache
-from app.adapters.parsers import ParserRegistry, default_parsers
+from app.adapters.parsers import (
+    ParserRegistry,
+    PdfExtraction,
+    default_parsers,
+    select_pdf_extraction,
+)
 from app.adapters.protocols import Embedder, LexicalIndex
 from app.adapters.retrievers import RetrieverDependencies, build_retriever
 from app.core.chunking import CHUNK_STRATEGY_VERSION, ChunkStrategy
@@ -25,6 +30,9 @@ from tests.stubs import (
     StubResponseCache,
     StubVectorStore,
 )
+
+#: 배포 기본 구성. 파서와 서명 재료가 이 하나에서 함께 나온다 (design 결정 2).
+_PDF_EXTRACTION = select_pdf_extraction(PdfExtraction.MARKDOWN)
 
 #: 후보 깊이. `Settings` 기본값과 같은 값이라 하네스가 배포 구성과 같은 깊이로 돈다.
 CANDIDATE_DEPTH = 50
@@ -146,6 +154,7 @@ def make_harness(
         chunk_size=size,
         chunk_overlap=overlap,
         tokenizer_signature=DEFAULT_TOKENIZER.signature_material,
+        pdf_extraction_signature=_PDF_EXTRACTION.signature_material,
     )
     # 배선(`create_app`)과 같다 — 수집과 답변이 같은 캐시 계층 인스턴스를 본다.
     cache_service = CacheService(
@@ -163,7 +172,7 @@ def make_harness(
     )
     return Harness(
         ingestion=IngestionService(
-            ParserRegistry(default_parsers()),
+            ParserRegistry(default_parsers(_PDF_EXTRACTION)),
             embedder,
             store,
             lexical,

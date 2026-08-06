@@ -17,8 +17,11 @@ dependencies = [
     # 로컬 임베딩. torch 를 끌고 오므로 이미지에서는 CPU 전용 휠로 설치한다.
     "sentence-transformers>=3.0",
     # PDF 텍스트 추출. AGPL-3.0 — 상용 배포로 가려면 pypdf(BSD) 교체가 선행되어야 한다.
-    # 교체 범위는 adapters/parsers/pdf.py 한 파일이다 (ARCHITECTURE.md "문서 파서").
-    "pymupdf>=1.24",
+    # 추출 결과가 저장물이고 저장물이 index_signature 의 축이라, 버전이 흔들리면 같은
+    # 설정에서 같은 PDF 가 다른 청크가 된다. chromadb 와 같은 이유로 정확 고정한다.
+    # pymupdf4llm 1.28.0 이 pymupdf==1.28.0 을 정확히 요구하므로 두 값이 함께 움직인다.
+    "pymupdf==1.28.0",
+    "pymupdf4llm==1.28.0",
 ]
 
 [project.optional-dependencies]

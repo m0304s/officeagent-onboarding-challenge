@@ -8,6 +8,8 @@ import asyncio
 
 import pytest
 
+from app.adapters.parsers import PdfExtraction, select_pdf_extraction
+from app.core.cache import derive_cache_key, derive_cache_scope
 from app.core.documents import (
     Chunk,
     ChunkLocation,
@@ -22,9 +24,10 @@ from app.core.exceptions import (
     StorageUnavailable,
 )
 from app.core.lexical import DEFAULT_TOKENIZER, Tokenizer
+from app.core.prompting import PROMPT_VERSION
 from app.services.ingestion import ReconciliationReport
 from tests.ingestion_harness import LONG_KOREAN, make_service
-from tests.pdf_fixtures import BLANK_PAGE, make_pdf
+from tests.pdf_fixtures import BLANK_PAGE, make_pdf, make_structured_pdf
 from tests.stubs import (
     FakeEmbedder,
     StubDocumentRegistry,
@@ -80,6 +83,36 @@ async def test_every_stored_chunk_carries_the_index_signature(service, store):
     chunks = store.chunks_of(result.document.document_id)
     assert {chunk.index_signature for chunk in chunks} == {service.index_signature}
     assert result.document.index_signature == service.index_signature
+
+
+async def test_the_extraction_mode_changes_the_signature_but_not_the_revision():
+    """추출 방식이 바뀌면 같은 파일에서 다른 본문이 나오는데 `revision` 은 그대로다.
+
+    서명이 이 축을 모르면 재업로드가 `unchanged` 로 끝나고 옛 청크가 남는다."""
+    data = make_structured_pdf()
+
+    results = [
+        await make_service(pdf_extraction=select_pdf_extraction(mode)).ingest("policy.pdf", data)
+        for mode in (PdfExtraction.MARKDOWN, PdfExtraction.PLAIN)
+    ]
+    markdown, plain = (result.document for result in results)
+
+    assert markdown.revision == plain.revision
+    assert markdown.index_signature != plain.index_signature
+
+
+async def test_the_extraction_mode_also_invalidates_text_documents():
+    """PDF 축이 텍스트 문서까지 `stale` 로 만드는 것은 의도된 과잉 무효화다.
+
+    포맷별 서명으로 쪼개면 "현재 구성으로 색인되었는가"의 답이 포맷마다 갈린다."""
+    results = [
+        await make_service(pdf_extraction=select_pdf_extraction(mode)).ingest(POLICY, DATA)
+        for mode in (PdfExtraction.MARKDOWN, PdfExtraction.PLAIN)
+    ]
+    markdown, plain = (result.document for result in results)
+
+    assert markdown.revision == plain.revision
+    assert markdown.index_signature != plain.index_signature
 
 
 async def test_chunk_indices_are_complete(service, store):
@@ -421,6 +454,89 @@ async def test_a_changed_configuration_drops_the_chunks_and_marks_the_document_s
     assert stored.index_status is IndexStatus.STALE
     assert stored.chunk_count == 0
     assert await store.count_chunks(first.document.document_id) == 0
+
+
+async def test_changing_the_extraction_mode_marks_documents_stale(store, lexical, registry):
+    """추출 방식은 청크의 본문을 바꾼다 — 서명이 그 축을 들고 있어야 정리가 돈다.
+
+    새 무효화 코드가 아니라 기존 기동 정리가 그대로 도는지가 확인 대상이다."""
+    first = await make_service(
+        vector_store=store,
+        lexical_index=lexical,
+        registry=registry,
+        pdf_extraction=select_pdf_extraction(PdfExtraction.MARKDOWN),
+    ).ingest("policy.pdf", make_structured_pdf())
+
+    reconfigured = make_service(
+        vector_store=store,
+        lexical_index=lexical,
+        registry=registry,
+        pdf_extraction=select_pdf_extraction(PdfExtraction.PLAIN),
+    )
+    report = await reconfigured.reconcile_storage()
+
+    document_id = first.document.document_id
+    stored = await registry.get(document_id)
+    assert report.stale_documents == (document_id,)
+    assert stored.index_status is IndexStatus.STALE
+    assert stored.chunk_count == 0
+    for index in (store, lexical):
+        assert await index.count_chunks(document_id) == 0
+
+
+async def test_the_same_bytes_are_reindexed_after_the_extraction_mode_changes(
+    store, lexical, registry
+):
+    """`revision` 이 같아도 `unchanged` 단축에 걸리면 옛 방식의 청크가 그대로 남는다."""
+    data = make_structured_pdf()
+    await make_service(
+        vector_store=store,
+        lexical_index=lexical,
+        registry=registry,
+        pdf_extraction=select_pdf_extraction(PdfExtraction.MARKDOWN),
+    ).ingest("policy.pdf", data)
+
+    reconfigured = make_service(
+        vector_store=store,
+        lexical_index=lexical,
+        registry=registry,
+        pdf_extraction=select_pdf_extraction(PdfExtraction.PLAIN),
+    )
+    await reconfigured.reconcile_storage()
+    second = await reconfigured.ingest("policy.pdf", data)
+
+    document_id = second.document.document_id
+    assert second.status is not IngestionStatus.UNCHANGED
+    assert second.document.index_status is IndexStatus.INDEXED
+    assert second.document.chunk_count >= 1
+    # 저장된 본문이 새 방식의 결과다 — 평문 추출에는 마크다운 표기가 없다.
+    body = "".join(chunk.text for chunk in store.chunks_of(document_id))
+    assert "#" not in body and "|" not in body
+
+
+def test_the_extraction_mode_reaches_the_cache_through_the_app_wiring(make_app, settings):
+    """추출 방식이 캐시까지 닿지 않으면 옛 근거로 만든 답변이 계속 나간다.
+
+    캐시 키·스코프는 검색 서비스의 서명을 재료로 쓴다 — 배선이 그 이음매다."""
+    signatures, keys, scopes = [], [], []
+    for mode in (PdfExtraction.MARKDOWN, PdfExtraction.PLAIN):
+        app = make_app(settings=settings.model_copy(update={"pdf_extraction": mode}))
+        signature = app.state.retrieval_service.index_signature
+        signatures.append(signature)
+        materials = {"top_k": 5, "prompt_version": PROMPT_VERSION, "model": "m"}
+        keys.append(derive_cache_key(query="교육비", index_signature=signature, **materials))
+        scopes.append(derive_cache_scope(index_signature=signature, **materials))
+
+    assert signatures[0] != signatures[1], "배선이 설정을 서명까지 옮겨야 한다"
+    assert keys[0] != keys[1] and scopes[0] != scopes[1]
+
+
+def test_both_services_share_one_signature_per_wiring(make_app):
+    """수집과 검색이 각자 유도하면 방금 올린 문서가 오류 없이 검색되지 않는다."""
+    app = make_app()
+
+    ingestion = app.state.ingestion_service.index_signature
+    assert ingestion == app.state.retrieval_service.index_signature
 
 
 async def test_an_unchanged_configuration_keeps_everything(service, store, registry):
