@@ -6,7 +6,7 @@
 
 from collections.abc import Sequence
 
-from app.adapters.parsers.pdf import PdfParser
+from app.adapters.parsers.selection import PdfExtractionChoice
 from app.adapters.parsers.text import TextParser
 from app.adapters.protocols import DocumentParser
 from app.core.documents import DocumentFormat, file_extension
@@ -48,6 +48,8 @@ class ParserRegistry:
         return document_format, parser
 
 
-def default_parsers() -> tuple[DocumentParser, ...]:
-    """운영 구성. 앱 팩토리가 이것을 `ParserRegistry` 에 넣는다."""
-    return (TextParser(), PdfParser())
+def default_parsers(choice: PdfExtractionChoice) -> tuple[DocumentParser, ...]:
+    """운영 구성. PDF 는 고른 방식의 파서 하나만 등록한다.
+
+    기본 인자를 두지 않는 이유는 "서명은 지정했는데 파서는 기본값"이 계속 가능해져서다."""
+    return (TextParser(), choice.parser)

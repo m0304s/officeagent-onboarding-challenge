@@ -563,6 +563,7 @@ docker compose run --build --rm test ruff format --check .
 | `APP_LEXICAL_INDEX_PATH` | 어휘 색인(SQLite FTS5) 경로 | `./data/lexical.sqlite3` |
 | `APP_LEXICAL_MIN_TOKEN_RARITY` | 질의 토큰이 "드물다"고 인정받는 하한. 이 값을 넘는 토큰이 하나도 겹치지 않는 청크는 어휘 검색 결과에서 빠집니다 | `0.3` |
 | `APP_EMBEDDING_MODEL` | 임베딩 모델 이름 | `intfloat/multilingual-e5-small` |
+| `APP_PDF_EXTRACTION` | PDF 추출 방식. `markdown`은 제목·표를 마크다운으로 보존하고, `plain`은 쪽 단위 평문만 뽑습니다 | `markdown` |
 | `APP_CHUNK_STRATEGY` | 분할 전략 | `recursive` |
 | `APP_CHUNK_SIZE` | 청크 크기 상한(문자) | `600` |
 | `APP_CHUNK_OVERLAP` | 인접 청크 겹침(문자). `0` 불가 | `100` |
@@ -591,7 +592,9 @@ docker compose run --build --rm test ruff format --check .
 | `APP_CACHE_CIRCUIT_BREAKER_FAILURES` | 연속 실패가 이만큼이면 캐시 호출을 건너뜁니다 | `3` |
 | `APP_CACHE_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | 건너뛰는 시간(초). 지나면 자동 재개 | `30.0` |
 
-구현되지 않은 `APP_CHUNK_STRATEGY` 값(현재 구현된 것은 `recursive` 하나입니다)이나 청크 크기 이상의 겹침을 넣으면 **기동에 실패합니다.** 잘못된 색인 구성으로 조용히 뜨는 것보다 낫기 때문입니다.
+구현되지 않은 `APP_CHUNK_STRATEGY`(현재 `recursive` 하나)나 `APP_PDF_EXTRACTION`(`markdown`·`plain`) 값, 청크 크기 이상의 겹침을 넣으면 **기동에 실패합니다.** 잘못된 색인 구성으로 조용히 뜨는 것보다 낫기 때문입니다.
+
+**`APP_PDF_EXTRACTION=plain`으로 되돌릴 수 있습니다.** 기본값인 `markdown`은 제목을 헤딩(`#`)으로, 격자선으로 구분된 표를 마크다운 표(`|`)로 내놓습니다. 그 판정은 폰트 크기와 벡터 선에 기대는 추정이라 문서에 따라 틀릴 수 있어, 평문 추출로 돌아가는 경로를 남겨 두었습니다. **되돌린 뒤에는 재업로드가 필요합니다** — 추출 방식이 `index_signature`의 재료라 기존 문서가 다음 기동에서 `stale`이 되고, 원본 바이트를 보관하지 않기 때문입니다.
 
 같은 이유로 **`APP_RETRIEVAL_TOP_K`와 `APP_RETRIEVAL_MAX_TOP_K`는 함께 검증됩니다** — 기본 K가 상한보다 크면 어떤 요청도 통과할 수 없으므로 기동을 막습니다. 두 값이 각각은 멀쩡한데 조합이 성립하지 않는 자리라, 첫 검색 요청이 아니라 기동에서 드러나야 합니다.
 
@@ -647,7 +650,7 @@ docker compose up -d --build api
 
 `APP_LEXICAL_MIN_TOKEN_RARITY`의 기본값 `0.3`도 **계측값**입니다 — `sample-docs`의 두 문서로 하한 후보 넷을 재서, 네 회귀 질의가 모두 살아남는 가장 높은 값을 골랐습니다(`0.4`부터 코드리뷰 질의가 빈 목록이 됩니다). 실측표와 표본 크기의 한계는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)에 있습니다.
 
-`APP_EMBEDDING_MODEL`·`APP_CHUNK_STRATEGY`·`APP_CHUNK_SIZE`·`APP_CHUNK_OVERLAP`과 **어휘 색인의 토큰화 구성**은 `index_signature`의 재료입니다. 바꾸면 기존 문서가 다음 기동에서 [`stale`](#index_status--그-문서가-지금-검색-가능한가)이 되어 재업로드가 필요합니다. 나머지 값(배치 크기·업로드 상한·동시성, 그리고 검색 시점에만 쓰이는 하한들)은 저장된 벡터와 어휘 색인의 내용을 바꾸지 않으므로 서명에 영향을 주지 않습니다 — 성능 튜닝과 하한 조정이 전면 재색인을 유발하지 않습니다.
+`APP_EMBEDDING_MODEL`·`APP_PDF_EXTRACTION`·`APP_CHUNK_STRATEGY`·`APP_CHUNK_SIZE`·`APP_CHUNK_OVERLAP`과 **어휘 색인의 토큰화 구성**은 `index_signature`의 재료입니다. 바꾸면 기존 문서가 다음 기동에서 [`stale`](#index_status--그-문서가-지금-검색-가능한가)이 되어 재업로드가 필요합니다. 나머지 값(배치 크기·업로드 상한·동시성, 그리고 검색 시점에만 쓰이는 하한들)은 저장된 벡터와 어휘 색인의 내용을 바꾸지 않으므로 서명에 영향을 주지 않습니다 — 성능 튜닝과 하한 조정이 전면 재색인을 유발하지 않습니다.
 
 > **이 버전으로 올리면 기존 문서를 다시 업로드해야 합니다.** 어휘 색인이 추가되면서 토큰화 구성이 `index_signature`에 들어갔고, 그래서 이전 버전에서 수집한 모든 문서의 서명이 달라집니다. 첫 기동에서 기동 정리가 이를 발견해 두 색인의 청크를 지우고 문서를 `stale`로 표시합니다 — **기동은 실패하지 않습니다.** `GET /documents`에서 `index_status`가 `stale`인 문서를 같은 파일로 다시 올리면 `reindexed`로 복구됩니다.
 
@@ -663,7 +666,7 @@ docker compose up -d --build api
 | 문서 레지스트리 | SQLite (표준 라이브러리) | "지금 유효한 리비전이 무엇인가"의 단일 답. 컨테이너를 늘리지 않고 벡터 스토어와 같은 볼륨에 놓임 |
 | 벡터 DB | Chroma (**서버 모드**, 별도 컨테이너) | 메타데이터 필터와 문서 단위 삭제를 지원해 리비전 교체·캐시 무효화 연동이 가능. 저장소를 앱 프로세스 밖으로 빼 API 재배포와 수명이 분리됨 |
 | 어휘 색인 | SQLite **FTS5** (표준 라이브러리) | `bm25()` 순위 함수가 내장이라 컨테이너가 늘지 않음. Elasticsearch는 이 규모에 JVM 컨테이너가 과잉이고, 인메모리 BM25는 영속성이 없어 기동마다 전 청크를 재구축해야 함 ([근거](./ARCHITECTURE.md#어휘-색인)) |
-| PDF 파싱 | PyMuPDF | 쪽 단위 텍스트 추출이 정확하고 빠름. **AGPL-3.0**이므로 배포 형태를 바꿀 때 재검토가 필요 |
+| PDF 파싱 | PyMuPDF + **pymupdf4llm** | 쪽 단위 추출이 정확하고 빠름. 같은 엔진 위에서 제목·표를 **마크다운**으로 보존하는 구현을 함께 두고 `APP_PDF_EXTRACTION`으로 고릅니다 — 판정이 틀린 문서를 만나면 `plain`으로 되돌립니다 ([근거](./ARCHITECTURE.md#pdf-추출은-두-구현-선택은-설정)). **AGPL-3.0**이므로 배포 형태를 바꿀 때 재검토가 필요 |
 | 캐시 DB | Redis | 정확 매치는 키 조회, 유사 질문은 질문 임베딩 유사도로 판정. TTL·태그 기반 무효화가 자연스러움 |
 | 린터 | ruff | 포매팅과 린팅을 한 도구로 통일. 레이어 경계도 린트 규칙으로 강제 |
 

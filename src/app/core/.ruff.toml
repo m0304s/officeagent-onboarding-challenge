@@ -20,6 +20,7 @@ extend = "../../../pyproject.toml"
 # 지킬 수 없기 때문이다.
 "fitz".msg = "PDF 파싱은 adapters/parsers 의 관심사다"
 "pymupdf".msg = "PDF 파싱은 adapters/parsers 의 관심사다"
+"pymupdf4llm".msg = "PDF 파싱은 adapters/parsers 의 관심사다"
 "sentence_transformers".msg = "임베딩은 adapters/embedding 의 관심사다"
 "torch".msg = "임베딩 런타임은 adapters/embedding 의 관심사다"
 "numpy".msg = "core/ 는 표준 라이브러리만 쓴다"

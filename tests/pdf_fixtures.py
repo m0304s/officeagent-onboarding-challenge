@@ -35,6 +35,17 @@ def make_pdf(pages: Sequence[str | None]) -> bytes:
         document.close()
 
 
+def make_encrypted_pdf(password: str = "secret") -> bytes:
+    """열람에 암호가 필요한 PDF. 두 파서가 같은 코드로 거부하는지 재는 데 쓴다."""
+    document = pymupdf.open()
+    try:
+        page = document.new_page()
+        page.insert_text(pymupdf.Point(72, 100), "비밀 문서", fontsize=11, fontname=_FONT)
+        return document.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw=password)
+    finally:
+        document.close()
+
+
 #: 조판 크기 세 가지. 헤딩 판정이 폰트 크기 분포로 갈리므로 넉넉히 벌린다 — 붙여 놓으면
 #: 두 제목이 같은 레벨로 접히고, 본문까지 제목으로 승격된다(실측).
 _BODY_SIZE = 11
@@ -104,6 +115,63 @@ def make_structured_pdf(pages: Sequence[StructuredPage] = STRUCTURED_PAGES) -> b
         return document.tobytes()
     finally:
         document.close()
+
+
+#: 실측으로 고른 조판. 키우면 감지가 한 줄을 단어 단위로 쪼개 오히려 나빠진다.
+_SCAN_ZOOM = 3.0
+_SCAN_FONT_SIZE = 24
+_SCAN_LINE_GAP = 48
+
+#: 스캔 픽스처의 줄은 짧고 숫자가 없어야 정확히 읽힌다. 긴 문장은 감지가 쪼개고,
+#: 숫자와 한글이 붙으면 인식기가 사이에 공백을 넣는다(`200만원` → `200 만원`, 실측).
+SCANNED_PAGES: tuple[tuple[str, ...], ...] = (
+    ("교육비", "재택근무", "연차휴가"),
+    ("복리후생", "지원한도"),
+)
+
+
+def make_scanned_pdf(pages: Sequence[Sequence[str]] = SCANNED_PAGES) -> bytes:
+    """줄들을 이미지로 구운 PDF 를 만든다 — 텍스트 레이어가 0자인 스캔본이다.
+
+    `BLANK_PAGE` 와 다르다. 저쪽은 글자가 없어 OCR 로도 안 읽혀야 하고 이쪽은 읽혀야 한다."""
+    document = pymupdf.open()
+    try:
+        for lines in pages:
+            image = _render_lines_to_png(lines)
+            page = document.new_page()
+            page.insert_image(page.rect, stream=image)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def make_layered_and_scanned_pdf(layer_text: str, image_text: str) -> bytes:
+    """한 쪽에 문자 레이어와 이미지 글자를 함께 넣는다.
+
+    OCR 이 레이어 있는 쪽을 건드리지 않는지는 둘이 달라야만 관측된다."""
+    document = pymupdf.open()
+    try:
+        page = document.new_page()
+        image = _render_lines_to_png([image_text])
+        page.insert_image(pymupdf.Rect(72, 300, 500, 400), stream=image)
+        page.insert_text(pymupdf.Point(72, 100), layer_text, fontsize=11, fontname=_FONT)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def _render_lines_to_png(lines: Sequence[str]) -> bytes:
+    """줄들을 그린 뒤 픽스맵으로 구워 낸다 — 구운 결과에는 문자 레이어가 없다."""
+    source = pymupdf.open()
+    try:
+        page = source.new_page()
+        for index, line in enumerate(lines):
+            position = pymupdf.Point(40, 80 + index * _SCAN_LINE_GAP)
+            page.insert_text(position, line, fontsize=_SCAN_FONT_SIZE, fontname=_FONT)
+        pixmap = page.get_pixmap(matrix=pymupdf.Matrix(_SCAN_ZOOM, _SCAN_ZOOM))
+        return pixmap.tobytes("png")
+    finally:
+        source.close()
 
 
 def _draw_table(page: pymupdf.Page, rows: Sequence[tuple[str, str]], top: float) -> None:
