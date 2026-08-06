@@ -184,6 +184,30 @@ async def test_similar_question_hits_the_semantic_layer(store, registry, clock):
     assert slot.lookup.similarity == pytest.approx(1.0)
 
 
+async def test_a_negated_question_is_not_a_semantic_candidate(store, registry, clock):
+    """벡터가 같아도 극성이 다르면 후보에서 빠진다 — 유사도로는 막을 수 없는 실패다."""
+    positive = "연차를 이월할 수 있나요?"
+    negative = "연차를 이월할 수 없나요?"
+    embedder = SynonymEmbedder({positive: "연차 이월", negative: "연차 이월"})
+    service = make_service(store, registry, embedder, clock=clock)
+    await remember(service, positive)
+
+    slot = await service.lookup(negative, top_k=5, index_signature=SIGNATURE)
+
+    assert not slot.hit
+
+
+async def test_the_polarity_travels_with_the_slot(store, registry, clock):
+    """조회와 저장이 같은 값을 봐야 게이트가 성립한다 — 갈리면 저장이 반대편에 쌓인다."""
+    service = make_service(store, registry, synonym_embedder(), clock=clock)
+
+    negative = await service.lookup("연차를 이월할 수 없나요?", top_k=5, index_signature=SIGNATURE)
+    positive = await service.lookup("연차를 이월할 수 있나요?", top_k=5, index_signature=SIGNATURE)
+
+    assert negative.polarity is True
+    assert positive.polarity is False
+
+
 async def test_semantic_hit_is_revalidated_like_an_exact_hit(store, registry, clock):
     """두 층 중 하나만 재검증하면 낡은 답변이 다른 문으로 나간다."""
     service = make_service(store, registry, synonym_embedder(), clock=clock)
@@ -204,21 +228,33 @@ async def test_different_question_below_the_threshold_is_a_miss(service):
     assert not slot.hit
 
 
-async def test_a_different_top_k_does_not_hit(service):
-    """K 가 다르면 근거 개수가 달라 답변이 달라진다 — 다른 항목이어야 한다."""
-    await remember(service, top_k=3)
+async def test_a_different_top_k_is_not_an_exact_match(service):
+    """K 가 다르면 근거 집합이 달라 항목도 다르다 — 키에는 K 가 남아 있다."""
+    await remember(service, top_k=3, item=entry(top_k=3))
 
-    assert not (await lookup(service, top_k=5)).hit
+    slot = await lookup(service, top_k=5)
+
+    assert slot.lookup.layer is not CacheLayer.EXACT
 
 
-async def test_a_different_top_k_is_unreachable_by_similarity(store, registry, clock):
-    """L1 에서 갈린 것이 L2 에서 도로 합쳐지면 후보 집합의 경계가 없는 것이다."""
+async def test_a_different_top_k_is_still_a_similarity_candidate(service):
+    """K 로 후보 집합을 쪼개면 같은 질문이 K 마다 따로 생성된다 (`response-cache`)."""
+    await remember(service, top_k=3, item=entry(top_k=3))
+
+    slot = await lookup(service, top_k=5)
+
+    assert slot.hit and slot.lookup.layer is CacheLayer.SEMANTIC
+    assert slot.entry.top_k == 3, "히트한 항목이 요청의 K 로 덧칠됐다"
+
+
+async def test_a_different_wording_and_top_k_still_hits(store, registry, clock):
+    """표현도 K 도 다른 요청 — 유사 매치가 봐야 하는 것은 질의뿐이다."""
     service = make_service(store, registry, synonym_embedder(), clock=clock)
-    await remember(service, "교육비 지원 한도가 얼마인가요?", top_k=3)
+    await remember(service, "교육비 지원 한도가 얼마인가요?", top_k=3, item=entry(top_k=3))
 
     slot = await service.lookup("교육비 얼마까지 지원되나요?", top_k=5, index_signature=SIGNATURE)
 
-    assert not slot.hit
+    assert slot.hit and slot.entry.top_k == 3
 
 
 async def test_a_different_index_signature_does_not_hit(service):

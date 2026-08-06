@@ -11,6 +11,7 @@ import pytest
 
 from app.adapters.protocols import VectorStore
 from app.adapters.vector_store import ChromaVectorStore, collection_for
+from app.adapters.vector_store.chroma import _version_filter
 from app.adapters.vector_store.client import create_client, parse_url
 from app.core.documents import (
     Chunk,
@@ -139,6 +140,7 @@ async def test_the_metadata_round_trips(store):
         "document_id": DOCUMENT_ID,
         "revision": "rev-1",
         "index_signature": "sig-1",
+        "version_key": f"{DOCUMENT_ID}:rev-1:sig-1",
         "filename": "handbook.pdf",
         "format": "pdf",
         "chunk_index": 0,
@@ -303,6 +305,97 @@ async def test_a_version_outside_the_target_set_is_not_returned(store):
 
     assert len(results) == 2
     assert {result.revision for result in results} == {"rev-2"}
+
+
+async def test_the_target_filter_is_one_condition_however_many_documents(store):
+    """조건 수가 문서 수를 따라가면 그 필터가 질의마다 조립·직렬화·평가된다."""
+    versions = [version_of(document_id=f"doc-{index}") for index in range(50)]
+
+    condition = _version_filter(versions)
+
+    assert list(condition) == ["version_key"]
+    assert condition["version_key"] == {"$in": [version.key for version in versions]}
+
+
+async def test_several_target_versions_admit_only_their_own_chunks(store):
+    """조건 하나로 좁혀도 축 셋이 모두 걸리는지 — 합성 키가 축을 잃으면 여기서 드러난다."""
+    await store_chunks(store, make_chunks(2, revision="rev-1"), vectors=make_query_vectors(2))
+    await store_chunks(
+        store,
+        make_chunks(2, document_id=OTHER_ID, revision="rev-9"),
+        vectors=make_query_vectors(2, offset=5),
+    )
+    await store_chunks(
+        store,
+        make_chunks(2, index_signature="sig-2"),
+        vectors=make_query_vectors(2, offset=10),
+    )
+
+    results = await store.query(
+        QUERY_VECTOR,
+        top_k=10,
+        versions=[version_of(), version_of(document_id=OTHER_ID, revision="rev-9")],
+    )
+
+    found = {(item.document_id, item.revision, item.index_signature) for item in results}
+    assert found == {(DOCUMENT_ID, "rev-1", "sig-1"), (OTHER_ID, "rev-9", "sig-1")}
+
+
+async def test_chunks_stored_without_the_composite_key_are_searchable_after_the_backfill(store):
+    """업그레이드 전에 저장된 청크 — 보정하지 않으면 저장소에 있으면서 검색되지 않는다."""
+    await _store_without_version_key(store, make_chunks(2), make_query_vectors(2))
+    assert await store.query(QUERY_VECTOR, top_k=10, versions=[version_of()]) == []
+
+    backfilled = await store.backfill_version_keys()
+
+    assert backfilled == 2
+    results = await store.query(QUERY_VECTOR, top_k=10, versions=[version_of()])
+    assert [result.chunk_index for result in results] == [0, 1]
+
+
+async def test_the_backfill_leaves_the_rest_of_the_metadata_alone(store):
+    """부분 갱신이 나머지 필드를 지우면 출처 표기가 통째로 사라진다."""
+    await _store_without_version_key(store, make_chunks(1, page=3), make_query_vectors(1))
+
+    await store.backfill_version_keys()
+
+    stored = store._get_collection().get(include=["metadatas"])
+    assert stored["metadatas"][0]["page"] == 3
+    assert stored["metadatas"][0]["filename"] == "company-policy.txt"
+    assert stored["metadatas"][0]["version_key"] == f"{DOCUMENT_ID}:rev-1:sig-1"
+
+
+async def test_the_backfill_writes_nothing_when_every_chunk_already_has_the_key(store):
+    """빈 기동이 쓰기를 만들면 매 기동이 컬렉션 전체를 다시 쓴다."""
+    await store_chunks(store, make_chunks(2), vectors=make_query_vectors(2))
+
+    assert await store.backfill_version_keys() == 0
+
+
+async def _store_without_version_key(store, chunks, vectors) -> None:
+    """업그레이드 이전 세대의 저장 형태 — 축 셋은 있고 합성 키만 없다."""
+    collection = store._get_collection()
+    await asyncio.to_thread(
+        lambda: collection.add(
+            ids=[chunk.id for chunk in chunks],
+            embeddings=[list(vector) for vector in vectors],
+            documents=[chunk.text for chunk in chunks],
+            metadatas=[
+                {
+                    "document_id": chunk.document_id,
+                    "revision": chunk.revision,
+                    "index_signature": chunk.index_signature,
+                    "filename": "company-policy.txt",
+                    "format": DocumentFormat.TXT.value,
+                    "chunk_index": chunk.chunk_index,
+                    "char_start": chunk.location.char_start,
+                    "char_end": chunk.location.char_end,
+                    **({"page": chunk.location.page} if chunk.location.page else {}),
+                }
+                for chunk in chunks
+            ],
+        )
+    )
 
 
 async def test_an_empty_target_set_returns_nothing_rather_than_everything(store):

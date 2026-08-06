@@ -20,8 +20,8 @@ from app.core.retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
-#: 변별력 판정을 SQL 로 표현할 수 없어 절단을 파이썬으로 미룬다. bm25 순 상위 이 배수
-#: 만큼만 읽어 한 질의가 쓰는 메모리를 코퍼스 크기에서 뗀다.
+#: 절단을 파이썬으로 미뤄 동점의 순서를 정체성으로 고정한다 — SQL 이 딱 `top_k` 만 읽으면
+#: 경계의 동점 항목 중 어느 것이 남을지 정해지지 않는다. 배수를 두는 것은 메모리 때문이다.
 CANDIDATE_OVERFETCH = 10
 
 #: 토큰이 "드물다"고 인정받는 하한. 설정(`APP_LEXICAL_MIN_TOKEN_RARITY`)이 덮어쓴다.
@@ -222,15 +222,16 @@ class SqliteLexicalIndex:
                 extra={"candidate_window": window, "top_k": top_k},
             )
 
-        kept = [
-            _retrieved_chunk(row)
+        # 변별력 판정이 목록을 자르지 않는다 — 자르면 남은 항목의 순위가 당겨져 융합이
+        # 볼 교집합이 좁아진다 (`lexical-index` 스펙).
+        found = [
+            _retrieved_chunk(row, gate_passed=_has_rare_overlap(row[0], rarities, self._floor))
             for row in rows
-            if _has_rare_overlap(row[0], rarities, self._floor)
         ]
         # 점수가 같은 청크의 순서를 정체성으로 고정한다 — SQL 정렬에 맡기면 UNINDEXED
         # 컬럼이 TEXT 라 `chunk_index` 가 사전순으로 비교된다.
-        kept.sort(key=lambda chunk: (-chunk.native_score, chunk.document_id, chunk.chunk_index))
-        return kept[:top_k]
+        found.sort(key=lambda chunk: (-chunk.native_score, chunk.document_id, chunk.chunk_index))
+        return found[:top_k]
 
     def _token_rarities(
         self, connection: sqlite3.Connection, tokens: tuple[str, ...]
@@ -333,7 +334,7 @@ def _where(
     return f" WHERE {clause}", tuple(value for _, value in pairs)
 
 
-def _retrieved_chunk(row: tuple) -> RetrievedChunk:
+def _retrieved_chunk(row: tuple, *, gate_passed: bool) -> RetrievedChunk:
     """조회 한 줄을 결과 값 객체로 옮긴다. 열 순서는 `_COLUMNS` 가 정한다."""
     return RetrievedChunk(
         document_id=row[1],
@@ -350,4 +351,5 @@ def _retrieved_chunk(row: tuple) -> RetrievedChunk:
         format=DocumentFormat(row[7]),
         # fts5 는 `idf <= 0` 을 눌러 두므로 뒤집은 값이 음수가 되지 않는다.
         native_score=max(0.0, float(row[11])),
+        gate_passed=gate_passed,
     )

@@ -16,7 +16,7 @@ from tests.qa_harness import (
     make_qa_harness,
 )
 from tests.retrieval_harness import GUIDE, POLICY
-from tests.stubs import GenerationTurn, StubResponseCache
+from tests.stubs import GenerationTurn, StubResponseCache, SynonymEmbedder
 
 ANSWER = "교육비는 연 200만원까지 지원됩니다 [1]."
 OTHER_ANSWER = "코드 리뷰는 1명 이상의 승인이 필요합니다 [1]."
@@ -61,6 +61,20 @@ async def test_reuploading_invalidates_answers_that_cited_the_document():
 
     assert not await hit(harness)
     assert harness.generator.calls == 2
+
+
+async def test_an_invalidated_entry_is_not_reachable_by_similarity_either():
+    """정확 매치에서만 지우면 같은 항목이 유사 매치 후보로 되살아난다."""
+    similar = "교육비 얼마까지 지원되나요?"
+    synonyms = SynonymEmbedder({QUESTION: "교육비 지원", similar: "교육비 지원"})
+    harness = cached(answering(), answering(), embedder=synonyms)
+    await harness.ingest("policy.txt", POLICY)
+    await harness.ask()
+    assert await hit(harness, similar), "무효화 전에는 유사 매치로 찾혀야 비교가 성립한다"
+
+    await harness.ingest("policy.txt", REVISED_POLICY)
+
+    assert not await hit(harness, similar)
 
 
 async def test_deleting_invalidates_answers_that_cited_the_document():

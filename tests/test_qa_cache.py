@@ -71,6 +71,27 @@ async def test_a_hit_does_not_run_retrieval_again():
     assert harness.retrieval.embedder.queries == [], "정확 매치는 질의 임베딩도 만들지 않는다"
 
 
+async def test_a_miss_encodes_the_query_exactly_once_when_the_cache_is_empty():
+    """캐시가 비면 조회가 임베딩을 건너뛴다 — 검색이 만든 벡터를 저장이 다시 만들면 2회다."""
+    harness = await cached_harness()
+    harness.retrieval.embedder.queries.clear()
+
+    await harness.ask()
+
+    assert harness.retrieval.embedder.queries == [QUESTION]
+
+
+async def test_a_miss_encodes_the_query_exactly_once_when_the_cache_is_not_empty():
+    """후보 집합이 비어 있지 않으면 조회가 벡터를 만든다 — 검색이 그것을 다시 만들면 2회다."""
+    harness = await cached_harness(answering(), answering())
+    await harness.ask(QUESTION)
+    harness.retrieval.embedder.queries.clear()
+
+    await harness.ask("연차는 며칠인가요?")
+
+    assert harness.retrieval.embedder.queries == ["연차는 며칠인가요?"]
+
+
 async def test_a_similar_question_hits_without_the_generator():
     """정확 매치가 실패해도 뜻이 충분히 가까우면 캐시로 답한다."""
     harness = await cached_harness(embedder=SynonymEmbedder(SYNONYMS))
@@ -80,6 +101,47 @@ async def test_a_similar_question_hits_without_the_generator():
 
     assert harness.generator.calls == 1
     assert done_of(events).cache.layer.value == "semantic"
+
+
+async def test_a_negated_question_does_not_hit_the_affirmative_answer():
+    """`할 수 있나요` 와 `할 수 없나요` 는 코사인이 갈라 주지 못한다 (`response-cache`)."""
+    positive = "연차를 이월할 수 있나요?"
+    negative = "연차를 이월할 수 없나요?"
+    synonyms = SynonymEmbedder({positive: "연차 이월", negative: "연차 이월"})
+    harness = await cached_harness(answering(), answering(), embedder=synonyms)
+    await harness.ask(positive)
+
+    events = await harness.ask(negative)
+
+    assert not done_of(events).cache.hit
+    assert harness.generator.calls == 2
+
+
+async def test_two_negated_questions_still_hit_each_other():
+    """게이트가 부정어 종류까지 갈랐다면 여기서 히트를 잃는다."""
+    first = "연차를 이월할 수 없나요?"
+    second = "연차는 다음 해로 넘기면 안 되나요?"
+    harness = await cached_harness(
+        embedder=SynonymEmbedder({first: "연차 이월", second: "연차 이월"})
+    )
+    await harness.ask(first)
+
+    events = await harness.ask(second)
+
+    assert done_of(events).cache.layer.value == "semantic"
+    assert harness.generator.calls == 1
+
+
+async def test_an_exact_match_is_not_affected_by_the_polarity_gate():
+    """정규화 결과가 같으면 극성도 같다 — L1 은 이 축과 무관하게 히트한다."""
+    harness = await cached_harness()
+    negative = "연차를 이월할 수 없나요?"
+    await harness.ask(negative)
+
+    events = await harness.ask(negative)
+
+    assert done_of(events).cache.layer.value == "exact"
+    assert harness.generator.calls == 1
 
 
 async def test_a_different_question_still_reaches_the_generator():
@@ -263,10 +325,10 @@ async def test_an_omitted_top_k_and_the_default_top_k_share_one_entry():
     assert harness.generator.calls == 1
 
 
-async def test_changing_the_configured_top_k_does_not_reuse_the_entry():
-    """설정 기본값을 바꾸면 옛 항목이 새 기본값의 답인 척 남지 않는다."""
+async def test_changing_the_configured_top_k_reuses_the_entry_with_its_own_k():
+    """K 를 바꿔도 같은 질문이다. 다만 옛 항목은 자기 K 를 그대로 싣고 나간다."""
     harness = await cached_harness(top_k=5)
-    await harness.ask(top_k=None)
+    first = await harness.ask(top_k=None)
 
     # 저장소도 캐시도 그대로 둔 채 설정만 바꾼 재기동이다.
     revised = make_qa_harness(
@@ -274,8 +336,9 @@ async def test_changing_the_configured_top_k_does_not_reuse_the_entry():
     )
     second = await revised.ask(top_k=None)
 
-    assert not done_of(second).cache.hit
-    assert revised.generator.calls == 1
+    assert done_of(second).cache.layer.value == "semantic"
+    assert revised.generator.calls == 0, "유사 매치가 있는데 다시 생성했다"
+    assert sources_of(second).top_k == sources_of(first).top_k == 5
 
 
 async def test_retrieval_and_cache_share_one_index_signature():

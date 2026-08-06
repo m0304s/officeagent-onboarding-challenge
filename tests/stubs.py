@@ -11,6 +11,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
+from app.core.cache import normalize_query
 from app.core.documents import (
     Chunk,
     Document,
@@ -124,6 +125,9 @@ class FakeEmbedder:
         return max(1, math.ceil(len(text) / self._chars_per_token))
 
     def _vector(self, text: str) -> list[float]:
+        # 대소문자·공백 차이를 흡수한다 — 실물 임베더가 그 차이에 둔감하고, 검색이 질의를
+        # 정규화해 인코딩하므로 여기서도 같게 보지 않으면 순위 단언이 대역 탓에 깨진다.
+        text = normalize_query(text)
         values: list[float] = []
         block = 0
         while len(values) < self.dimension:
@@ -192,13 +196,16 @@ class StubVectorStore:
         fail_add_after: int | None = None,
         fail_delete: bool = False,
         fail_query: bool = False,
+        fail_backfill: bool = False,
         query_delay: float = 0.0,
     ) -> None:
         self.records: dict[str, dict] = {}
         self.fail_add_after = fail_add_after
         self.fail_delete = fail_delete
         self.fail_query = fail_query
+        self.fail_backfill = fail_backfill
         self.add_calls = 0
+        self.backfills = 0
         self._query_delay = query_delay
         #: 배치 크기를 호출 순서대로 기록한다. 배치 경계를 확인하는 데 쓴다.
         self.batch_sizes: list[int] = []
@@ -272,6 +279,13 @@ class StubVectorStore:
             for record in self.records.values()
         }
         return [StoredIndexVersion(*version) for version in sorted(versions)]
+
+    async def backfill_version_keys(self) -> int:
+        """청크를 값으로 들고 있어 보정할 형태가 없다 — 호출 사실과 실패만 재현한다."""
+        self.backfills += 1
+        if self.fail_backfill:
+            raise StorageUnavailable("주입된 보정 실패")
+        return 0
 
     async def query(
         self,
@@ -591,20 +605,29 @@ class StubResponseCache:
         await self._enter("lookup_exact")
         return await self._inner.lookup_exact(fingerprint)
 
-    async def count_candidates(self, scope):
+    async def count_candidates(self, scope, *, polarity):
         await self._enter("count_candidates")
-        return await self._inner.count_candidates(scope)
+        return await self._inner.count_candidates(scope, polarity=polarity)
 
-    async def lookup_semantic(self, embedding, *, scope, threshold, candidates):
+    async def lookup_semantic(self, embedding, *, scope, polarity, threshold, candidates):
         await self._enter("lookup_semantic")
         return await self._inner.lookup_semantic(
-            embedding, scope=scope, threshold=threshold, candidates=candidates
+            embedding,
+            scope=scope,
+            polarity=polarity,
+            threshold=threshold,
+            candidates=candidates,
         )
 
-    async def store(self, fingerprint, entry, *, scope, embedding, negative):
+    async def store(self, fingerprint, entry, *, scope, polarity, embedding, negative):
         await self._enter("store")
         await self._inner.store(
-            fingerprint, entry, scope=scope, embedding=embedding, negative=negative
+            fingerprint,
+            entry,
+            scope=scope,
+            polarity=polarity,
+            embedding=embedding,
+            negative=negative,
         )
 
     async def invalidate_document(self, document_id):
@@ -644,8 +667,11 @@ class StubDocumentRegistry:
         self.commits = 0
         self.after_list_all = after_list_all
         self.before_get = before_get
+        #: 단건 조회 기록. 조회 하나가 연결 하나라, 횟수 자체가 계약이다 (`retrieval` 스펙).
+        self.gets: list[str] = []
 
     async def get(self, document_id: str) -> Document | None:
+        self.gets.append(document_id)
         await self._fire("before_get")
         return self.documents.get(document_id)
 

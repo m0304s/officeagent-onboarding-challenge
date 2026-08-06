@@ -187,15 +187,22 @@ class StoredIndexVersion:
     revision: str
     index_signature: str
 
+    @property
+    def key(self) -> str:
+        """세 축을 한 값으로 — 저장소가 대상 집합을 조건 하나로 좁힐 수 있게 한다.
+
+        축마다 조건을 만들면 필터의 크기가 문서 수에 비례해 매 질의마다 조립·평가된다."""
+        return f"{self.document_id}:{self.revision}:{self.index_signature}"
+
     @classmethod
-    def of(cls, document: "Document") -> "StoredIndexVersion":
-        """레지스트리 레코드가 가리키는 조합.
+    def of(cls, source: "Document | Chunk") -> "StoredIndexVersion":
+        """레코드나 청크가 가리키는 조합.
 
         손으로 옮기면 축을 빠뜨려도 타입이 멀쩡하다 — 리비전이 빠지면 지운 문장이 검색된다."""
         return cls(
-            document_id=document.document_id,
-            revision=document.revision,
-            index_signature=document.index_signature,
+            document_id=source.document_id,
+            revision=source.revision,
+            index_signature=source.index_signature,
         )
 
 

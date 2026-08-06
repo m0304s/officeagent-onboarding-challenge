@@ -234,8 +234,12 @@ class QaService:
             # 히트면 검색도 하지 않는다 — 캐시가 아끼는 것은 생성 비용만이 아니다.
             return context
 
-        result = await self._retrieval.search(search_query, top_k=top_k)
-        return replace(context, result=result)
+        result = await self._retrieval.search(
+            search_query, top_k=top_k, query_embedding=slot.embedding
+        )
+        # 검색이 만든 벡터를 슬롯에 접어 넣는다 — 후보 집합이 비어 조회가 임베딩을
+        # 건너뛴 요청에서, 저장이 같은 질의를 한 번 더 인코딩하지 않게 한다.
+        return replace(context, cache=slot.with_embedding(result.query_embedding), result=result)
 
     # ── 2단계: 스트림 안 ────────────────────────────────────────────────
 

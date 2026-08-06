@@ -11,10 +11,12 @@ from app.adapters.cache.store import (
     NEGATIVE_KEY,
     SCOPES_KEY,
     RedisResponseCache,
+    candidate_set,
     document_key,
     entry_key,
     index_key,
     vector_key,
+    vector_set_key,
 )
 from app.core.answers import Answer, FinishReason
 from app.core.cache import CachedAnswer
@@ -27,6 +29,10 @@ pytestmark = [pytest.mark.redis, needs_cache]
 SCOPE = "scope-1"
 NEAR = [1.0, 0.0]
 FAR = [0.0, 1.0]
+
+#: 극성까지 붙인 후보 집합 이름. 두 색인의 키가 여기서 갈린다.
+AFFIRMATIVE = candidate_set(SCOPE, False)
+NEGATED = candidate_set(SCOPE, True)
 
 
 def chunk(**overrides) -> ScoredChunk:
@@ -71,11 +77,21 @@ async def cache(client):
     await connection.aclose()
 
 
-async def store(cache, fingerprint, *, embedding=NEAR, scope=SCOPE, negative=False, **overrides):
+async def store(
+    cache,
+    fingerprint,
+    *,
+    embedding=NEAR,
+    scope=SCOPE,
+    polarity=False,
+    negative=False,
+    **overrides,
+):
     await cache.store(
         fingerprint,
         entry(**overrides),
         scope=scope,
+        polarity=polarity,
         embedding=embedding,
         negative=negative,
     )
@@ -110,9 +126,9 @@ async def test_store_writes_every_key_of_the_structure(cache, client):
 
     assert await client.exists(entry_key("fp-1"))
     assert await client.exists(vector_key("fp-1"))
-    assert await client.zscore(index_key(SCOPE), "fp-1") is not None
+    assert await client.zscore(index_key(AFFIRMATIVE), "fp-1") is not None
     assert await client.sismember(document_key("doc-1"), "fp-1")
-    assert await client.sismember(SCOPES_KEY, SCOPE)
+    assert await client.sismember(SCOPES_KEY, AFFIRMATIVE)
 
 
 async def test_payload_and_vector_carry_a_ttl(cache, client):
@@ -136,8 +152,8 @@ async def test_order_index_is_a_counter_not_a_clock(cache, client):
     await store(cache, "fp-1")
     await store(cache, "fp-2")
 
-    first = await client.zscore(index_key(SCOPE), "fp-1")
-    second = await client.zscore(index_key(SCOPE), "fp-2")
+    first = await client.zscore(index_key(AFFIRMATIVE), "fp-1")
+    second = await client.zscore(index_key(AFFIRMATIVE), "fp-2")
 
     assert second > first
 
@@ -148,7 +164,9 @@ async def test_order_index_is_a_counter_not_a_clock(cache, client):
 async def test_stored_entry_survives_the_storage_roundtrip(cache):
     """저장소를 한 바퀴 돌고 온 항목이 원래 값과 같아야 히트가 미스와 같은 응답을 낸다."""
     original = entry()
-    await cache.store("fp-1", original, scope=SCOPE, embedding=NEAR, negative=False)
+    await cache.store(
+        "fp-1", original, scope=SCOPE, polarity=False, embedding=NEAR, negative=False
+    )
 
     lookup = await cache.lookup_exact("fp-1")
 
@@ -161,19 +179,26 @@ async def test_unknown_fingerprint_is_a_miss(cache):
 
 async def test_candidate_count_is_zero_before_anything_is_stored(cache):
     """0 이면 호출부가 질의 임베딩을 만들지 않는다 (design 결정 10)."""
-    assert await cache.count_candidates(SCOPE) == 0
+    assert await cache.count_candidates(SCOPE, polarity=False) == 0
 
     await store(cache, "fp-1")
 
-    assert await cache.count_candidates(SCOPE) == 1
-    assert await cache.count_candidates("scope-없음") == 0
+    assert await cache.count_candidates(SCOPE, polarity=False) == 1
+    assert await cache.count_candidates("scope-없음", polarity=False) == 0
 
 
 async def test_semantic_lookup_finds_the_closest_candidate(cache):
     await store(cache, "fp-far", embedding=FAR)
     await store(cache, "fp-near", embedding=NEAR)
 
-    lookup = await cache.lookup_semantic([0.99, 0.05], scope=SCOPE, threshold=0.93, candidates=10)
+    lookup = await cache.lookup_semantic(
+        [0.99,
+        0.05],
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )
 
     assert lookup.hit and lookup.fingerprint == "fp-near"
 
@@ -183,25 +208,75 @@ async def test_semantic_lookup_ignores_other_scopes(cache):
     await store(cache, "fp-k3", embedding=NEAR, scope="scope-k3")
 
     assert not (
-        await cache.lookup_semantic(NEAR, scope="scope-k5", threshold=0.93, candidates=10)
+        await cache.lookup_semantic(
+            NEAR,
+            scope="scope-k5",
+            polarity=False,
+            threshold=0.93,
+            candidates=10,
+        )
     ).hit
 
 
 async def test_semantic_lookup_below_the_threshold_is_a_miss(cache):
     await store(cache, "fp-1", embedding=NEAR)
 
-    assert not (await cache.lookup_semantic(FAR, scope=SCOPE, threshold=0.93, candidates=10)).hit
+    assert not (await cache.lookup_semantic(
+        FAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )).hit
 
 
-async def test_semantic_scan_stops_at_the_candidate_ceiling(cache):
-    """상한 밖의 항목까지 훑으면 스캔 비용이 캐시 크기에 비례한다."""
+async def test_an_old_entry_is_still_reachable_under_the_candidate_ceiling(cache):
+    """후보를 저장 순서로 고르면 상한이 곧 히트율의 천장이 된다 — 캐시가 클수록 못 맞힌다."""
     await store(cache, "fp-oldest", embedding=NEAR)
     for index in range(3):
         await store(cache, f"fp-{index}", embedding=FAR)
 
-    lookup = await cache.lookup_semantic(NEAR, scope=SCOPE, threshold=0.93, candidates=2)
+    lookup = await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=2,
+    )
+
+    assert lookup.hit and lookup.fingerprint == "fp-oldest"
+
+
+async def test_a_candidate_of_the_other_polarity_is_not_even_a_candidate(cache, client):
+    """게이트가 저장 구조로 강제되는지 — 조회 경로가 필터를 잊어도 후보에 없어야 한다."""
+    await store(cache, "fp-negated", embedding=NEAR, polarity=True)
+
+    lookup = await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )
 
     assert not lookup.hit
+    assert await client.vset().vcard(vector_set_key(NEGATED)) == 1
+    assert await client.vset().vcard(vector_set_key(AFFIRMATIVE)) == 0
+
+
+async def test_the_same_polarity_is_still_found(cache):
+    """게이트가 자기 극성까지 막으면 유사 매치 층이 통째로 죽는다."""
+    await store(cache, "fp-negated", embedding=NEAR, polarity=True)
+
+    lookup = await cache.lookup_semantic(
+        [0.99, 0.05],
+        scope=SCOPE,
+        polarity=True,
+        threshold=0.93,
+        candidates=10,
+    )
+
+    assert lookup.hit and lookup.fingerprint == "fp-negated"
 
 
 # ── 지연 정리와 용량 ─────────────────────────────────────────────────────
@@ -212,10 +287,17 @@ async def test_expired_vector_is_swept_from_the_order_index(cache, client):
     await store(cache, "fp-1", embedding=NEAR)
     await client.delete(vector_key("fp-1"))  # TTL 만료와 같은 상태
 
-    lookup = await cache.lookup_semantic(NEAR, scope=SCOPE, threshold=0.93, candidates=10)
+    lookup = await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )
 
     assert not lookup.hit
-    assert await client.zcard(index_key(SCOPE)) == 0
+    assert await client.zcard(index_key(AFFIRMATIVE)) == 0
+    assert await client.vset().vcard(vector_set_key(AFFIRMATIVE)) == 0
 
 
 async def test_capacity_trims_the_oldest_entries_and_their_keys(client):
@@ -226,7 +308,8 @@ async def test_capacity_trims_the_oldest_entries_and_their_keys(client):
     for index in range(5):
         await store(cache, f"fp-{index}")
 
-    assert await client.zcard(index_key(SCOPE)) == 3
+    assert await client.zcard(index_key(AFFIRMATIVE)) == 3
+    assert await client.vset().vcard(vector_set_key(AFFIRMATIVE)) == 3
     assert not await client.exists(entry_key("fp-0"))
     assert not await client.exists(vector_key("fp-0"))
     assert await client.exists(entry_key("fp-4"))
@@ -257,7 +340,8 @@ async def test_document_invalidation_removes_the_entry_and_its_index_slot(cache,
     assert removed == 1
     assert not await client.exists(entry_key("fp-1"))
     assert not await client.exists(vector_key("fp-1"))
-    assert await client.zcard(index_key(SCOPE)) == 0
+    assert await client.zcard(index_key(AFFIRMATIVE)) == 0
+    assert await client.vset().vcard(vector_set_key(AFFIRMATIVE)) == 0
     assert not await client.exists(document_key("doc-a"))
 
 
@@ -291,7 +375,8 @@ async def test_discard_removes_one_entry(cache, client):
 
     assert not (await cache.lookup_exact("fp-1")).hit
     assert (await cache.lookup_exact("fp-2")).hit
-    assert await client.zcard(index_key(SCOPE)) == 1
+    assert await client.zcard(index_key(AFFIRMATIVE)) == 1
+    assert await client.vset().vcard(vector_set_key(AFFIRMATIVE)) == 1
 
 
 async def test_invalidating_nothing_is_harmless(cache):

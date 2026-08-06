@@ -17,6 +17,7 @@ from app.core.cache import (
     cosine_similarity,
     derive_cache_key,
     derive_cache_scope,
+    negation_polarity,
     normalize_query,
 )
 from app.core.documents import ChunkLocation, DocumentFormat
@@ -149,11 +150,57 @@ def test_key_rejects_unresolved_top_k():
         derive_cache_key(**{**KEY_MATERIALS, "top_k": None})
 
 
+# ── 부정 극성 ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "연차를 이월할 수 없나요?",
+        "연차를 이월하면 안 되나요?",
+        "재택근무가 불가능한가요?",
+        "이월이 금지되어 있나요?",
+        "쓰지 않으면 어떻게 되나요?",
+        "승인 없이는 못 하나요?",
+        "그건 연차가 아닌가요?",
+        "can i not carry over my leave?",
+        "is it never allowed?",
+        "can't i carry it over?",
+    ],
+)
+def test_a_negated_question_is_marked_negative(query):
+    """부정 한 글자 차이는 코사인이 잡지 못한다 — 이 축이 없으면 정반대 답이 히트로 나간다."""
+    assert negation_polarity(normalize_query(query)) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "연차를 이월할 수 있나요?",
+        "교육비 지원 안내를 알려주세요",
+        "보안 규정은 무엇인가요?",
+        "can i carry over my leave?",
+        "안전 교육은 언제인가요?",
+    ],
+)
+def test_a_plain_question_is_not_marked_negative(query):
+    """`안내`·`안전` 은 `안` 으로 시작할 뿐이다 — 앞머리만 보고 세면 긍정문이 갈린다."""
+    assert negation_polarity(normalize_query(query)) is False
+
+
+def test_the_polarity_does_not_distinguish_which_negation_was_used():
+    """세분하면 같은 뜻의 두 질의가 갈려 히트를 잃는다 — 그 손실은 미스이고, 막는 것은 오답이다."""
+    assert negation_polarity(normalize_query("휴가를 안 쓰면 어떻게 되나요?")) is negation_polarity(
+        normalize_query("휴가를 쓰지 않으면 어떻게 되나요?")
+    )
+
+
 # ── 후보 집합 ────────────────────────────────────────────────────────────
 
 
 def scope_materials(**overrides) -> dict:
-    fields = {name: value for name, value in KEY_MATERIALS.items() if name != "query"}
+    dropped = ("query", "top_k")
+    fields = {name: value for name, value in KEY_MATERIALS.items() if name not in dropped}
     return {**fields, **overrides}
 
 
@@ -163,19 +210,22 @@ def test_scope_ignores_the_query():
     assert derive_cache_scope(**scope_materials()) == derive_cache_scope(**scope_materials())
 
 
+def test_scope_ignores_the_top_k():
+    """K 가 달라도 같은 질문이다. 후보 집합을 K 로 쪼개면 유사 매치가 볼 이웃만 줄어든다."""
+    assert derive_cache_key(**KEY_MATERIALS) != derive_cache_key(**{**KEY_MATERIALS, "top_k": 3})
+    assert derive_cache_scope(**scope_materials()) == derive_cache_scope(**scope_materials())
+
+
 @pytest.mark.parametrize(
     ("material", "other"),
     [
-        ("top_k", 3),
         ("prompt_version", "qa-ko-2"),
         ("index_signature", "ffffffffffffffff"),
         ("model", "gpt-5"),
     ],
 )
-def test_scope_splits_on_every_non_query_material(material, other):
-    """다른 항목이 유사도만으로 히트가 되면 K 가 뜻을 잃는다 (`response-cache`).
-
-    `top_k=3` 으로 캐시된 답변이 `top_k=5` 요청에 유사도 1.0 으로 나가는 자리다."""
+def test_scope_splits_on_every_material_that_changes_the_answer(material, other):
+    """프롬프트·색인 세대·모델이 다른 항목이 유사도만으로 히트가 되면 그 셋이 뜻을 잃는다."""
     assert derive_cache_scope(**scope_materials(**{material: other})) != derive_cache_scope(
         **scope_materials()
     )

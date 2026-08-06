@@ -95,25 +95,38 @@ class TestContributionsRideAlong:
 # ── 하한은 융합 앞에서, 각자의 단위로 (6.5) ──────────────────────────────
 
 
-async def test_the_dense_floor_is_applied_before_fusion():
-    """하한을 넘긴 청크만 밀집 목록에 실린다 — 융합 뒤에 걸면 척도가 이미 사라졌다.
+async def test_a_result_only_the_dense_list_carries_passed_the_dense_floor():
+    """단독 항목의 기준은 그대로다 — 채택이 면제하는 것은 두 목록이 함께 올린 항목뿐이다.
 
-    관측 방법은 기여 내역이다. 걸러진 자리가 융합 뒤였다면 그 흔적이 내역에 남는다."""
+    어휘가 아무것도 못 찾는 질의를 쓴다. 그래야 모든 결과가 단독이라 단언이 공허해지지 않는다."""
     harness = make_harness(retrievers=HYBRID)
     await harness.ingest("policy.txt", POLICY)
     await harness.ingest("guide.md", GUIDE)
-    floor = await _floor_between_the_top_two_dense_scores(harness)
+    floor = await _floor_between_the_top_two_dense_scores(harness, NO_OVERLAP_QUERY)
 
-    result = await harness.searching_with(min_score=floor).search(IDENTIFIER_QUERY)
+    result = await harness.searching_with(min_score=floor).search(NO_OVERLAP_QUERY)
 
-    dense_credits = [
-        credit
-        for chunk in result.chunks
-        for credit in chunk.contributions
-        if credit.retriever == "dense"
+    assert result.count > 0, "하한이 결과를 전부 지워 단언이 공허해졌다"
+    for chunk in result.chunks:
+        credits = {credit.retriever: credit for credit in chunk.contributions}
+        assert set(credits) == {"dense"}, "어휘가 못 찾는 질의인데 어휘 기여가 붙었다"
+        assert credits["dense"].native_score >= floor
+
+
+async def test_a_chunk_both_lists_carry_survives_below_the_dense_floor():
+    """게이트가 목록을 자르던 시절 사라지던 항목 — 두 신호가 같은 청크를 가리키는 경우다."""
+    harness = make_harness(retrievers=HYBRID)
+    await harness.ingest("guide.md", GUIDE)
+    shared, dense_score = await _a_chunk_both_lists_carry(harness)
+
+    # 그 청크가 밀집 하한 아래로 떨어지게 만든다. 어휘가 함께 올렸으므로 채택은 유지된다.
+    result = await harness.searching_with(min_score=dense_score + 1e-6).search(IDENTIFIER_QUERY)
+
+    matched = [
+        chunk for chunk in result.chunks if (chunk.document_id, chunk.chunk_index) == shared
     ]
-    assert dense_credits, "밀집 기여가 하나도 없어 단언이 공허해졌다"
-    assert all(credit.native_score >= floor for credit in dense_credits)
+    assert matched, "두 목록이 함께 올린 항목을 밀집 하한 하나가 지웠다"
+    assert {credit.retriever for credit in matched[0].contributions} == set(HYBRID)
 
 
 async def test_a_dense_floor_of_one_still_leaves_the_lexical_results():
@@ -125,8 +138,9 @@ async def test_a_dense_floor_of_one_still_leaves_the_lexical_results():
 
     assert result.count > 0, "밀집 하한이 어휘 결과까지 지웠다"
     assert result.retrievers == HYBRID, "실패가 아니므로 두 이름 모두 남아야 한다"
-    credits = {credit.retriever for chunk in result.chunks for credit in chunk.contributions}
-    assert credits == {"lexical"}
+    for chunk in result.chunks:
+        credits = {credit.retriever for credit in chunk.contributions}
+        assert "lexical" in credits, "밀집만 올린 항목이 하한 1.0 에서 채택됐다"
 
 
 async def test_failing_both_floors_empties_the_results_without_an_error():
@@ -141,12 +155,29 @@ async def test_failing_both_floors_empties_the_results_without_an_error():
     assert result.target_documents == 1, "하한이 대상 집합까지 지우면 안 된다"
 
 
-async def _floor_between_the_top_two_dense_scores(harness) -> float:
+async def _floor_between_the_top_two_dense_scores(harness, query: str) -> float:
     """1위와 2위의 밀집 원점수 사이의 하한.
 
     상수로 박으면 분포가 조금만 움직여도 단언이 공허해지고, 그때도 테스트는 초록이다."""
     dense_only = harness.searching_with(min_score=0.0, retrievers=("dense",))
-    everything = await dense_only.search(IDENTIFIER_QUERY)
+    everything = await dense_only.search(query)
     scores = [chunk.contributions[0].native_score for chunk in everything.chunks]
     assert len(scores) >= 2
     return (scores[0] + scores[1]) / 2
+
+
+async def _a_chunk_both_lists_carry(harness) -> tuple[tuple[str, int], float]:
+    """두 목록이 모두 올린 청크 하나와 그 밀집 원점수.
+
+    어느 청크가 겹치는지는 임베더의 값에 달려 있어, 상수로 적으면 대역을 바꿀 때 깨진다."""
+    dense_only = harness.searching_with(min_score=0.0, retrievers=("dense",), top_k=50)
+    lexical_only = harness.searching_with(retrievers=("lexical",), top_k=50)
+    dense = {
+        (chunk.document_id, chunk.chunk_index): chunk.contributions[0].native_score
+        for chunk in (await dense_only.search(IDENTIFIER_QUERY)).chunks
+    }
+    for chunk in (await lexical_only.search(IDENTIFIER_QUERY)).chunks:
+        key = (chunk.document_id, chunk.chunk_index)
+        if key in dense:
+            return key, dense[key]
+    raise AssertionError("두 목록이 함께 올린 청크가 없어 이 테스트를 세울 수 없다")

@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import logging
 
 import pytest
 
@@ -420,6 +421,30 @@ def orphan_chunk(document_id: str, *, revision: str, index_signature: str) -> Ch
     )
 
 
+async def test_the_startup_backfill_runs_before_the_cleanup_rules(service, store):
+    """보정을 빠뜨리면 이전 세대 형태로 저장된 청크가 조용히 검색에서 사라진다."""
+    await service.ingest(POLICY, DATA)
+
+    report = await service.reconcile_storage()
+
+    assert store.backfills == 1
+    assert report.backfilled_chunks == 0
+
+
+async def test_a_failed_backfill_does_not_stop_the_boot(registry, lexical, caplog):
+    """보정 실패는 기동 실패가 아니다 — 대신 경고가 그 사실을 드러낸다."""
+    store = StubVectorStore(fail_backfill=True)
+    service = make_service(vector_store=store, lexical_index=lexical, registry=registry)
+    await service.ingest(POLICY, DATA)
+
+    with caplog.at_level(logging.WARNING):
+        report = await service.reconcile_storage()
+
+    assert report.backfilled_chunks == 0
+    assert report.stale_documents == (), "보정 실패가 정리 규칙까지 세웠다"
+    assert any("보정하지 못했습니다" in record.message for record in caplog.records)
+
+
 async def test_leftover_chunks_are_reclaimed_and_current_ones_are_kept(service, store):
     """크래시 백스톱이다 — 요청 안의 되돌리기가 닿지 못한 잔여물만 회수한다."""
     result = await service.ingest(POLICY, DATA)
@@ -523,8 +548,10 @@ def test_the_extraction_mode_reaches_the_cache_through_the_app_wiring(make_app, 
         app = make_app(settings=settings.model_copy(update={"pdf_extraction": mode}))
         signature = app.state.retrieval_service.index_signature
         signatures.append(signature)
-        materials = {"top_k": 5, "prompt_version": PROMPT_VERSION, "model": "m"}
-        keys.append(derive_cache_key(query="교육비", index_signature=signature, **materials))
+        materials = {"prompt_version": PROMPT_VERSION, "model": "m"}
+        keys.append(
+            derive_cache_key(query="교육비", top_k=5, index_signature=signature, **materials)
+        )
         scopes.append(derive_cache_scope(index_signature=signature, **materials))
 
     assert signatures[0] != signatures[1], "배선이 설정을 서명까지 옮겨야 한다"

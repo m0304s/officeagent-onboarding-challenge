@@ -101,6 +101,12 @@ class VectorStore(Protocol):
         """저장된 삼중항 전체. 레지스트리만 보면 잔여 청크의 존재를 알 수 없다."""
         ...
 
+    async def backfill_version_keys(self) -> int:
+        """대상 집합 필터가 읽는 형태로 저장되지 않은 청크를 보정하고 그 개수를 돌려준다.
+
+        보정되지 않은 청크는 저장소에 있으면서 검색되지 않는다 — 오류가 아니라 부재로 보인다."""
+        ...
+
     async def query(
         self,
         embedding: Sequence[float],
@@ -171,10 +177,17 @@ class Retriever(Protocol):
         *,
         depth: int,
         versions: Sequence[StoredIndexVersion],
+        embedding: Sequence[float] | None = None,
     ) -> list[RetrievedChunk]:
         """`versions` 의 청크 중 관련도가 높은 것부터 최대 `depth` 개, 점수 내림차순.
 
-        관련성 하한을 여기서 자기 단위로 건다 — 융합 뒤에는 척도가 사라진다."""
+        하한은 자기 단위로 판정한다. `embedding` 은 벡터를 쓰지 않는 retriever 가 무시한다."""
+        ...
+
+    async def query_vector(self, query: str) -> list[float] | None:
+        """이 retriever 가 쓰는 질의 벡터. 벡터를 쓰지 않으면 `None` 이고 임베더도 안 부른다.
+
+        검색 서비스가 요청당 한 번 부르고 그 결과를 모두에게 넘긴다 (`retrieval` 스펙)."""
         ...
 
 
@@ -195,10 +208,10 @@ class ResponseCache(Protocol):
 
     async def lookup_exact(self, fingerprint: str) -> CacheLookup: ...
 
-    async def count_candidates(self, scope: str) -> int:
-        """유사 매치가 훑을 항목 수. 0 이면 호출부가 질의 임베딩을 만들지 않는다.
+    async def count_candidates(self, scope: str, *, polarity: bool) -> int:
+        """유사 매치가 볼 후보 수. 0 이면 호출부가 질의 임베딩을 만들지 않는다.
 
-        이 값을 묻지 않으면 캐시가 빈 상태에서도 미스마다 임베딩이 두 번 돈다 (결정 10)."""
+        이 값을 묻지 않으면 캐시가 빈 상태에서도 미스마다 임베딩이 한 번 더 돈다 (결정 10)."""
         ...
 
     async def lookup_semantic(
@@ -206,12 +219,13 @@ class ResponseCache(Protocol):
         embedding: Sequence[float],
         *,
         scope: str,
+        polarity: bool,
         threshold: float,
         candidates: int,
     ) -> CacheLookup:
-        """같은 `scope` 의 최근 `candidates` 개 중 임계값을 넘는 가장 가까운 항목.
+        """같은 `scope`·같은 극성의 후보 `candidates` 개 중 임계값을 넘는 가장 가까운 항목.
 
-        임계값을 인자로 받는 것은 구현이 "얼마나 틀려도 되는가"를 들지 않게 하려는 것이다."""
+        극성이 다른 항목은 유사도와 무관하게 후보에서 빠진다 (`response-cache`)."""
         ...
 
     async def store(
@@ -220,12 +234,13 @@ class ResponseCache(Protocol):
         entry: CachedAnswer,
         *,
         scope: str,
+        polarity: bool,
         embedding: Sequence[float],
         negative: bool,
     ) -> None:
         """항목 하나를 맡긴다. 저장이 거부되는 경로는 없다 — 상한은 오래된 것을 밀어낸다.
 
-        무효화 태그는 항목이 스스로 알고(`document_ids`), 부정 판정 여부는 호출부가 정한다."""
+        무효화 태그는 항목이 스스로 알고(`document_ids`), 극성과 부정 판정은 호출부가 정한다."""
         ...
 
     async def invalidate_document(self, document_id: str) -> int:

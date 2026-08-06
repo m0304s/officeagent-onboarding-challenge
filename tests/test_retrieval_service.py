@@ -8,6 +8,7 @@ from dataclasses import replace
 
 import pytest
 
+from app.core.cache import normalize_query
 from app.core.documents import IndexStatus
 from app.core.exceptions import StorageUnavailable
 from tests.retrieval_harness import GUIDE, POLICY, SHORT, make_harness
@@ -37,6 +38,57 @@ async def test_a_search_uses_the_query_embedding_path_exactly_once():
     assert len(harness.embedder.batches) == batches_after_ingestion, (
         "질의를 문서용 경로로 인코딩했다"
     )
+
+
+async def test_a_given_query_vector_replaces_the_search_s_own_encoding():
+    """캐시 층이 이미 만든 벡터를 다시 만들면 요청 하나가 같은 질의를 두 번 인코딩한다."""
+    harness = make_harness()
+    await harness.ingest("policy.txt", POLICY)
+    given = await harness.embedder.embed_query(normalize_query("교육비 지원 한도"))
+    harness.embedder.queries.clear()
+
+    result = await harness.retrieval.search("교육비 지원 한도", query_embedding=given)
+
+    assert harness.embedder.queries == []
+    assert result.count > 0
+
+
+async def test_the_results_are_the_same_whether_or_not_the_vector_was_given():
+    """캐시는 지연을 줄이는 층이지 답을 바꾸는 층이 아니다 — 정규화가 갈리면 여기서 드러난다."""
+    harness = make_harness()
+    await harness.ingest("policy.txt", POLICY)
+    await harness.ingest("guide.md", GUIDE)
+    given = await harness.embedder.embed_query(normalize_query("교육비 지원 한도"))
+
+    without = await harness.retrieval.search("교육비 지원 한도")
+    with_vector = await harness.retrieval.search("교육비 지원 한도", query_embedding=given)
+
+    assert [(chunk.document_id, chunk.chunk_index) for chunk in with_vector.chunks] == [
+        (chunk.document_id, chunk.chunk_index) for chunk in without.chunks
+    ]
+
+
+async def test_the_result_carries_the_vector_the_search_used():
+    """저장 경로가 이 값을 받아 같은 질의를 한 번 더 인코딩하지 않는다."""
+    harness = make_harness()
+    await harness.ingest("policy.txt", POLICY)
+
+    result = await harness.retrieval.search("교육비 지원 한도")
+
+    expected = await harness.embedder.embed_query(normalize_query("교육비 지원 한도"))
+    assert result.query_embedding == tuple(expected)
+
+
+async def test_a_lexical_only_search_carries_no_vector():
+    """어휘 단독 구성은 벡터를 만들지 않으므로 실을 것도 없다."""
+    harness = make_harness(retrievers=("lexical",), required=("lexical",))
+    await harness.ingest("policy.txt", POLICY)
+    harness.embedder.queries.clear()
+
+    result = await harness.retrieval.search("교육비")
+
+    assert result.query_embedding is None
+    assert harness.embedder.queries == []
 
 
 # ── 대상 집합 (5.8) ──────────────────────────────────────────────────────
@@ -164,6 +216,46 @@ async def test_results_of_one_document_never_mix_two_revisions():
         chunk.revision for chunk in result.chunks if chunk.document_id == policy.document_id
     }
     assert len(revisions) <= 1
+
+
+async def test_a_document_dropped_by_revalidation_is_replaced_from_further_down():
+    """재검증이 상위 K 를 비우면 뒤 후보가 그 자리를 채운다 — 절단이 재검증보다 앞이라서다."""
+    harness = make_harness(top_k=2)
+    policy = await harness.ingest("policy.txt", POLICY)
+    await harness.ingest("guide.md", GUIDE)
+
+    async def delete_after_store_query() -> None:
+        harness.registry.documents.pop(policy.document_id)
+
+    harness.registry.before_get = delete_after_store_query
+    result = await harness.retrieval.search("교육비 승인")
+
+    assert result.count == 2, "밀려난 문서의 자리가 빈 채로 돌아왔다"
+    assert all(chunk.document_id != policy.document_id for chunk in result.chunks)
+
+
+async def test_revalidation_asks_the_registry_at_most_top_k_times():
+    """조회 하나가 연결 하나다 — 융합 목록 전체를 물으면 질의 하나가 문서 수만큼 연다."""
+    harness = make_harness(top_k=1)
+    await harness.ingest("policy.txt", POLICY)
+    await harness.ingest("guide.md", GUIDE)
+    harness.registry.gets.clear()
+
+    result = await harness.retrieval.search("교육비 승인 배포 연차")
+
+    assert result.count == 1
+    assert len(harness.registry.gets) <= 1, harness.registry.gets
+
+
+async def test_one_document_is_asked_about_only_once_per_search():
+    harness = make_harness(top_k=5)
+    await harness.ingest("policy.txt", POLICY)
+    harness.registry.gets.clear()
+
+    result = await harness.retrieval.search("교육비")
+
+    assert result.count > 1, "한 문서에서 결과가 하나뿐이면 공허한 단언이다"
+    assert harness.registry.gets == list(dict.fromkeys(harness.registry.gets))
 
 
 # ── 순서와 K (5.10) ──────────────────────────────────────────────────────

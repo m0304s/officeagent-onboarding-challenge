@@ -7,8 +7,8 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 
 from app.adapters.protocols import DocumentRegistry, Embedder, ResponseCache
 from app.core.answers import FinishReason
@@ -17,6 +17,7 @@ from app.core.cache import (
     CacheLookup,
     derive_cache_key,
     derive_cache_scope,
+    negation_polarity,
     normalize_query,
 )
 from app.core.exceptions import StorageUnavailable
@@ -36,6 +37,8 @@ class CacheSlot:
 
     fingerprint: str
     scope: str
+    #: 질의의 부정 극성. 저장과 조회가 같은 값을 봐야 게이트가 성립한다.
+    polarity: bool = False
     lookup: CacheLookup = field(default_factory=CacheLookup.miss)
     embedding: tuple[float, ...] | None = None
     #: 저장소에 닿지 못해 미스로 강등된 요청. 히트 여부와 구분되어야 관측이 성립한다.
@@ -48,6 +51,12 @@ class CacheSlot:
     @property
     def entry(self) -> CachedAnswer | None:
         return self.lookup.entry
+
+    def with_embedding(self, embedding: Sequence[float] | None) -> "CacheSlot":
+        """검색이 만든 벡터를 받아 둔다. 이미 들고 있으면 그대로다 — 둘은 같은 벡터다."""
+        if self.embedding is not None or embedding is None:
+            return self
+        return replace(self, embedding=tuple(embedding))
 
 
 class CircuitBreaker:
@@ -139,56 +148,56 @@ class CacheService:
 
         정확 매치가 성공하면 임베딩을 만들지 않는다 — 앞 층이 더 싸다."""
         materials = {
-            "top_k": top_k,
             "prompt_version": self._prompt_version,
             "index_signature": index_signature,
             "model": self._model,
         }
-        fingerprint = derive_cache_key(query=query, **materials)
+        fingerprint = derive_cache_key(query=query, top_k=top_k, **materials)
         scope = derive_cache_scope(**materials)
+        # L1 은 정규화 결과가 같은 질의만 맞히므로 극성도 자동으로 같다. 이 값을 보는 것은
+        # L2 뿐이지만, 저장이 같은 슬롯에서 꺼내 쓰도록 여기서 한 번만 유도한다.
+        polarity = negation_polarity(normalize_query(query))
+        slot = CacheSlot(fingerprint=fingerprint, scope=scope, polarity=polarity)
 
         if not self._breaker.allows():
-            return CacheSlot(fingerprint=fingerprint, scope=scope, degraded=True)
+            return replace(slot, degraded=True)
 
         try:
-            slot = await self._probe(
-                query, fingerprint=fingerprint, scope=scope, index_signature=index_signature
-            )
+            probed = await self._probe(query, slot, index_signature=index_signature)
         except Exception as exc:
             # 캐시는 지연을 줄이는 층이지 답변의 성립 조건이 아니다. 어떤 실패도
             # 미스로 강등된다.
             self._on_failure(exc, action="조회")
-            return CacheSlot(fingerprint=fingerprint, scope=scope, degraded=True)
+            return replace(slot, degraded=True)
 
         self._on_success()
-        self._log_lookup(slot)
-        return slot
+        self._log_lookup(probed)
+        return probed
 
-    async def _probe(
-        self, query: str, *, fingerprint: str, scope: str, index_signature: str
-    ) -> CacheSlot:
-        exact = await self._call(self._cache.lookup_exact(fingerprint))
+    async def _probe(self, query: str, slot: CacheSlot, *, index_signature: str) -> CacheSlot:
+        exact = await self._call(self._cache.lookup_exact(slot.fingerprint))
         if exact.hit:
             # 재검증에서 버렸어도 L2 로 내려가지 않는다 — 문서가 방금 바뀌었다는 신호라
             # 같은 집합의 이웃도 낡았을 가능성이 높고, 그 확인에 임베딩이 한 번 더 든다.
             verified = await self._verify(exact, index_signature=index_signature)
-            return CacheSlot(fingerprint=fingerprint, scope=scope, lookup=verified)
+            return replace(slot, lookup=verified)
 
-        if not await self._call(self._cache.count_candidates(scope)):
-            return CacheSlot(fingerprint=fingerprint, scope=scope)
+        if not await self._call(self._cache.count_candidates(slot.scope, polarity=slot.polarity)):
+            return slot
 
         embedding = await self._embed(query)
         semantic = await self._call(
             self._cache.lookup_semantic(
                 embedding,
-                scope=scope,
+                scope=slot.scope,
+                polarity=slot.polarity,
                 threshold=self._semantic_threshold,
                 candidates=self._semantic_candidates,
             )
         )
         if semantic.hit:
             semantic = await self._verify(semantic, index_signature=index_signature)
-        return CacheSlot(fingerprint=fingerprint, scope=scope, lookup=semantic, embedding=embedding)
+        return replace(slot, lookup=semantic, embedding=embedding)
 
     async def _verify(self, lookup: CacheLookup, *, index_signature: str) -> CacheLookup:
         """인용 문서가 지금도 현재 리비전인가. 하나라도 어긋나면 항목을 지우고 미스.
@@ -248,6 +257,7 @@ class CacheService:
                     slot.fingerprint,
                     entry,
                     scope=slot.scope,
+                    polarity=slot.polarity,
                     embedding=embedding,
                     negative=entry.answer.finish_reason in NEGATIVE_FINISH_REASONS,
                 )

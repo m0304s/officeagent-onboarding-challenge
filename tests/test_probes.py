@@ -7,6 +7,7 @@
 import asyncio
 
 import pytest
+from redis.exceptions import ResponseError
 
 from app.adapters.cache.probe import CacheProbe
 from app.adapters.vector_store import ChromaVectorStore, VectorStoreProbe
@@ -105,6 +106,34 @@ class TestVectorStoreAddress:
         assert parse_url("https://example.com").ssl is True
 
 
+class FakeVectorSetCommands:
+    """`vset()` 접근자 뒤의 명령들. 미지원 서버는 `ResponseError` 로 답한다."""
+
+    def __init__(self, *, supported: bool) -> None:
+        self._supported = supported
+
+    async def vcard(self, key: str) -> int:
+        if not self._supported:
+            raise ResponseError(f"unknown command 'VCARD', with args beginning with: '{key}'")
+        return 0
+
+
+class FakeRedisClient:
+    """ping 과 `vset()` 만 있는 클라이언트 대역."""
+
+    def __init__(self, *, vector_sets: bool = True) -> None:
+        self._vector_sets = vector_sets
+
+    async def ping(self) -> bool:
+        return True
+
+    def vset(self) -> FakeVectorSetCommands:
+        return FakeVectorSetCommands(supported=self._vector_sets)
+
+    async def aclose(self) -> None:
+        return None
+
+
 class TestCacheProbe:
     async def test_reports_unavailable_when_the_server_is_unreachable(self):
         # 라우팅되지 않는 주소로 접속 실패를 만든다. 외부 서비스에 의존하지 않는다.
@@ -123,22 +152,29 @@ class TestCacheProbe:
         assert "hunter2" not in (result.detail or "")
         assert "127.0.0.1" not in (result.detail or "")
 
-    async def test_reports_ok_when_ping_succeeds(self, monkeypatch):
+    async def test_reports_ok_when_ping_and_the_vector_set_check_succeed(self, monkeypatch):
         """실제 서버 없이 정상 경로를 확인한다."""
-
-        class FakeClient:
-            async def ping(self) -> bool:
-                return True
-
-            async def aclose(self) -> None:
-                return None
-
-        monkeypatch.setattr("app.adapters.cache.probe.redis.from_url", lambda *a, **k: FakeClient())
+        monkeypatch.setattr(
+            "app.adapters.cache.probe.redis.from_url", lambda *a, **k: FakeRedisClient()
+        )
         probe = CacheProbe(url="redis://irrelevant:6379/0", timeout_seconds=1.0)
 
         result = await probe.check()
 
         assert result.status is Status.OK
+
+    async def test_reports_unavailable_when_vector_sets_are_missing(self, monkeypatch):
+        """ping 만 보면 Redis 7 이 정상으로 나오고, 유사 매치는 첫 저장에서 죽는다."""
+        monkeypatch.setattr(
+            "app.adapters.cache.probe.redis.from_url",
+            lambda *a, **k: FakeRedisClient(vector_sets=False),
+        )
+        probe = CacheProbe(url="redis://irrelevant:6379/0", timeout_seconds=1.0)
+
+        result = await probe.check()
+
+        assert result.status is Status.UNAVAILABLE
+        assert "벡터셋" in (result.detail or "")
 
     async def test_reports_unavailable_when_ping_hangs(self, monkeypatch):
         class HangingClient:

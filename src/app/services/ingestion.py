@@ -78,6 +78,8 @@ class ReconciliationReport:
 
     stale_documents: tuple[str, ...] = ()
     removed_chunks: int = 0
+    #: 대상 집합 필터가 읽는 형태로 보정한 청크 수.
+    backfilled_chunks: int = 0
 
 
 class IngestionService:
@@ -250,6 +252,9 @@ class IngestionService:
             return ReconciliationReport()
 
     async def _reconcile(self) -> ReconciliationReport:
+        # 보정이 먼저다 — 규칙 1·2 가 지울 대상을 정하는 데 쓰는 축은 보정과 무관하지만,
+        # 보정이 실패해 검색되지 않는 청크를 남긴 채로 정리를 끝내면 그 사실이 묻힌다.
+        backfilled = await self._backfill_version_keys()
         documents = await self._registry.list_all()
         # 합집합이다 — 한쪽에만 남은 잔여물이 가장 흔한 어긋남이고, 교집합으로 보면
         # 그것이 영원히 회수되지 않는다.
@@ -299,7 +304,30 @@ class IngestionService:
             )
         if removed:
             logger.info("기동 정리로 청크를 제거했습니다", extra={"removed_chunks": removed})
-        return ReconciliationReport(stale_documents=tuple(stale), removed_chunks=removed)
+        return ReconciliationReport(
+            stale_documents=tuple(stale),
+            removed_chunks=removed,
+            backfilled_chunks=backfilled,
+        )
+
+    async def _backfill_version_keys(self) -> int:
+        """이전 세대 형태로 저장된 청크를 보정한다. 실패는 기동을 세우지 않는다.
+
+        경고를 남기는 것이 계약이다 — 보정되지 않은 청크는 조용히 검색에서 사라진다."""
+        try:
+            backfilled = await self._store.backfill_version_keys()
+        except Exception as exc:
+            logger.warning(
+                "청크 메타데이터를 보정하지 못했습니다 — 그 청크는 검색되지 않습니다",
+                exc_info=exc,
+            )
+            return 0
+        if backfilled:
+            logger.info(
+                "청크 메타데이터를 현재 형태로 보정했습니다",
+                extra={"backfilled_chunks": backfilled},
+            )
+        return backfilled
 
     # ── 색인 (저장소를 바꾸는 구간) ─────────────────────────────────────
 

@@ -138,8 +138,9 @@ class Settings(BaseSettings):
     # 계측값이다 — 서로 다른 질문 최대 0.8326 위로 여유를 둔 값. 부정문 쌍(0.9066~0.9979)은
     # 이 값으로 걸러지지 않는다: 내리기 전에 `ARCHITECTURE.md` 「임계값 0.93」을 읽을 것.
     cache_semantic_threshold: float = Field(default=0.93, ge=0, le=1)
-    # 완전 탐색의 비용을 고정하는 값이다 — 없으면 캐시가 커질수록 히트가 미스보다 느려진다.
-    cache_semantic_candidates: int = Field(default=200, gt=0)
+    # 근접 색인에서 받아 올 이웃 수. 저장 순서가 아니라 거리로 고르므로 200 을 유지할
+    # 이유가 없다 — 임계값을 넘을 후보는 앞쪽 몇 개에 몰린다 (`ARCHITECTURE.md`).
+    cache_semantic_candidates: int = Field(default=20, gt=0)
 
     # 캐시는 최적화라 200ms 안에 답하지 못하면 도움이 되지 않는다. `probe_timeout_seconds`
     # 와 값이 다른 것은 프로브가 "살아 있나"를, 조회가 "지금 도움이 되나"를 묻기 때문이다.

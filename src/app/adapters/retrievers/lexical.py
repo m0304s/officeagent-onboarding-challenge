@@ -23,6 +23,13 @@ class LexicalRetriever:
         *,
         depth: int,
         versions: Sequence[StoredIndexVersion],
+        embedding: Sequence[float] | None = None,
     ) -> list[RetrievedChunk]:
-        """대상 삼중항 안에서 드문 토큰이 겹치는 청크만 최대 `depth` 개."""
+        """대상 삼중항 안에서 어휘가 겹치는 청크 최대 `depth` 개. 변별력은 표시로 실린다.
+
+        `embedding` 은 받기만 하고 쓰지 않는다 — 쓰면 두 목록의 독립성이 사라진다."""
         return await self._index.search(query, top_k=depth, versions=versions)
+
+    async def query_vector(self, query: str) -> None:
+        """벡터를 쓰지 않는다. 임베더를 부르지 않는 것 자체가 계약이다."""
+        return None
