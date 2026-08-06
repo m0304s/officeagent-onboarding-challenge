@@ -215,19 +215,22 @@ class TestQueriesReachTheStem:
 
 
 class TestOnlyDiscriminatingOverlapCounts:
-    async def test_a_chunk_matched_only_by_a_common_token_does_not_rise(self, guarded, index):
+    async def test_a_common_token_match_is_marked_as_failing(self, guarded, index):
         """이 가드가 없으면 일상 질문이 흔한 토큰 하나로 청크를 끌어올린다."""
         chunks = [make_chunk("doc-a", position, "공지 사항 안내") for position in range(12)]
         await store(index, *chunks)
 
-        assert await guarded.search("공지", top_k=5, versions=[version_of(chunks[0])]) == []
+        hits = await guarded.search("공지", top_k=5, versions=[version_of(chunks[0])])
+
+        assert hits, "판정이 목록을 자르면 융합이 볼 교집합이 좁아진다"
+        assert not any(hit.gate_passed for hit in hits)
 
     async def test_an_everyday_question_against_the_sample_docs_is_empty(self, guarded, index):
         versions = await index_sample_docs(index)
 
         assert await guarded.search("오늘 서울 날씨 어때?", top_k=5, versions=versions) == []
 
-    async def test_one_rare_token_is_enough_to_rise(self, guarded, index):
+    async def test_one_rare_token_is_enough_to_be_marked_as_passing(self, guarded, index):
         rare = make_chunk("doc-a", 0, "공지 사항 특별상여금 지급")
         common = [make_chunk("doc-a", position, "공지 사항 안내") for position in range(1, 12)]
         await store(index, rare, *common)
@@ -236,7 +239,21 @@ class TestOnlyDiscriminatingOverlapCounts:
             "공지 사항 특별상여금", top_k=5, versions=[version_of(rare)]
         )
 
-        assert [hit.chunk_index for hit in hits] == [0]
+        assert [hit.chunk_index for hit in hits if hit.gate_passed] == [0]
+
+    async def test_the_verdict_does_not_reorder_the_lexical_list(self, guarded, index):
+        """판정이 순서를 만지면 융합에 들어가는 "순위"가 BM25 의 것이 아니게 된다."""
+        rare = make_chunk("doc-a", 0, "공지 사항 특별상여금 지급")
+        common = [make_chunk("doc-a", position, "공지 사항 안내") for position in range(1, 12)]
+        await store(index, rare, *common)
+
+        hits = await guarded.search(
+            "공지 사항 특별상여금", top_k=5, versions=[version_of(rare)]
+        )
+
+        scores = [hit.native_score for hit in hits]
+        assert scores == sorted(scores, reverse=True)
+        assert {hit.gate_passed for hit in hits} == {True, False}, "섞이지 않으면 못 재는 단언이다"
 
     async def test_the_sample_docs_regression_queries_survive_the_guard(self, guarded, index):
         """하한이 정상 질의를 죽이면 하이브리드 검색이 꺼진 것과 구별되지 않는다."""
@@ -250,11 +267,13 @@ class TestOnlyDiscriminatingOverlapCounts:
         ):
             assert await guarded.search(query, top_k=5, versions=versions), query
 
-    async def test_an_empty_result_is_not_an_error(self, guarded, index):
+    async def test_no_passing_chunk_is_not_an_error(self, guarded, index):
         chunks = [make_chunk("doc-a", position, "공지 사항 안내") for position in range(12)]
         await store(index, *chunks)
 
-        assert await guarded.search("공지", top_k=5, versions=[version_of(chunks[0])]) == []
+        hits = await guarded.search("공지", top_k=5, versions=[version_of(chunks[0])])
+
+        assert [hit for hit in hits if hit.gate_passed] == []
 
 
 async def index_sample_docs(index: SqliteLexicalIndex) -> list[StoredIndexVersion]:

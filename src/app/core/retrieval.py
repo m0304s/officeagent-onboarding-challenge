@@ -55,6 +55,9 @@ class RetrievedChunk:
     filename: str
     format: DocumentFormat
     native_score: float
+    #: 이 retriever 의 관련성 하한을 넘었는가. 통과하지 못한 항목도 목록에 남는다 — 빼면
+    #: 남은 항목의 순위가 당겨져 융합이 볼 교집합이 좁아진다. 기본값은 하한 없는 retriever 용.
+    gate_passed: bool = True
 
     def __post_init__(self) -> None:
         if self.chunk_index < 0:

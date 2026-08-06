@@ -41,7 +41,7 @@ Docker와 Docker Compose만 있으면 됩니다. **[LLM 자격증명 주입](#ll
 | `auth` | `alpine:3.21` | — | 호스트의 기존 Codex 자격증명을 꺼내고 **한 번 돌고 끝납니다** |
 | `api` | 이 리포 | 8000 | |
 | `vector-store` | `chromadb/chroma:1.5.9` | 8001 | 클라이언트와 같은 버전으로 고정 |
-| `cache` | `redis:7-alpine` | — | |
+| `cache` | `redis:8-alpine` | — | 유사 매치 후보 선택에 벡터셋(`VADD`/`VSIM`)을 씁니다 — 8 이상이 필요합니다 |
 | `vector-store-ui` | `fengzhichao/chromadb-admin:0.0.2` | 3001 | **기본 기동에 포함되지 않습니다** — `docker compose --profile gui up` 으로만 뜹니다 |
 | `test` | 이 리포 (`test` 스테이지) | — | **기본 기동에 포함되지 않습니다** — [테스트](#테스트) 참고 |
 
@@ -516,7 +516,7 @@ docker compose run --build --rm test
 
 ### 실물 Redis 층
 
-캐시의 **의미**(수명·총량 상한·유사 매치·태그 무효화)는 인메모리 구현으로 기본 실행에서 검증합니다. 평가자의 한 줄이 저장소에 묶이면 안 되기 때문입니다. Redis에서만 존재하는 것들 — TTL이 실제로 걸리는가, 만료된 지문이 순서 인덱스에서 걷히는가, 용량 상한이 페이로드 키까지 지우는가 — 은 `redis` 마커 뒤에 두었습니다.
+캐시의 **의미**(수명·총량 상한·유사 매치·극성 게이트·태그 무효화)는 인메모리 구현으로 기본 실행에서 검증합니다. 평가자의 한 줄이 저장소에 묶이면 안 되기 때문입니다. Redis에서만 존재하는 것들 — TTL이 실제로 걸리는가, 만료된 지문이 두 색인(벡터셋·순서 인덱스)에서 함께 걷히는가, 용량 상한이 페이로드 키까지 지우는가 — 은 `redis` 마커 뒤에 두었습니다.
 
 ```bash
 docker compose run --build --rm test pytest -m redis
@@ -532,7 +532,7 @@ docker compose run --build --rm test pytest -m redis
 docker compose run --build --rm test python -m pytest -m llm
 ```
 
-**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`951 passed, 23 deselected` — 제외된 23건은 실물 CLI 2건과 실물 Redis 21건입니다).
+**자격증명이 필요합니다.** `docker compose up`을 한 번 돌려 `.secrets/codex/auth.json`이 만들어진 뒤에 실행하세요 — 없으면 사유와 함께 건너뜁니다(`2 skipped`). 기본 실행에서는 이 층이 항상 제외됩니다(`1028 passed, 25 deselected` — 제외된 25건은 실물 CLI 2건과 실물 Redis 23건입니다).
 
 호스트에서 직접 돌리고 싶다면 아래도 됩니다. 이때 실물 Chroma 층은 `docker compose up -d --wait vector-store`로 서버를 띄워야 실행되고, 검색 품질 층은 임베딩 가중치가 캐시돼 있어야 실행됩니다.
 
@@ -667,12 +667,12 @@ docker compose up -d --build api
 | 벡터 DB | Chroma (**서버 모드**, 별도 컨테이너) | 메타데이터 필터와 문서 단위 삭제를 지원해 리비전 교체·캐시 무효화 연동이 가능. 저장소를 앱 프로세스 밖으로 빼 API 재배포와 수명이 분리됨 |
 | 어휘 색인 | SQLite **FTS5** (표준 라이브러리) | `bm25()` 순위 함수가 내장이라 컨테이너가 늘지 않음. Elasticsearch는 이 규모에 JVM 컨테이너가 과잉이고, 인메모리 BM25는 영속성이 없어 기동마다 전 청크를 재구축해야 함 ([근거](./ARCHITECTURE.md#어휘-색인)) |
 | PDF 파싱 | PyMuPDF + **pymupdf4llm** | 쪽 단위 추출이 정확하고 빠름. 같은 엔진 위에서 제목·표를 **마크다운**으로 보존하는 구현을 함께 두고 `APP_PDF_EXTRACTION`으로 고릅니다 — 판정이 틀린 문서를 만나면 `plain`으로 되돌립니다 ([근거](./ARCHITECTURE.md#pdf-추출은-두-구현-선택은-설정)). **AGPL-3.0**이므로 배포 형태를 바꿀 때 재검토가 필요 |
-| 캐시 DB | Redis | 정확 매치는 키 조회, 유사 질문은 질문 임베딩 유사도로 판정. TTL·태그 기반 무효화가 자연스러움 |
+| 캐시 DB | Redis **8** | 정확 매치는 키 조회, 유사 질문은 **벡터셋**(`VADD`/`VSIM`)이 고른 근접 이웃에 임베딩 유사도로 판정. TTL·태그 기반 무효화가 자연스러움. 8을 요구하는 이유는 벡터셋이 8에서 들어온 자료형이기 때문입니다 — 7에서는 후보를 최신순으로 전수 스캔하는 수밖에 없고, 그러면 **캐시가 상한보다 커지는 순간부터 히트율이 캐시 크기에 반비례**합니다 ([근거](./ARCHITECTURE.md#후보는-최신순이-아니라-근접순으로-고른다)) |
 | 린터 | ruff | 포매팅과 린팅을 한 도구로 통일. 레이어 경계도 린트 규칙으로 강제 |
 
 > Codex CLI는 `POST /qa`가 실제로 호출합니다 — `codex app-server`(stdio 위의 JSON-RPC) 세션을 풀에 두고 `item/agentMessage/delta` 알림을 그대로 SSE `answer` 이벤트로 흘립니다. `codex exec`가 아닌 이유는 실측입니다(`exec`에는 토큰 델타가 없어 4,808자 답변도 한 이벤트로 옵니다). 근거는 [`ARCHITECTURE.md`](./ARCHITECTURE.md#llm-sdk-통합-방식)에 있습니다.
 >
-> **Redis는 현재도 헬스 점검에만 쓰입니다** — 캐싱은 다음 change입니다. sentence-transformers·Chroma·SQLite·PyMuPDF는 수집·검색 경로에서 실제로 쓰입니다.
+> Redis는 `/qa`의 응답 캐시가 실제로 씁니다 — 정확 매치·유사 매치·태그 무효화가 모두 그 위에 있습니다. sentence-transformers·Chroma·SQLite·PyMuPDF도 수집·검색 경로에서 실제로 쓰입니다.
 
 설계 근거는 [`ARCHITECTURE.md`](./ARCHITECTURE.md)에 있습니다.
 

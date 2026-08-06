@@ -8,15 +8,16 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
-from app.core.cache import CachedAnswer, CacheLookup, best_match
+from app.core.cache import CachedAnswer, CacheLookup, best_match, cosine_similarity
 
 
 @dataclass
 class _Entry:
-    """맡아 둔 항목 하나 — 페이로드·후보 집합·질의 벡터·만료 시각·저장 순번."""
+    """맡아 둔 항목 하나 — 페이로드·후보 집합·극성·질의 벡터·만료 시각·저장 순번."""
 
     answer: CachedAnswer
     scope: str
+    polarity: bool
     embedding: tuple[float, ...]
     expires_at: float
     sequence: int
@@ -52,18 +53,21 @@ class InMemoryResponseCache:
             return CacheLookup.miss()
         return CacheLookup.exact(fingerprint, entry.answer)
 
-    async def count_candidates(self, scope: str) -> int:
-        return sum(1 for _ in self._candidates(scope, self._max_entries))
+    async def count_candidates(self, scope: str, *, polarity: bool) -> int:
+        return len(self._live_in(scope, polarity))
 
     async def lookup_semantic(
         self,
         embedding: Sequence[float],
         *,
         scope: str,
+        polarity: bool,
         threshold: float,
         candidates: int,
     ) -> CacheLookup:
-        match = best_match(embedding, self._candidates(scope, candidates), threshold=threshold)
+        match = best_match(
+            embedding, self._nearest(scope, polarity, embedding, candidates), threshold=threshold
+        )
         if match is None:
             return CacheLookup.miss()
         return CacheLookup.semantic(
@@ -78,6 +82,7 @@ class InMemoryResponseCache:
         entry: CachedAnswer,
         *,
         scope: str,
+        polarity: bool,
         embedding: Sequence[float],
         negative: bool,
     ) -> None:
@@ -85,6 +90,7 @@ class InMemoryResponseCache:
         self._entries[fingerprint] = _Entry(
             answer=entry,
             scope=scope,
+            polarity=polarity,
             embedding=tuple(embedding),
             expires_at=self._clock() + self._ttl_seconds,
             sequence=self._sequence,
@@ -118,18 +124,28 @@ class InMemoryResponseCache:
             return None
         return entry
 
-    def _candidates(self, scope: str, limit: int) -> Iterator[tuple[str, tuple[float, ...]]]:
-        """같은 후보 집합의 최근 항목부터 최대 `limit` 개.
+    def _live_in(self, scope: str, polarity: bool) -> list[tuple[str, _Entry]]:
+        """만료되지 않은 같은 후보 집합·같은 극성의 항목들.
 
-        상한이 스캔 비용을 고정한다 — 없으면 캐시가 클수록 히트가 미스보다 느려진다."""
-        # 순회 중에 `_live` 가 만료 항목을 지우므로 지문 목록을 먼저 뜬다.
-        live = [
+        순회 중에 `_live` 가 만료 항목을 지우므로 지문 목록을 먼저 뜬다."""
+        return [
             (fingerprint, entry)
             for fingerprint, entry in ((fp, self._live(fp)) for fp in tuple(self._entries))
-            if entry is not None and entry.scope == scope
+            if entry is not None and entry.scope == scope and entry.polarity is polarity
         ]
-        live.sort(key=lambda item: item[1].sequence, reverse=True)
-        return ((fingerprint, entry.embedding) for fingerprint, entry in live[:limit])
+
+    def _nearest(
+        self, scope: str, polarity: bool, embedding: Sequence[float], limit: int
+    ) -> Iterator[tuple[str, tuple[float, ...]]]:
+        """질의에 가까운 것부터 최대 `limit` 개. 동점이면 최신이 앞이다.
+
+        저장 순서로 고르면 상한이 곧 히트율의 천장이 된다 (`response-cache`)."""
+        scored = [
+            (cosine_similarity(embedding, entry.embedding), entry.sequence, fingerprint, entry)
+            for fingerprint, entry in self._live_in(scope, polarity)
+        ]
+        scored.sort(key=lambda item: (-item[0], -item[1]))
+        return ((fingerprint, entry.embedding) for _, _, fingerprint, entry in scored[:limit])
 
     def _enforce_capacity(self) -> None:
         """상한을 넘으면 오래된 것부터 밀어낸다. 저장을 거부하는 경로는 없다."""

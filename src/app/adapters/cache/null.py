@@ -22,7 +22,7 @@ class NullResponseCache:
     async def lookup_exact(self, fingerprint: str) -> CacheLookup:
         return CacheLookup.miss()
 
-    async def count_candidates(self, scope: str) -> int:
+    async def count_candidates(self, scope: str, *, polarity: bool) -> int:
         return 0
 
     async def lookup_semantic(
@@ -30,6 +30,7 @@ class NullResponseCache:
         embedding: Sequence[float],
         *,
         scope: str,
+        polarity: bool,
         threshold: float,
         candidates: int,
     ) -> CacheLookup:
@@ -41,6 +42,7 @@ class NullResponseCache:
         entry: CachedAnswer,
         *,
         scope: str,
+        polarity: bool,
         embedding: Sequence[float],
         negative: bool,
     ) -> None:

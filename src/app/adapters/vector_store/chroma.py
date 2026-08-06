@@ -23,6 +23,12 @@ COLLECTION_PREFIX = "document_chunks"
 #: 차원을 모르는 호출자(테스트·수동 점검)를 위한 기본값.
 DEFAULT_COLLECTION = COLLECTION_PREFIX
 
+#: 대상 집합 필터가 읽는 합성 축. 이 필드가 없는 청크는 검색되지 않아 기동 정리가 채운다.
+VERSION_KEY = "version_key"
+
+#: 보정 한 번에 갱신하는 청크 수. 한 요청에 다 담으면 큰 컬렉션에서 서버가 거절한다.
+BACKFILL_BATCH = 200
+
 
 def collection_for(dimension: int) -> str:
     """벡터 차원마다 컬렉션을 나눈다.
@@ -85,6 +91,10 @@ class ChromaVectorStore:
 
     async def list_stored_versions(self) -> list[StoredIndexVersion]:
         return await self._offload(self._list_versions)
+
+    async def backfill_version_keys(self) -> int:
+        """대상 필터가 읽는 합성 축이 없는 청크에 그것을 채우고, 채운 개수를 돌려준다."""
+        return await self._offload(self._backfill_version_keys)
 
     async def query(
         self,
@@ -156,6 +166,30 @@ class ChromaVectorStore:
             for document_id, revision, signature in sorted(versions)
         ]
 
+    def _backfill_version_keys(self) -> int:
+        """합성 축이 없는 청크를 찾아 그 값만 채운다. 없으면 쓰기를 만들지 않는다.
+
+        전수 조회인 것은 `$exists` 가 없어서다 — `_list_versions` 와 같은 값을 읽는다."""
+        collection = self._get_collection()
+        stored = collection.get(include=["metadatas"])
+        pending = [
+            (chunk_id, metadata)
+            for chunk_id, metadata in zip(
+                stored["ids"], stored["metadatas"] or (), strict=True
+            )
+            if not metadata.get(VERSION_KEY)
+        ]
+        for start in range(0, len(pending), BACKFILL_BATCH):
+            batch = pending[start : start + BACKFILL_BATCH]
+            collection.update(
+                ids=[chunk_id for chunk_id, _ in batch],
+                # 통째로 다시 쓴다 — 부분 갱신이 나머지 필드를 지우는 구현이 있다.
+                metadatas=[
+                    {**metadata, VERSION_KEY: _version_key(metadata)} for _, metadata in batch
+                ],
+            )
+        return len(pending)
+
     def _query(
         self,
         embedding: list[float],
@@ -222,6 +256,9 @@ def _metadata(chunk: Chunk, filename: str, document_format: DocumentFormat) -> d
         "document_id": chunk.document_id,
         "revision": chunk.revision,
         "index_signature": chunk.index_signature,
+        # 세 축을 합친 값을 함께 둔다. 축별 조건으로 대상 집합을 표현하면 필터의 크기가
+        # 문서 수에 비례하는데, 그 필터는 질의마다 새로 조립되고 서버에서 평가된다.
+        VERSION_KEY: StoredIndexVersion.of(chunk).key,
         "filename": filename,
         "format": document_format.value,
         "chunk_index": chunk.chunk_index,
@@ -231,6 +268,15 @@ def _metadata(chunk: Chunk, filename: str, document_format: DocumentFormat) -> d
     if chunk.location.page is not None:
         metadata["page"] = chunk.location.page
     return metadata
+
+
+def _version_key(metadata: dict[str, Any]) -> str:
+    """저장된 메타데이터에서 합성 축을 다시 만든다 — 축 셋은 이전 세대에도 들어 있다."""
+    return StoredIndexVersion(
+        document_id=metadata["document_id"],
+        revision=metadata["revision"],
+        index_signature=metadata["index_signature"],
+    ).key
 
 
 def _first_batch(response: dict[str, Any], key: str) -> list[Any]:
@@ -273,20 +319,10 @@ def _similarity(distance: float) -> float:
 
 
 def _version_filter(versions: Sequence[StoredIndexVersion]) -> dict[str, Any]:
-    """대상 삼중항 목록을 Chroma 필터로 조립한다.
+    """대상 삼중항 목록을 Chroma 필터로 조립한다 — 문서가 몇 건이든 조건 하나다.
 
     빈 목록은 호출자가 걸러 준다 — 여기서 빈 필터를 만들면 그것이 곧 전체 검색이다."""
-    clauses = [
-        {
-            "$and": [
-                {"document_id": version.document_id},
-                {"revision": version.revision},
-                {"index_signature": version.index_signature},
-            ]
-        }
-        for version in versions
-    ]
-    return clauses[0] if len(clauses) == 1 else {"$or": clauses}
+    return {VERSION_KEY: {"$in": [version.key for version in versions]}}
 
 
 def _where(

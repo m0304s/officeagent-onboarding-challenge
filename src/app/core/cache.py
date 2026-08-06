@@ -27,6 +27,29 @@ def normalize_query(query: str) -> str:
     return _WHITESPACE.sub(" ", normalized.strip()).casefold()
 
 
+#: 부정 표현의 표지. 한국어는 어근으로, 영어는 단어 전체로 본다 — `안` 은 `안내`·`안전`
+#: 처럼 앞머리만 같은 낱말이 많아 완전 일치로만 센다.
+_NEGATION_STEMS = ("않", "못", "없", "아니", "아닌", "안되", "안돼", "불가", "금지")
+_NEGATION_WORDS = frozenset(
+    {"안", "not", "no", "never", "cannot", "can't", "without", "unable"}
+)
+
+# 축약형이 앞이어야 한다 — 뒤에 두면 낱말 규칙이 `can` 까지만 먹어 영영 걸리지 않는다.
+_WORDS = re.compile(r"can't|[^\W_]+", re.UNICODE)
+
+
+def negation_polarity(normalized_query: str) -> bool:
+    """이 질의가 부정 표현을 담고 있는가. 입력은 `normalize_query` 의 결과여야 한다.
+
+    부정어 종류는 구분하지 않는다 — 세분하면 같은 뜻의 질의가 갈려 히트를 잃는다."""
+    for word in _WORDS.findall(normalized_query):
+        if word in _NEGATION_WORDS:
+            return True
+        if any(stem in word for stem in _NEGATION_STEMS):
+            return True
+    return False
+
+
 def derive_cache_key(
     *,
     query: str,
@@ -52,20 +75,17 @@ def derive_cache_key(
 
 def derive_cache_scope(
     *,
-    top_k: int,
     prompt_version: str,
     index_signature: str,
     model: str,
 ) -> str:
-    """질의를 뺀 네 재료의 지문 — 유사 매치가 훑어도 되는 후보 집합의 이름이다.
+    """유사 매치가 훑어도 되는 후보 집합의 이름 — 답변의 뜻을 바꾸는 재료 셋의 지문이다.
 
-    K 나 프롬프트가 다른 항목이 유사도만으로 히트가 되는 것을 막는다 (`response-cache`)."""
-    _require_resolved_top_k(top_k)
+    K 는 빠진다. K 가 달라도 같은 질문이고, 넣으면 후보 집합만 쪼개진다 (`response-cache`)."""
     # 키와 같은 재료를 쓰므로 접두사로 갈라 둔다 — 없으면 질의가 빈 항목의 키와 겹친다.
     return _fingerprint(
         {
             "scope": "qa",
-            "top_k": top_k,
             "prompt_version": prompt_version,
             "index_signature": index_signature,
             "model": model,

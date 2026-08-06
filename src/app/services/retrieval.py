@@ -1,4 +1,4 @@
-"""검색 오케스트레이션 — 대상 집합 → retriever 팬아웃 → 융합 → 재검증 → 상위 K.
+"""검색 오케스트레이션 — 대상 집합 → retriever 팬아웃 → 융합 → 채택 → 상위 K 재검증.
 
 대상 집합이 팬아웃보다 앞이고 요청당 한 번인 것이 계약이다. 답변은 만들지 않는다
 (`ARCHITECTURE.md` 검색 파이프라인).
@@ -43,6 +43,8 @@ class RetrievalResult:
     target_documents: int
     #: 이번 검색에서 융합에 목록을 실어 보낸 retriever 이름들. 실패한 것은 빠진다
     retrievers: tuple[str, ...] = ()
+    #: 이번 검색이 쓴 질의 벡터. 캐시 저장이 이것을 받아 같은 질의를 다시 인코딩하지 않는다.
+    query_embedding: tuple[float, ...] | None = None
 
     @property
     def count(self) -> int:
@@ -89,8 +91,14 @@ class RetrievalService:
         규칙이 두 벌이면 `retrieval_top_k` 를 바꿨을 때 검색과 캐시가 다른 K 를 믿는다."""
         return self._top_k if top_k is None else top_k
 
-    async def search(self, query: str, *, top_k: int | None = None) -> RetrievalResult:
-        """질의 한 건. `top_k` 를 주면 설정 기본값을 대신한다.
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int | None = None,
+        query_embedding: Sequence[float] | None = None,
+    ) -> RetrievalResult:
+        """질의 한 건. `top_k` 는 설정 기본값을, `query_embedding` 은 자기 인코딩을 대신한다.
 
         유효성은 API 계층이 이미 봤다 — 거부된 요청이 저장소를 건드리지 않게 한다."""
         effective_k = self.resolve_top_k(top_k)
@@ -104,24 +112,59 @@ class RetrievalService:
         # 시점이 갈려 융합 결과에 두 세대가 섞인다.
         versions = [StoredIndexVersion.of(document) for document in current.values()]
 
-        sources = await self._fan_out(query, versions)
-        fused = [_assemble(entry) for entry in fuse(sources, rrf_k=self._rrf_k)]
+        embedding, bindings = await self._prepare_query(query, query_embedding)
+        sources = await self._fan_out(query, versions, embedding, bindings)
+        # 채택은 융합 뒤·절단 전이다. 게이트를 목록에서 미리 잘라 대신하면 두 목록의
+        # 교집합이 두 게이트의 교집합으로 좁아져 융합이 합의를 세지 못한다.
+        admitted = _gate_verdicts(sources)
+        fused = [
+            _assemble(entry)
+            for entry in fuse(sources, rrf_k=self._rrf_k)
+            if admitted[(entry.item.document_id, entry.item.chunk_index)]
+        ]
 
-        fresh = await self._drop_superseded(fused, current)
         return RetrievalResult(
             query=query,
             top_k=effective_k,
-            # 절단이 재검증 뒤인 것이 계약이다 — 앞에 두면 밀려난 리비전이 자리를 차지한
-            # 만큼 결과가 비어 돌아온다.
-            chunks=tuple(fresh[:effective_k]),
+            chunks=tuple(await self._take_current(fused, current, effective_k)),
             target_documents=len(current),
             retrievers=tuple(source.name for source in sources),
+            query_embedding=None if embedding is None else tuple(embedding),
         )
+
+    # ── 질의 벡터 ───────────────────────────────────────────────────────
+
+    async def _prepare_query(
+        self, query: str, given: Sequence[float] | None
+    ) -> tuple[Sequence[float] | None, tuple[RetrieverBinding, ...]]:
+        """벡터를 쓰는 retriever 하나에게 질의 벡터를 한 번 만들게 한다.
+
+        만드는 데 실패한 retriever 는 이번 팬아웃에서도 빠진다 — 벡터 없이는 어차피 죽는다."""
+        if given is not None:
+            return given, self._bindings
+
+        vector: Sequence[float] | None = None
+        surviving: list[RetrieverBinding] = []
+        for binding in self._bindings:
+            if vector is not None:
+                surviving.append(binding)
+                continue
+            try:
+                vector = await binding.retriever.query_vector(query)
+            except Exception as exc:
+                self._dispose_of(binding, exc)
+                continue
+            surviving.append(binding)
+        return vector, tuple(surviving)
 
     # ── 팬아웃 ──────────────────────────────────────────────────────────
 
     async def _fan_out(
-        self, query: str, versions: Sequence[StoredIndexVersion]
+        self,
+        query: str,
+        versions: Sequence[StoredIndexVersion],
+        embedding: Sequence[float] | None,
+        bindings: Sequence[RetrieverBinding],
     ) -> list[FusionInput[RetrievedChunk]]:
         """활성 retriever 전부를 겹쳐 돌리고 성공한 목록만 융합 입력으로 만든다.
 
@@ -129,15 +172,18 @@ class RetrievalService:
         outcomes = await asyncio.gather(
             *(
                 binding.retriever.retrieve(
-                    query, depth=binding.candidate_depth, versions=versions
+                    query,
+                    depth=binding.candidate_depth,
+                    versions=versions,
+                    embedding=embedding,
                 )
-                for binding in self._bindings
+                for binding in bindings
             ),
             return_exceptions=True,
         )
 
         sources: list[FusionInput[RetrievedChunk]] = []
-        for binding, outcome in zip(self._bindings, outcomes, strict=True):
+        for binding, outcome in zip(bindings, outcomes, strict=True):
             if isinstance(outcome, BaseException):
                 self._dispose_of(binding, outcome)
                 continue
@@ -185,34 +231,58 @@ class RetrievalService:
 
     # ── 현재성 재검증 ───────────────────────────────────────────────────
 
-    async def _drop_superseded(
-        self, scored: Sequence[ScoredChunk], filtered_with: dict[str, Document]
+    async def _take_current(
+        self, scored: Sequence[ScoredChunk], filtered_with: dict[str, Document], limit: int
     ) -> list[ScoredChunk]:
-        """질의 뒤에 밀려난 리비전의 결과를 버린다.
+        """앞에서부터 `limit` 개를 채운다 — 창 하나를 재검증하고 버려진 만큼 다음 창을 연다.
 
         레지스트리 읽기와 질의 사이가 잠겨 있지 않아 생기는 창을 좁힌다 (`ARCHITECTURE.md`)."""
-        contributors = list(dict.fromkeys(chunk.document_id for chunk in scored))
-        if not contributors:
-            return list(scored)
+        verdicts: dict[str, bool] = {}
+        kept: list[ScoredChunk] = []
+        cursor = 0
 
-        # 기여한 문서만 다시 읽는다 — 전체를 읽으면 결과에 없는 문서의 변경까지 기다린다.
-        records = await asyncio.gather(
-            *(self._registry.get(document_id) for document_id in contributors)
+        while len(kept) < limit and cursor < len(scored):
+            window = scored[cursor : cursor + (limit - len(kept))]
+            cursor += len(window)
+            await self._record_verdicts(window, filtered_with, verdicts)
+            kept.extend(chunk for chunk in window if verdicts[chunk.document_id])
+
+        superseded = sorted(
+            document_id for document_id, is_current in verdicts.items() if not is_current
         )
+        if superseded:
+            logger.info(
+                "검색 도중 바뀐 문서의 결과를 버렸습니다",
+                extra={"superseded_documents": superseded},
+            )
+        return kept
 
-        superseded = {
+    async def _record_verdicts(
+        self,
+        window: Sequence[ScoredChunk],
+        filtered_with: dict[str, Document],
+        verdicts: dict[str, bool],
+    ) -> None:
+        """이 창에서 아직 판정이 없는 문서만 묻는다 — 판정은 요청 하나 안에서만 산다.
+
+        조회 하나가 연결 하나라, 융합 목록 전체를 물으면 질의 하나가 문서 수만큼을 동시에 연다."""
+        unknown = [
             document_id
-            for document_id, record in zip(contributors, records, strict=True)
-            if not self._is_still_current(record, filtered_with[document_id])
-        }
-        if not superseded:
-            return list(scored)
+            for document_id in dict.fromkeys(chunk.document_id for chunk in window)
+            if document_id not in verdicts
+        ]
+        if not unknown:
+            return
 
-        logger.info(
-            "검색 도중 바뀐 문서의 결과를 버렸습니다",
-            extra={"superseded_documents": sorted(superseded)},
+        records = await asyncio.gather(
+            *(self._registry.get(document_id) for document_id in unknown)
         )
-        return [chunk for chunk in scored if chunk.document_id not in superseded]
+        verdicts.update(
+            {
+                document_id: self._is_still_current(record, filtered_with[document_id])
+                for document_id, record in zip(unknown, records, strict=True)
+            }
+        )
 
     @staticmethod
     def _is_still_current(record: Document | None, filtered_with: Document) -> bool:
@@ -223,6 +293,20 @@ class RetrievalService:
             revision=filtered_with.revision,
             index_signature=filtered_with.index_signature,
         )
+
+
+def _gate_verdicts(
+    sources: Sequence[FusionInput[RetrievedChunk]],
+) -> dict[tuple[str, int], bool]:
+    """항목마다 "자신을 실어 보낸 목록 중 하나라도 하한을 통과했는가".
+
+    융합이 payload 를 한 벌만 남겨, 판정은 융합 밖에서 목록 간 OR 로 합친다."""
+    verdicts: dict[tuple[str, int], bool] = {}
+    for source in sources:
+        for item in source.items:
+            key = (item.document_id, item.chunk_index)
+            verdicts[key] = verdicts.get(key, False) or item.gate_passed
+    return verdicts
 
 
 def _assemble(entry: FusedItem[RetrievedChunk]) -> ScoredChunk:

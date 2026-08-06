@@ -75,11 +75,21 @@ def cache(clock) -> InMemoryResponseCache:
     return InMemoryResponseCache(ttl_seconds=60.0, max_entries=10, clock=clock)
 
 
-async def store(cache, fingerprint, *, embedding=NEAR, scope=SCOPE, negative=False, **overrides):
+async def store(
+    cache,
+    fingerprint,
+    *,
+    embedding=NEAR,
+    scope=SCOPE,
+    polarity=False,
+    negative=False,
+    **overrides,
+):
     await cache.store(
         fingerprint,
         entry(**overrides),
         scope=scope,
+        polarity=polarity,
         embedding=embedding,
         negative=negative,
     )
@@ -117,7 +127,14 @@ async def test_unknown_fingerprint_is_a_miss(cache):
 async def test_semantic_lookup_finds_a_near_enough_entry(cache):
     await store(cache, "fp-1", embedding=[1.0, 0.0])
 
-    lookup = await cache.lookup_semantic([0.99, 0.05], scope=SCOPE, threshold=0.93, candidates=10)
+    lookup = await cache.lookup_semantic(
+        [0.99,
+        0.05],
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )
 
     assert lookup.hit and lookup.layer is CacheLayer.SEMANTIC
     assert lookup.fingerprint == "fp-1" and lookup.similarity >= 0.93
@@ -127,24 +144,48 @@ async def test_semantic_lookup_below_the_threshold_is_a_miss(cache):
     """임계값 미달이 히트가 되면 이 값이 "얼마나 틀려도 되는가"를 정하지 못한다."""
     await store(cache, "fp-1", embedding=NEAR)
 
-    lookup = await cache.lookup_semantic(FAR, scope=SCOPE, threshold=0.93, candidates=10)
+    lookup = await cache.lookup_semantic(
+        FAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )
 
     assert not lookup.hit
 
 
 async def test_semantic_lookup_on_an_empty_cache_is_a_miss(cache):
     """평가자의 첫 실행이 오류가 되지 않는다."""
-    assert not (await cache.lookup_semantic(NEAR, scope=SCOPE, threshold=0.93, candidates=10)).hit
+    assert not (await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )).hit
 
 
 async def test_semantic_lookup_ignores_other_candidate_scopes(cache):
-    """K 가 다른 항목이 유사도만으로 히트가 되면 스펙의 「K 가 다르면 다른 질문이다」가 깨진다."""
-    await store(cache, "fp-k3", embedding=NEAR, scope="scope-k3")
+    """프롬프트·색인 세대·모델이 다른 항목이 유사도만으로 히트가 되면 그 셋이 뜻을 잃는다."""
+    await store(cache, "fp-other", embedding=NEAR, scope="scope-other")
 
-    lookup = await cache.lookup_semantic(NEAR, scope="scope-k5", threshold=0.93, candidates=10)
+    lookup = await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )
 
     assert not lookup.hit
-    assert (await cache.lookup_semantic(NEAR, scope="scope-k3", threshold=0.93, candidates=10)).hit
+    assert (await cache.lookup_semantic(
+        NEAR,
+        scope="scope-other",
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )).hit, "자기 집합에서는 여전히 찾힌다"
 
 
 # ── 수명과 총량 ──────────────────────────────────────────────────────────
@@ -163,7 +204,13 @@ async def test_expired_entry_is_not_a_semantic_candidate(cache, clock):
     await store(cache, "fp-1", embedding=NEAR)
     clock.advance(61.0)
 
-    lookup = await cache.lookup_semantic(NEAR, scope=SCOPE, threshold=0.93, candidates=10)
+    lookup = await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )
 
     assert not lookup.hit
 
@@ -181,15 +228,70 @@ async def test_capacity_evicts_the_oldest_and_never_rejects_a_store(clock):
         assert (await cache.lookup_exact(f"fp-{index}")).hit
 
 
-async def test_semantic_scan_stops_at_the_candidate_ceiling(cache):
-    """상한이 스캔 비용을 고정한다 — 지켜지지 않으면 캐시가 클수록 히트가 미스보다 느려진다."""
-    await store(cache, "fp-oldest", embedding=[1.0, 0.0])
+async def test_an_old_entry_is_still_reachable_under_the_candidate_ceiling(cache):
+    """후보를 저장 순서로 고르면 상한이 곧 히트율의 천장이 된다 — 캐시가 클수록 못 맞힌다."""
+    await store(cache, "fp-oldest", embedding=NEAR)
     for index in range(3):
-        await store(cache, f"fp-{index}", embedding=[0.0, 1.0])
+        await store(cache, f"fp-{index}", embedding=FAR)
 
-    lookup = await cache.lookup_semantic([1.0, 0.0], scope=SCOPE, threshold=0.93, candidates=2)
+    lookup = await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=2,
+    )
 
-    assert not lookup.hit, "후보 상한 밖의 항목까지 훑으면 상한이 비용을 고정하지 못한다"
+    assert lookup.hit and lookup.fingerprint == "fp-oldest"
+
+
+async def test_the_candidate_ceiling_still_bounds_what_is_compared(cache):
+    """상한이 스캔 비용을 고정한다 — 가까운 것부터 고르되 개수는 여전히 묶여 있다."""
+    for index in range(5):
+        await store(cache, f"fp-{index}", embedding=NEAR)
+
+    assert await cache.count_candidates(SCOPE, polarity=False) == 5
+    lookup = await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=1,
+    )
+
+    assert lookup.hit, "상한 안의 후보 하나는 여전히 비교된다"
+
+
+async def test_an_entry_of_the_other_polarity_is_not_a_candidate(cache):
+    """부정 한 글자 차이는 코사인이 갈라 주지 못한다 — 축이 하나 더 필요하다."""
+    await store(cache, "fp-negated", embedding=NEAR, polarity=True)
+
+    lookup = await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.93,
+        candidates=10,
+    )
+
+    assert not lookup.hit
+    assert await cache.count_candidates(SCOPE, polarity=False) == 0
+    assert await cache.count_candidates(SCOPE, polarity=True) == 1
+
+
+async def test_the_same_polarity_is_still_found(cache):
+    """게이트가 자기 극성까지 막으면 유사 매치 층이 통째로 죽는다."""
+    await store(cache, "fp-negated", embedding=NEAR, polarity=True)
+
+    lookup = await cache.lookup_semantic(
+        [0.99, 0.05],
+        scope=SCOPE,
+        polarity=True,
+        threshold=0.93,
+        candidates=10,
+    )
+
+    assert lookup.hit and lookup.fingerprint == "fp-negated"
 
 
 # ── 무효화 ───────────────────────────────────────────────────────────────
@@ -236,7 +338,9 @@ async def test_negative_invalidation_removes_only_negative_entries(cache):
 
 async def test_negative_entry_without_sources_is_still_reachable_by_the_set(cache):
     """근거 0건 항목에는 태그가 없어 부정 집합이 유일한 방어다."""
-    await cache.store("fp-1", negative_entry(), scope=SCOPE, embedding=NEAR, negative=True)
+    await cache.store(
+        "fp-1", negative_entry(), scope=SCOPE, polarity=False, embedding=NEAR, negative=True
+    )
 
     assert await cache.invalidate_negative() == 1
     assert not (await cache.lookup_exact("fp-1")).hit
@@ -274,11 +378,17 @@ async def test_disabled_cache_never_returns_what_it_was_given():
     캐시를 끄는 이유가 대개 "배제하고 원인을 보겠다"라, 히트가 나면 배제가 성립하지 않는다."""
     cache = NullResponseCache()
 
-    await cache.store("fp-1", entry(), scope=SCOPE, embedding=NEAR, negative=False)
+    await cache.store("fp-1", entry(), scope=SCOPE, polarity=False, embedding=NEAR, negative=False)
 
     assert not (await cache.lookup_exact("fp-1")).hit
     assert not (await cache.lookup_exact("fp-1")).hit
-    assert not (await cache.lookup_semantic(NEAR, scope=SCOPE, threshold=0.0, candidates=10)).hit
+    assert not (await cache.lookup_semantic(
+        NEAR,
+        scope=SCOPE,
+        polarity=False,
+        threshold=0.0,
+        candidates=10,
+    )).hit
 
 
 async def test_disabled_cache_has_nothing_to_invalidate():

@@ -1,4 +1,4 @@
-"""Redis 응답 캐시 — 페이로드·벡터·순서 인덱스·태그를 나눠 든다.
+"""Redis 응답 캐시 — 페이로드·벡터·근접 색인·순서 인덱스·태그를 나눠 든다.
 
 키 구조와 그것을 나눈 근거는 `ARCHITECTURE.md` 「응답 캐시」에 있다. 실패는 도메인 예외로
 바꿔 올리고 로그를 남기지 않는다 — 요청마다 경고를 찍으면 진짜 신호가 묻힌다.
@@ -19,12 +19,12 @@ from app.core.exceptions import StorageUnavailable
 logger = logging.getLogger(__name__)
 
 #: 세대 표지. 페이로드 구조를 바꿔야 하면 여기를 올리고 옛 키는 TTL 로 보낸다.
-KEY_PREFIX = "qa:v1"
+KEY_PREFIX = "qa:v2"
 
 NEGATIVE_KEY = f"{KEY_PREFIX}:negative"
 SEQUENCE_KEY = f"{KEY_PREFIX}:seq"
-#: 살아 있는 후보 집합의 이름들. 무효화가 어느 순서 인덱스에서 fp 를 걷어야 하는지는
-#: 지문만 봐서는 알 수 없어, 이 집합이 그 목록을 든다.
+#: 살아 있는 후보 집합의 이름들. 무효화가 어디에서 fp 를 걷어야 하는지는 지문만 봐서는
+#: 알 수 없어, 이 집합이 그 목록을 든다.
 SCOPES_KEY = f"{KEY_PREFIX}:scopes"
 
 
@@ -36,9 +36,19 @@ def vector_key(fingerprint: str) -> str:
     return f"{KEY_PREFIX}:vec:{fingerprint}"
 
 
-def index_key(scope: str) -> str:
-    """후보 집합 하나의 순서 인덱스. 집합마다 나뉜 이유는 design 결정 2 에 있다."""
-    return f"{KEY_PREFIX}:index:{scope}"
+def candidate_set(scope: str, polarity: bool) -> str:
+    """후보 집합 하나의 이름. 극성으로 갈라 두면 게이트가 저장 구조로 강제된다."""
+    return f"{scope}:{'neg' if polarity else 'aff'}"
+
+
+def index_key(name: str) -> str:
+    """후보 집합 하나의 순서 인덱스 — 총량 상한이 무엇을 밀어낼지 정하는 데만 쓴다."""
+    return f"{KEY_PREFIX}:index:{name}"
+
+
+def vector_set_key(name: str) -> str:
+    """후보 집합 하나의 근접 색인. 유사 매치가 "가장 가까운 N" 을 여기서 받는다."""
+    return f"{KEY_PREFIX}:vset:{name}"
 
 
 def document_key(document_id: str) -> str:
@@ -83,11 +93,12 @@ class RedisResponseCache:
         return CacheLookup.exact(fingerprint, entry)
 
     @_storage_errors
-    async def count_candidates(self, scope: str) -> int:
+    async def count_candidates(self, scope: str, *, polarity: bool) -> int:
         """그 후보 집합의 항목 수. 0 이면 호출부가 질의 임베딩을 만들지 않는다.
 
         캐시가 빈 상태(평가자의 첫 실행, 대부분의 테스트)에서 임베딩이 한 번만 돈다."""
-        return int(await self._client.zcard(index_key(scope)))
+        name = candidate_set(scope, polarity)
+        return int(await self._client.vset().vcard(vector_set_key(name)))
 
     @_storage_errors
     async def lookup_semantic(
@@ -95,18 +106,24 @@ class RedisResponseCache:
         embedding: Sequence[float],
         *,
         scope: str,
+        polarity: bool,
         threshold: float,
         candidates: int,
     ) -> CacheLookup:
-        # 최신순 상한개. 오래된 항목은 L2 후보에서 빠지지만 L1 에서는 여전히 찾힌다.
-        fingerprints = await self._client.zrange(index_key(scope), 0, candidates - 1, desc=True)
-        if not fingerprints:
+        # 가까운 순 상한개. 저장 순서로 고르면 상한이 곧 히트율의 천장이 된다.
+        name = candidate_set(scope, polarity)
+        nearest = await self._client.vset().vsim(
+            vector_set_key(name), list(embedding), count=candidates
+        )
+        if not nearest:
             return CacheLookup.miss()
 
-        fingerprints = tuple(_text(value) for value in fingerprints)
+        fingerprints = tuple(_text(value) for value in nearest)
         vectors = await self._client.mget([vector_key(item) for item in fingerprints])
-        await self._sweep(scope, fingerprints, vectors)
+        await self._sweep(name, fingerprints, vectors)
 
+        # 임계값 판정은 우리가 보관한 float32 로 한다 — 저장소가 돌려주는 점수는 코사인이
+        # 아니라 그것의 아핀 변환이라, 그 값에 임계값을 걸면 뜻이 조용히 달라진다.
         match = await asyncio.to_thread(
             _closest, embedding, fingerprints, vectors, threshold=threshold
         )
@@ -129,26 +146,29 @@ class RedisResponseCache:
         entry: CachedAnswer,
         *,
         scope: str,
+        polarity: bool,
         embedding: Sequence[float],
         negative: bool,
     ) -> None:
         # 시계가 아니라 카운터로 나이를 매긴다 — 같은 밀리초의 두 항목 순서가 정해지지
         # 않으면 "가장 최근 N개"가 흔들린다 (design 결정 2).
         sequence = await self._client.incr(SEQUENCE_KEY)
+        name = candidate_set(scope, polarity)
 
         pipeline = self._client.pipeline(transaction=True)
         pipeline.set(entry_key(fingerprint), dumps_entry(entry), ex=self._ttl_seconds)
         pipeline.set(vector_key(fingerprint), pack_vector(embedding), ex=self._ttl_seconds)
-        pipeline.zadd(index_key(scope), {fingerprint: sequence})
-        self._touch_set(pipeline, SCOPES_KEY, scope)
+        pipeline.zadd(index_key(name), {fingerprint: sequence})
+        pipeline.vset().vadd(vector_set_key(name), list(embedding), fingerprint)
+        self._touch_set(pipeline, SCOPES_KEY, name)
         for document_id in entry.document_ids:
             self._touch_set(pipeline, document_key(document_id), fingerprint)
         if negative:
             self._touch_set(pipeline, NEGATIVE_KEY, fingerprint)
-        pipeline.zcard(index_key(scope))
+        pipeline.zcard(index_key(name))
         results = await pipeline.execute()
 
-        await self._enforce_capacity(scope, int(results[-1]))
+        await self._enforce_capacity(name, int(results[-1]))
 
     # ── 무효화 ──────────────────────────────────────────────────────────
 
@@ -199,9 +219,9 @@ class RedisResponseCache:
             return None
 
     async def _sweep(
-        self, scope: str, fingerprints: Sequence[str], vectors: Sequence[bytes | None]
+        self, name: str, fingerprints: Sequence[str], vectors: Sequence[bytes | None]
     ) -> None:
-        """벡터가 만료된 fp 를 순서 인덱스에서 걷어낸다.
+        """벡터가 만료된 fp 를 두 색인에서 걷어낸다.
 
         만료 정리를 백그라운드 작업이 아니라 다음 조회가 조금씩 나눠 문다 (지연 정리)."""
         dead = [
@@ -210,20 +230,24 @@ class RedisResponseCache:
             if vector is None
         ]
         if dead:
-            await self._client.zrem(index_key(scope), *dead)
+            await self._drop_from(name, dead)
 
-    async def _enforce_capacity(self, scope: str, count: int) -> None:
+    async def _enforce_capacity(self, name: str, count: int) -> None:
         """상한을 넘은 만큼 오래된 항목을 자른다. 저장이 거부되는 경로는 없다."""
         excess = count - self._max_entries
         if excess <= 0:
             return
 
-        stale = await self._client.zrange(index_key(scope), 0, excess - 1)
+        # 근접 색인에는 나이가 없다 — 무엇을 밀어낼지는 순서 인덱스만 답할 수 있다.
+        oldest = await self._client.zrange(index_key(name), 0, excess - 1)
+        stale = [_text(value) for value in oldest]
         pipeline = self._client.pipeline(transaction=True)
-        pipeline.zremrangebyrank(index_key(scope), 0, excess - 1)
-        keys = _payload_keys(_text(value) for value in stale)
+        pipeline.zremrangebyrank(index_key(name), 0, excess - 1)
+        keys = _payload_keys(stale)
         if keys:
             pipeline.delete(*keys)
+        for fingerprint in stale:
+            pipeline.vset().vrem(vector_set_key(name), fingerprint)
         await pipeline.execute()
 
     async def _forget(self, fingerprints: Sequence[str]) -> int:
@@ -233,14 +257,24 @@ class RedisResponseCache:
         if not fingerprints:
             return 0
 
-        scopes = await self._client.smembers(SCOPES_KEY)
+        names = [_text(value) for value in await self._client.smembers(SCOPES_KEY)]
         pipeline = self._client.pipeline(transaction=True)
         pipeline.delete(*[entry_key(item) for item in fingerprints])
         pipeline.delete(*[vector_key(item) for item in fingerprints])
-        for scope in scopes:
-            pipeline.zrem(index_key(_text(scope)), *fingerprints)
+        for name in names:
+            pipeline.zrem(index_key(name), *fingerprints)
+            for fingerprint in fingerprints:
+                pipeline.vset().vrem(vector_set_key(name), fingerprint)
         results = await pipeline.execute()
         return int(results[0])
+
+    async def _drop_from(self, name: str, fingerprints: Sequence[str]) -> None:
+        """한 후보 집합의 두 색인에서 지문들을 걷어낸다. 페이로드는 건드리지 않는다."""
+        pipeline = self._client.pipeline(transaction=True)
+        pipeline.zrem(index_key(name), *fingerprints)
+        for fingerprint in fingerprints:
+            pipeline.vset().vrem(vector_set_key(name), fingerprint)
+        await pipeline.execute()
 
 
 def _closest(
