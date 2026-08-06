@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useReducer } from "react";
 
 import { AppError, NETWORK_UNREACHABLE, openQaStream } from "../api/client";
 import { readSseFrames } from "../api/sse";
-import type { AnswerPayload, DonePayload, ErrorPayload, SourcesPayload } from "../api/types";
+import type {
+  AnswerPayload,
+  CitationView,
+  DonePayload,
+  ErrorPayload,
+  SearchResultView,
+  SourcesPayload,
+} from "../api/types";
 
 export type QaPhase = "idle" | "preparing" | "streaming" | "answered" | "rejected" | "failed" | "aborted";
 
@@ -19,6 +26,26 @@ export type QaFailure =
 
 /** 거절 세 갈래. 문서가 없는 것과 근거를 못 찾은 것은 사용자가 할 일이 다르다. */
 export type QaRejection = "no_documents" | "no_relevant_evidence" | "insufficient_evidence";
+
+/** 인용에 `sources` 쪽 청크 본문을 붙인 것. `text` 가 `null` 이면 짝을 못 찾았다는 뜻이다. */
+export interface CitationDetail extends CitationView {
+  text: string | null;
+}
+
+function chunkKey(chunk: Pick<SearchResultView, "document_id" | "chunk_index">): string {
+  return `${chunk.document_id}:${chunk.chunk_index}`;
+}
+
+/**
+ * 인용에 본문을 얹는다. `done` 은 본문을 싣지 않고 `sources` 만 싣는데, 서버가 인용을
+ * 검색 결과에서만 고르므로 (문서, 청크 번호)로 되찾을 수 있다.
+ */
+function joinCitations(result: DonePayload | null, sources: SourcesPayload | null): CitationDetail[] {
+  if (!result) return [];
+  const texts = new Map(sources?.results.map((chunk) => [chunkKey(chunk), chunk.text]) ?? []);
+  // 못 찾으면 빈 문자열이 아니라 `null` 이다 — 화면이 "본문이 비어 있다"고 지어내면 안 된다.
+  return result.citations.map((citation) => ({ ...citation, text: texts.get(chunkKey(citation)) ?? null }));
+}
 
 export interface QaState {
   phase: QaPhase;
@@ -183,6 +210,7 @@ export function useQaStream() {
   }, []);
 
   const answerText = useMemo(() => state.chunks.join(""), [state.chunks]);
+  const citations = useMemo(() => joinCitations(state.result, state.sources), [state.result, state.sources]);
   const isBusy = state.phase === "preparing" || state.phase === "streaming";
 
   const rejection = useMemo<QaRejection | null>(() => {
@@ -191,5 +219,5 @@ export function useQaStream() {
     return state.sources && state.sources.target_documents === 0 ? "no_documents" : "no_relevant_evidence";
   }, [state.phase, state.result, state.sources]);
 
-  return { state, answerText, isBusy, rejection, ask, cancel, reset };
+  return { state, answerText, citations, isBusy, rejection, ask, cancel, reset };
 }

@@ -18,7 +18,8 @@
 
 .item {
   display: flex;
-  gap: var(--space-2xs);
+  flex-direction: column;
+  gap: var(--space-tight-3);
   padding: var(--space-2xs);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
@@ -28,6 +29,53 @@
 
 .item:target {
   border-color: var(--color-accent);
+}
+
+/* 펼침 버튼과 본문 없는 줄이 같은 자리에 서야 한다 — 한쪽만 버튼이라고 들여쓰기가
+   달라지면 목록이 두 종류처럼 보인다. */
+.trigger,
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.trigger {
+  cursor: pointer;
+}
+
+.trigger:hover .filename {
+  color: var(--color-text-strong);
+}
+
+/* 본문 없는 줄은 쐐기 자리만큼 비워 두 종류가 같은 열에 정렬되게 한다. */
+.summary {
+  padding-left: calc(var(--space-2xs) + var(--space-tight-3));
+}
+
+.chevron {
+  flex: none;
+  width: var(--space-tight-3);
+  height: var(--space-tight-3);
+  border-right: 1.5px solid var(--color-text-muted);
+  border-bottom: 1.5px solid var(--color-text-muted);
+  transform: rotate(-45deg);
+  transition: transform var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.chevron[data-open] {
+  transform: rotate(45deg);
+}
+
+.trigger:hover .chevron {
+  border-color: var(--color-text-strong);
 }
 
 .marker {
@@ -55,4 +103,14 @@
 .meta {
   color: var(--color-text-muted);
   font-size: var(--font-size-caption);
+}
+
+/* 청크 본문은 원문 그대로라 줄바꿈을 살린다. 왼쪽 선이 "이건 인용된 원문"을 표시한다. */
+.text {
+  padding-left: var(--space-2xs);
+  border-left: 2px solid var(--color-border-control);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--font-line-height-relaxed);
+  white-space: pre-wrap;
 }

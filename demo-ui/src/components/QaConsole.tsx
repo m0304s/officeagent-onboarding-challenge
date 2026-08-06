@@ -31,8 +31,13 @@ function liveMessage(qa: ReturnType<typeof useQaStream>): string {
 
 export function QaConsole() {
   const qa = useQaStream();
-  const { state, answerText, isBusy, rejection } = qa;
+  const { state, answerText, citations, isBusy, rejection } = qa;
   const message = liveMessage(qa);
+
+  // 답변이 끝나면 인용 목록이 같은 청크를 본문째 들고 있어서, 검색 결과를 계속 두면
+  // 같은 내용이 화면에 두 벌 남는다. 인용이 하나도 없는 끝(거절·실패·중단)에는 갈아탈
+  // 곳이 없으므로 그대로 둔다 — 무엇을 찾고도 답하지 않았는지가 그때 가장 궁금하다.
+  const sources = isBusy || citations.length === 0 ? state.sources : null;
 
   return (
     <section className={styles.console} aria-labelledby="qa-heading">
@@ -55,9 +60,9 @@ export function QaConsole() {
         </EmptyState>
       ) : null}
 
-      {state.sources && state.sources.count > 0 ? <SourceList sources={state.sources} /> : null}
+      {sources && sources.count > 0 ? <SourceList sources={sources} /> : null}
 
-      <AnswerStream phase={state.phase} text={answerText} result={state.result} />
+      <AnswerStream phase={state.phase} text={answerText} result={state.result} citations={citations} />
 
       <StatusBanner
         failure={state.phase === "failed" ? state.failure : null}
