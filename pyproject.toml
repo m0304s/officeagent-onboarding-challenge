@@ -10,6 +10,8 @@ dependencies = [
     "python-multipart>=0.0.20",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    # `CapacityLimiter` 를 직접 쓴다. starlette 경유 전이 의존에 맡기면 상위가 떼는 순간 깨진다.
+    "anyio>=4",
     # 서버 모드로 쓰므로 클라이언트와 서버 이미지(docker-compose.yml)의 버전을 맞춘다.
     # 어긋나면 HTTP API 경로(v1/v2)나 응답 형식이 달라져, 기동은 되는데 첫 쓰기에서 터진다.
     "chromadb==1.5.9",

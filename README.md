@@ -97,7 +97,7 @@ curl -s -X POST http://127.0.0.1:8000/documents \
 
 | 메서드 | 경로 | 하는 일 |
 |---|---|---|
-| `POST` | `/search` | 활성 retriever 융합 결과를 점수 내림차순으로 최대 K개 |
+| `POST` | `/search` | 활성 retriever 융합 결과를 최대 K개. 순서를 정한 신호는 응답의 `ordered_by` 가 밝힙니다 — 리랭킹이 돌았으면 `rerank_score`, 아니면 융합 `score` 내림차순 |
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/search \
@@ -109,7 +109,8 @@ curl -s -X POST http://127.0.0.1:8000/search \
 {"query":"교육비는 얼마까지 지원되나요?","top_k":3,"count":1,
  "retrievers":["dense","lexical"],"ordered_by":"rerank",
  "reranker":"BAAI/bge-reranker-v2-m3",
- "results":[{"document_id":"0de0c0a1-...","filename":"company-policy.txt","chunk_index":0,
+ "results":[{"document_id":"0de0c0a1-...","filename":"company-policy.txt",
+   "format":"txt","revision":"9f2b7c1e...","chunk_index":0,
    "text":"[사내 복리후생 안내]\n\n1. 교육비 지원\n임직원은 연간 최대 200만원까지 ...",
    "score":1.0,"rerank_score":0.7388216138591319,
    "char_start":0,"char_end":527,"page":null,
@@ -135,6 +136,8 @@ curl -N -X POST http://127.0.0.1:8000/qa \
   -d '{"question":"교육비는 얼마까지 지원되나요?"}'
 ```
 
+요청 본문은 `question`(필수)과 `top_k`(선택, `/search` 와 같은 상한)입니다. `top_k` 를 주지 않으면 `APP_RETRIEVAL_TOP_K` 를 씁니다.
+
 ```
 event: sources
 data: {"results":[...],"count":1,"top_k":5,"target_documents":2,
@@ -149,7 +152,8 @@ data: {"text":"200만원까지 직무 관련 교육비를 지원받을 수 있�
 event: done
 data: {"finish_reason":"stop","answer":"임직원은 연간 최대 200만원까지 ... [1]",
        "citations":[{"marker":1,"document_id":"0de0c0a1-...","filename":"company-policy.txt",
-                     "chunk_index":0,"char_start":0,"char_end":527,"page":null,"score":1.0}],
+                     "format":"txt","revision":"9f2b7c1e...","chunk_index":0,
+                     "char_start":0,"char_end":527,"page":null,"score":1.0}],
        "dropped_markers":0,"elapsed_ms":14203,
        "cache_hit":false,"cache_layer":null,"cache_similarity":null}
 ```
@@ -159,22 +163,25 @@ data: {"finish_reason":"stop","answer":"임직원은 연간 최대 200만원까�
 | 이벤트 | 횟수 | 내용 |
 |---|---|---|
 | `sources` | 정확히 1회, 항상 첫 번째 | 무엇을 근거로 답하려는가 (`/search` 와 같은 모양) |
-| `answer` | 0회 이상 | 생성기가 내보낸 조각. **서버가 쪼개거나 합치지 않습니다** |
+| `answer` | 0회 이상 | 생성기가 내보낸 조각에서 첫 줄의 판정(`VERDICT:`)을 걷어낸 본문. 판정 줄 확정에 필요한 앞부분만 병합되고, **그 뒤로는 서버가 쪼개거나 합치지 않습니다** |
 | `done` \| `error` | **둘을 합쳐 정확히 1회, 항상 마지막** | 종료 없는 닫힘은 없습니다 |
+
+`error` 이벤트는 `code` · `message` 에 더해 **`attempts`**(소진한 시도 수)와 **`reason`**(`timeout` / `generation_failed` / `unauthenticated`)을 싣습니다. 코드는 종료 사건을, 사유는 그 원인을 가리킵니다 — 갈라야 운영자가 재시도할지 자격증명을 고칠지 정할 수 있습니다.
 
 불변식: `answer` 들을 이어 붙인 것 == `done.answer`.
 
 `finish_reason` 은 셋입니다 — `stop`(답변함) / `no_evidence`(근거 0건이라 생성기를 부르지 않음) / `insufficient_evidence`(근거는 있었지만 생성기가 그것으로 답할 수 없다고 판정). 뒤의 둘을 가르는 이유는 사용자가 할 일이 다르기 때문입니다(문서를 올린다 / 질문을 바꾼다).
 
-`cache_hit` · `cache_layer`(`exact`/`semantic`) · `cache_similarity` 로 캐시 판정을 응답에서 바로 확인할 수 있습니다. 캐시 히트도 미스와 **같은 이벤트 시퀀스**로 재생됩니다 — 클라이언트가 두 화면을 그리지 않아도 됩니다.
+`cache_hit` · `cache_layer`(`exact`/`semantic`) · `cache_similarity` 로 캐시 판정을 응답에서 바로 확인할 수 있습니다. 캐시 히트도 미스와 **같은 이벤트 어휘·순서**로 재생됩니다(`answer` 는 본문 통째 1회 — 히트에는 조각이 도착하는 사건이 없습니다) — 클라이언트가 두 화면을 그리지 않아도 됩니다.
 
 ### 오류 응답
 
 ```json
-{"error":{"code":"query_too_long","message":"질의가 상한을 넘었습니다"}}
+{"error":{"code":"query_too_long","message":"질의가 문자 수 상한(1000자)을 넘었습니다",
+          "max_query_chars":1000,"max_query_tokens":512}}
 ```
 
-`422`(질의 검증) · `404`(없는 문서) · `413`(업로드 상한) · `415`(미지원 포맷) · `503`(저장소 장애)로 갈립니다. **상태 코드로 끝나는 실패와 스트림 안의 `error` 이벤트로만 알릴 수 있는 실패가 코드 구조로 갈려 있습니다** — 상태 코드는 첫 바이트와 함께 확정되기 때문입니다.
+`422`(질의 검증) · `404`(없는 문서) · `405`(허용되지 않은 메서드) · `413`(업로드 상한) · `415`(미지원 포맷) · `500`(처리하지 못한 예외) · `503`(저장소 장애)로 갈립니다. 어느 경우든 봉투는 같은 모양입니다. **상태 코드로 끝나는 실패와 스트림 안의 `error` 이벤트로만 알릴 수 있는 실패가 코드 구조로 갈려 있습니다** — 상태 코드는 첫 바이트와 함께 확정되기 때문입니다.
 
 ---
 
@@ -258,7 +265,7 @@ src/app/
 | 규칙 | 어디에 | 무엇을 막는가 |
 |---|---|---|
 | `flake8-tidy-imports.banned-api` | `pyproject.toml` | `os.environ` · `os.getenv` — 설정은 `app.config` 한 창구로만. `config.py` 와 `tests/*` 만 면제 |
-| 같은 규칙, 더 좁게 | `src/app/core/.ruff.toml` | `core/` 에서 `fastapi` · `pydantic` · `chromadb` · `redis` · `httpx` · `torch` · `numpy` · `pymupdf4llm` · `sentence_transformers` import 금지 |
+| 같은 규칙, 더 좁게 | `src/app/core/.ruff.toml` | `core/` 에서 `fastapi` · `pydantic` · `pydantic_settings` · `chromadb` · `redis` · `httpx` · `fitz` · `pymupdf` · `pymupdf4llm` · `sentence_transformers` · `torch` · `numpy` import 금지 (12개) |
 
 `ruff` 는 대상 파일에서 **가장 가까운 설정**을 쓰므로 `core/.ruff.toml` 은 그 디렉터리 아래에만 적용됩니다. 자식 설정의 `banned-api` 테이블이 부모 것을 덮어쓰기 때문에 전역 금지 항목(`os.environ` 등)을 그 파일에 다시 적어 두었습니다.
 
@@ -378,7 +385,7 @@ docker compose run --build --rm test
 | `APP_RETRIEVAL_RRF_K` | RRF 상수. 클수록 상위 순위의 우대가 약해집니다 | `60` |
 | `APP_RETRIEVAL_TOP_K` | 검색 기본 상위 K. 요청의 `top_k` 가 덮어씁니다 | `5` |
 | `APP_RETRIEVAL_MAX_TOP_K` | 요청이 지정할 수 있는 `top_k` 의 상한 | `20` |
-| `APP_RETRIEVAL_MIN_SCORE` | **밀집 retriever의** 코사인 유사도 하한. 이 값 미만인 청크는 그 목록에 실리지 않습니다 | `0.82` |
+| `APP_RETRIEVAL_MIN_SCORE` | **밀집 retriever의** 코사인 유사도 하한. 목록을 자르지 않고 표시만 하며, 어느 목록에서도 하한을 못 넘은 청크가 융합 뒤에 버려집니다 | `0.82` |
 | `APP_RETRIEVAL_MAX_QUERY_CHARS` | 질의 문자 수 상한 | `1000` |
 | `APP_RERANKER_ENABLED` | 크로스인코더 리랭킹 사용 여부. 끄면 융합 순서를 그대로 씁니다 | `true` |
 | `APP_RERANKER_MODEL` | 리랭커 모델 이름. 아는 모델이 아니면 **기동에 실패합니다** | `BAAI/bge-reranker-v2-m3` |
@@ -401,7 +408,7 @@ docker compose run --build --rm test
 | `APP_CACHE_CIRCUIT_BREAKER_FAILURES` | 연속 실패가 이만큼이면 캐시 호출을 건너뜁니다 | `3` |
 | `APP_CACHE_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | 건너뛰는 시간(초). 지나면 자동 재개 | `30.0` |
 
-**다섯 경우가 기동을 막습니다** — 겹침이 청크 크기 이상, 기본 K가 상한 초과, retriever 목록이 빔, `candidate_depth` 가 `APP_RETRIEVAL_MAX_TOP_K` 미만, `APP_RERANK_CANDIDATES` 가 `APP_RETRIEVAL_MAX_TOP_K` 미만. 잘못된 구성으로 조용히 뜨는 것보다 낫기 때문입니다.
+**여섯 경우가 기동을 막습니다** — 겹침이 청크 크기 이상, 기본 K가 상한 초과, retriever 목록이 빔, `candidate_depth` 가 `APP_RETRIEVAL_MAX_TOP_K` 미만, `APP_RERANK_CANDIDATES` 가 `APP_RETRIEVAL_MAX_TOP_K` 미만, 리랭커 입력 창이 `APP_RETRIEVAL_MAX_QUERY_CHARS + APP_CHUNK_SIZE` 미만. 잘못된 구성으로 조용히 뜨는 것보다 낫기 때문입니다.
 
 </details>
 
@@ -427,7 +434,10 @@ docker compose run --build --rm test
 | `add-pymupdf4llm-parser` | PDF 추출 교체 |
 | `fix-retrieval-cache-defects` | 게이트 비대칭·부정 극성·후보 선택 |
 
-`openspec/changes/add-multiturn-qa/` 는 **설계까지 하고 구현하지 않은 change** 입니다. 왜 이 창에서 만들지 않았는지는 그 안의 `proposal.md` 에 있습니다.
+아카이브되지 않은 change 가 둘 있고 상태가 서로 다릅니다.
+
+- `openspec/changes/add-demo-ui/` — **구현은 됐고**(`demo-ui/`) 아카이브만 남았습니다. 백엔드 기능이 아니라 스트리밍·출처·거절 동작의 검증 수단이라 평가 산출물과 수명이 다릅니다.
+- `openspec/changes/add-multiturn-qa/` — **설계까지 하고 구현하지 않은 change** 입니다. 왜 이 창에서 만들지 않았는지는 그 안의 `proposal.md` 에 있습니다.
 
 ---
 

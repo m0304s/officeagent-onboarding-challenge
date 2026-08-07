@@ -240,7 +240,7 @@ def best_match(
 ) -> SimilarityMatch | None:
     """임계값 이상인 후보 중 유사도가 가장 높은 하나. 없으면 `None`.
 
-    유사도가 같으면 먼저 온 후보가 남는다 — 후보 순서가 최신순이라 최신이 이긴다."""
+    유사도가 같으면 먼저 온 후보가 남는다 — 저장소가 근접순으로 주므로 더 가까운 쪽이다."""
     best: SimilarityMatch | None = None
     for fingerprint, vector in candidates:
         similarity = cosine_similarity(query_vector, vector)
