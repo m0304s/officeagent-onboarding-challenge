@@ -127,7 +127,8 @@ async def _gate(harness, reranker, items) -> dict[str, set]:
     for config in CONFIGS:
         for item in items:
             result = await searching[config].search(item.question)
-            if config == "rerank":
+            # 후보 0건은 축소가 아니라 재려던 미스다 (`tests/fixtures/golden/README.md`).
+            if config == "rerank" and result.chunks:
                 assert result.reranker, f"{item.id}: 리랭킹이 축소됐다"
             if rank_of(result.chunks, item.quote) is not None:
                 arrived[config].add(item.id)

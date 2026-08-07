@@ -76,8 +76,9 @@ async def _score(searching, items, config: str) -> Scores:
     ranks: dict[str, int | None] = {}
     for item in items:
         result = await searching.search(item.question)
-        if config == "rerank":
-            # 축소되면 융합 결과를 리랭킹 결과로 읽게 된다 — 그 사고는 조용하다.
+        # 축소되면 융합 결과를 리랭킹 결과로 읽게 된다 — 그 사고는 조용하다. 다만 후보
+        # 0건은 축소가 아니라 골든셋이 재려던 미스라, 여기서 끊으면 표가 통째로 사라진다.
+        if config == "rerank" and result.chunks:
             assert result.reranker, f"{item.id}: 리랭킹이 축소됐다"
         ranks[item.id] = rank_of(result.chunks, item.quote)
     return Scores(ranks)

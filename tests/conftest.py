@@ -153,7 +153,9 @@ def make_settings(data_dir: Path) -> Settings:
 
     환경을 조작한 뒤 같은 구성으로 다시 지어 보는 테스트가 있어 픽스처 밖에도 있어야 한다."""
     return Settings(
-        cache_url="redis://unused:6379/0",
+        # 호스트 이름이 아니라 닿지 않는 포트로 겨눈다 — Docker Desktop 의 내장 DNS 는 없는
+        # 이름을 4초 걸려 실패시켜 캐시 호출마다 상한을 꽉 채운다.
+        cache_url="redis://127.0.0.1:1/0",
         vector_store_url=VECTOR_STORE_URL,
         registry_path=data_dir / "registry.sqlite3",
         probe_timeout_seconds=0.2,

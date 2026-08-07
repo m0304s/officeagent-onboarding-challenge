@@ -30,7 +30,7 @@ def test_data_dir_is_isolated_and_empty(data_dir: Path):
 
 def test_settings_fixture_does_not_read_the_environment(settings, data_dir):
     # 환경변수에 무엇이 있든 픽스처가 명시적으로 준 값이어야 한다.
-    assert settings.cache_url == "redis://unused:6379/0"
+    assert settings.cache_url == "redis://127.0.0.1:1/0"
     assert settings.probe_timeout_seconds == 0.2
     # 벡터 스토어 주소만은 하네스가 환경을 보고 고른다 — 컨테이너 안에서는 실물 서버가
     # `localhost:8001` 이 아니다. 그래도 픽스처는 그 고른 값을 그대로 넘겨야 한다.
@@ -46,5 +46,5 @@ def test_환경변수는_픽스처가_정한_값을_뚫지_못한다(data_dir: P
 
     built = make_settings(data_dir)
 
-    assert built.cache_url == "redis://unused:6379/0"
+    assert built.cache_url == "redis://127.0.0.1:1/0"
     assert built.probe_timeout_seconds == 0.2

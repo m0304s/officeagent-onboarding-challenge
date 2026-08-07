@@ -85,14 +85,15 @@ OfficeAgent BE 채용 과제 — Document Q&A API. 문서를 업로드하면 내
   cache               0.001s  resolved
   ```
 
-  그래서 `tests/conftest.py`의 `make_settings()`가 캐시를 겨누는 `redis://unused:6379/0`가
-  **매 캐시 호출마다 상한(`cache_operation_timeout_seconds`, 0.2초)을 꽉 채웁니다.**
+  그래서 `tests/conftest.py`의 `make_settings()`가 캐시를 겨누던 `redis://unused:6379/0`가
+  **매 캐시 호출마다 상한(`cache_operation_timeout_seconds`, 0.2초)을 꽉 채웠습니다.**
   이름이 "unused"라서 안 쓰일 것 같지만 `cache_enabled` 기본값이 `True`라 `create_app`이
   실물 Redis 어댑터를 그 주소로 만들고, API 테스트의 모든 수집·`/qa`가 그리로 나갑니다.
   업로드 하나에 무효화가 3회라 0.6초가 되어, **`test_concurrency_api.py::test_different_documents_are_not_serialized`가
-  이 호스트에서만 실패합니다**(예산 0.4초). `git stash`로 작업을 걷어내고 HEAD에서 돌려도
-  같게 실패하는, 코드가 아니라 환경의 문제입니다. 고치려면 호스트 이름 대신 닿지 않는
-  포트(`redis://127.0.0.1:1/0`)를 쓰면 DNS 변수가 사라집니다 — 아직 고치지 않았습니다.
+  이 호스트에서만 실패했습니다**(예산 0.4초). `git stash`로 작업을 걷어내고 HEAD에서 돌려도
+  같게 실패하는, 코드가 아니라 환경의 문제였습니다. **지금은 호스트 이름 대신 닿지 않는
+  포트(`redis://127.0.0.1:1/0`)를 쓰도록 고쳤습니다** — DNS 변수가 사라졌고, 새로 캐시를
+  겨누는 픽스처를 쓸 때도 없는 호스트 이름은 쓰지 마세요.
 
 - **환경 사실은 이 파일에만 남습니다.** 셸·런타임에서 새로 알아낸 제약(어떤 명령이 없는지,
   무엇이 막히는지)은 회고가 아니라 여기에 적습니다. 다음 세션이 자동으로 읽는 파일은 이것뿐입니다.
