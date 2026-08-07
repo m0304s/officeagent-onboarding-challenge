@@ -217,8 +217,8 @@ grounding 실패가 아니라 검색 실패입니다. 채점기가 이 둘을 �
 
 이 골든셋은 원본 PDF에 대해 검증된 상태입니다. 확인된 것:
 
-- `evidence.quote` 50건 전부가 **선언된 페이지의 추출 텍스트에 실제로 존재**한다
-  (공백 제거 후 부분문자열)
+- `evidence.quote` 44건 전부가 **선언된 페이지의 추출 텍스트에 실제로 존재**한다
+  (공백 제거 후 부분문자열). 나머지 6건은 `answerable: false` 라 `evidence` 가 `null` 이다
 - `meta.source.sha256` 이 PDF 실물과 일치한다
 - `expected_spans` 가 전부 `reference_answer` 에 포함되고, `must_not_contain` 은 하나도
   포함되지 않는다 — 기준 답변 자신이 자기 문항을 통과한다
