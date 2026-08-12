@@ -106,6 +106,8 @@ services:
       # 컨테이너 안에서 `127.0.0.1:8000` 은 자기 자신이다. 프록시 타깃을 compose
       # 네트워크의 서비스 이름으로 바꾼다 — vite.config.ts 가 이 변수를 읽는다.
       VITE_API_TARGET: http://api:8000
+      # 터널로 공개할 때 그 도메인을 여기 넣는다. 비어 있으면 로컬에서만 접속된다.
+      VITE_ALLOWED_HOSTS: ${DEMO_UI_HOST:-}
     volumes:
       - ./demo-ui:/app
       # 호스트(Windows)의 node_modules 는 플랫폼 전용 바이너리(esbuild 등)를 담아
@@ -116,6 +118,20 @@ services:
     depends_on:
       api:
         condition: service_started
+    restart: unless-stopped
+
+  cloudflared:
+    # 공개 노출 수단이라 평가자의 기본 `docker compose up` 에는 뜨지 않게 프로필 뒤에 둔다.
+    # `docker compose --profile tunnel up` 으로만 켠다. 토큰이 없으면 크래시 루프라
+    # 기본 기동에 딸려오면 안 된다.
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    # 토큰 기반 터널은 ingress(어느 hostname → 어느 서비스)를 Cloudflare 대시보드에서
+    # 읽는다. 같은 compose 기본 네트워크에 있으므로 대시보드 Service 는 http://api:8000.
+    command: tunnel --no-autoupdate run --token ${CF_TOKEN:-}
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
   test:
     # 기본 기동(`docker compose up`)에 딸려 오지 않게 프로필 뒤에 둔다.

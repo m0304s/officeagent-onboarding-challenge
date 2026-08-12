@@ -52,6 +52,18 @@ Node 를 호스트에 두지 않았다면 컨테이너로도 띄웁니다 (`demo
 docker compose --profile demo up demo-ui   # http://localhost:5173
 ```
 
+### Cloudflare 터널로 공개 노출 (선택, `tunnel` 프로필)
+
+`api` 를 Cloudflare 터널로 외부에 노출하려면 토큰을 `.env` 에 두고 프로필로 켭니다.
+같은 compose 기본 네트워크라 대시보드 ingress 의 Service 는 `http://api:8000` 입니다.
+
+```bash
+echo 'CF_TOKEN=eyJhIjoi...' >> .env               # 터널 토큰 (커밋 안 됨: .env 는 gitignore)
+docker compose --profile tunnel up -d api cloudflared
+```
+
+기본 `docker compose up` 에는 뜨지 않습니다 — 토큰이 없으면 크래시 루프라 프로필로 격리했습니다.
+
 **`127.0.0.1` 이 아니라 `localhost` 입니다** — `vite.config.ts` 에 `server.host` 를 두지 않아 Vite 기본값인 이름 바인딩을 따릅니다. API 서버(`http://127.0.0.1:8000`)와 주소 표기가 다른 것은 그래서입니다.
 
 Vite dev 서버가 `/api` 를 백엔드로 프록시합니다. **서버 코드는 한 줄도 바뀌지 않았습니다** — 이 화면은 공개 계약(`/documents`·`/search`·`/qa`·`/health`)의 소비자일 뿐입니다.
