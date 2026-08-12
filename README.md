@@ -45,6 +45,13 @@ docker compose up
 cd demo-ui && npm install && npm run dev   # http://localhost:5173
 ```
 
+Node 를 호스트에 두지 않았다면 컨테이너로도 띄웁니다 (`demo` 프로필). 프록시 타깃은
+`VITE_API_TARGET=http://api:8000` 으로 서비스 이름을 가리키게 되어 있습니다.
+
+```bash
+docker compose --profile demo up demo-ui   # http://localhost:5173
+```
+
 **`127.0.0.1` 이 아니라 `localhost` 입니다** — `vite.config.ts` 에 `server.host` 를 두지 않아 Vite 기본값인 이름 바인딩을 따릅니다. API 서버(`http://127.0.0.1:8000`)와 주소 표기가 다른 것은 그래서입니다.
 
 Vite dev 서버가 `/api` 를 백엔드로 프록시합니다. **서버 코드는 한 줄도 바뀌지 않았습니다** — 이 화면은 공개 계약(`/documents`·`/search`·`/qa`·`/health`)의 소비자일 뿐입니다.

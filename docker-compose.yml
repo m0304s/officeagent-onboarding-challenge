@@ -94,6 +94,29 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
+
+  demo-ui:
+    # 평가 산출물이 아니라 스트리밍 검증용 보조 화면이라 프로필 뒤에 둔다 — 기본
+    # `docker compose up` 에는 뜨지 않고 `docker compose --profile demo up` 으로만 켠다.
+    profiles: ["demo"]
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host"
+    environment:
+      # 컨테이너 안에서 `127.0.0.1:8000` 은 자기 자신이다. 프록시 타깃을 compose
+      # 네트워크의 서비스 이름으로 바꾼다 — vite.config.ts 가 이 변수를 읽는다.
+      VITE_API_TARGET: http://api:8000
+    volumes:
+      - ./demo-ui:/app
+      # 호스트(Windows)의 node_modules 는 플랫폼 전용 바이너리(esbuild 등)를 담아
+      # 리눅스 컨테이너에서 깨진다. 익명 볼륨으로 가려 컨테이너가 스스로 설치하게 둔다.
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
   test:
     # 기본 기동(`docker compose up`)에 딸려 오지 않게 프로필 뒤에 둔다.
     # `docker compose run` 은 프로필과 무관하게 이 서비스를 집어낸다.
