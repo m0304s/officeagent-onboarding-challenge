@@ -30,7 +30,7 @@ from app.core.documents import (
     derive_revision,
     normalize_filename,
 )
-from app.core.lexical import DEFAULT_TOKENIZER, Tokenizer
+from app.core.lexical import DEFAULT_TOKENIZER, RuleTokenizer
 
 BASE_SIGNATURE_MATERIALS = {
     "embedder_signature": "multilingual-e5-small/384/l2norm/e5-prefix-v1",
@@ -131,8 +131,8 @@ def test_same_materials_yield_the_same_signature():
         ("chunk_overlap", 50),
         # 토큰화가 달라지면 어휘 색인의 내용이 달라진다. 하나의 서명이 두 색인을 함께
         # 지배하므로 이 변경도 재색인을 유발해야 한다.
-        ("tokenizer_signature", Tokenizer(version=99).signature_material),
-        ("tokenizer_signature", Tokenizer(suffixes=("는", "은")).signature_material),
+        ("tokenizer_signature", RuleTokenizer(version=99).signature_material),
+        ("tokenizer_signature", RuleTokenizer(suffixes=("는", "은")).signature_material),
         # 추출 방식이 달라지면 같은 PDF 에서 다른 본문이 나온다. 버전만 오르는 경우도
         # 같다 — 방식 이름은 그대로인데 산출물이 달라지는 변경을 잡을 다른 수단이 없다.
         ("pdf_extraction_signature", f"plain:v{PDF_EXTRACTION_VERSION}"),
@@ -218,7 +218,7 @@ def test_the_tokenizer_configuration_reaches_the_signature():
     retuned = derive_index_signature(
         **{
             **BASE_SIGNATURE_MATERIALS,
-            "tokenizer_signature": Tokenizer(
+            "tokenizer_signature": RuleTokenizer(
                 suffixes=(*DEFAULT_TOKENIZER.suffixes, "께서")
             ).signature_material,
         }

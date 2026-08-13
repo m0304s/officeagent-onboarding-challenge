@@ -4,7 +4,7 @@
 않는 실패라, 규약 자체를 여기서 단언한다.
 """
 
-from app.core.lexical import DEFAULT_TOKENIZER, MIN_STEM_LENGTH, Tokenizer
+from app.core.lexical import DEFAULT_TOKENIZER, MIN_STEM_LENGTH, RuleTokenizer, Tokenizer
 
 
 def tokens(text: str, tokenizer: Tokenizer = DEFAULT_TOKENIZER) -> set[str]:
@@ -72,16 +72,19 @@ class TestTokenizationIsDeterministic:
 
 class TestSignatureMaterialTracksConfiguration:
     def test_the_same_configuration_yields_the_same_material(self):
-        assert Tokenizer().signature_material == Tokenizer().signature_material
+        assert RuleTokenizer().signature_material == RuleTokenizer().signature_material
 
     def test_a_different_version_yields_different_material(self):
-        assert Tokenizer(version=1).signature_material != Tokenizer(version=2).signature_material
+        assert (
+            RuleTokenizer(version=1).signature_material
+            != RuleTokenizer(version=2).signature_material
+        )
 
     def test_a_different_suffix_list_yields_different_material(self):
         """접미 목록을 고치면 어절이 다른 토큰으로 갈려 기존 색인이 질의에 닿지 않는다."""
-        trimmed = Tokenizer(suffixes=("는", "은"))
+        trimmed = RuleTokenizer(suffixes=("는", "은"))
 
-        assert trimmed.signature_material != Tokenizer().signature_material
+        assert trimmed.signature_material != RuleTokenizer().signature_material
 
     def test_the_material_is_a_stable_string(self):
         assert isinstance(DEFAULT_TOKENIZER.signature_material, str)
