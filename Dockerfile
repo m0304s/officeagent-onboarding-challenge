@@ -48,6 +48,14 @@ RUN useradd --create-home --uid 1000 app
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch \
     && pip install --no-cache-dir sentence-transformers
 
+# ── 어휘 토크나이저(kiwipiepy) ──────────────────────────────────────────
+#
+# 모델이 동반 패키지로 wheel 에 번들되어 런타임 다운로드가 없다. 코드보다 먼저 굳혀
+# 캐시하고, 빌드 시점에 한 번 돌려 **오프라인 번들과 prebuilt wheel 을 실측**한다 —
+# 별도 다운로드가 필요하면 여기서 드러난다.
+RUN pip install --no-cache-dir kiwipiepy \
+    && python -c "from kiwipiepy import Kiwi; print(Kiwi().tokenize('워밍업'))"
+
 # ── 모델 가중치 굽기 ────────────────────────────────────────────────────
 #
 # **`COPY src` 보다 먼저다.** 코드를 고칠 때마다 수백 MB 를 다시 받으면 빌드가 실용적이지
