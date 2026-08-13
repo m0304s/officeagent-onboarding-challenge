@@ -19,6 +19,7 @@ from app.adapters.protocols import HealthProbe
 from app.adapters.reranking import KNOWN_RERANKER_PROFILES
 from app.adapters.vector_store.client import parse_url
 from app.config import Settings
+from app.core.lexical import RuleTokenizer
 from app.main import create_app
 
 from .stubs import (
@@ -212,6 +213,7 @@ def make_app(settings, healthy_probes, embedder, vector_store, lexical_index, re
         "vector_store": vector_store,
         "lexical_index": lexical_index,
         "registry": registry,
+        "tokenizer": RuleTokenizer(),
     }
 
     def _make(probes: Sequence[HealthProbe] | None = None, **overrides) -> FastAPI:
