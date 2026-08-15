@@ -26,6 +26,11 @@ dependencies = [
     # pymupdf4llm 1.28.0 이 pymupdf==1.28.0 을 정확히 요구하므로 두 값이 함께 움직인다.
     "pymupdf==1.28.0",
     "pymupdf4llm==1.28.0",
+    # 어휘 형태소 토크나이저. 모델이 동반 패키지(kiwipiepy_model)로 wheel 에 번들되어
+    # 런타임 다운로드가 없다. 토큰이 저장물(index_signature 의 축)이라, 판이 흔들리면
+    # 같은 설정에서 같은 문서가 다른 청크가 된다 — chromadb·pymupdf 와 같은 이유로
+    # 정확 고정하되, 정확 버전은 컨테이너가 실제로 설치한 값으로 박는다.
+    "kiwipiepy==0.23.2",
 ]
 
 [project.optional-dependencies]

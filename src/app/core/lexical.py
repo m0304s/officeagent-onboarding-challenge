@@ -9,6 +9,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from functools import cache
+from typing import Protocol, runtime_checkable
 
 # 규칙(정규화·경계·혼합 토큰·접미)을 고치면 올린다. 서명이 달라져 기존 색인은 stale 이 된다.
 TOKENIZER_VERSION = 1
@@ -86,8 +87,18 @@ def _split_classes(word: str) -> list[str]:
     return pieces
 
 
+@runtime_checkable
+class Tokenizer(Protocol):
+    """텍스트를 검색 단위로 자르는 구성. 쓰기와 읽기가 같은 구현을 공유한다."""
+
+    def tokenize(self, text: str) -> tuple[str, ...]: ...
+
+    @property
+    def signature_material(self) -> str: ...
+
+
 @dataclass(frozen=True)
-class Tokenizer:
+class RuleTokenizer:
     """텍스트를 검색 단위로 자른다.
 
     구성이 값이라 서명 재료가 되고, 서명이 달라지면 기존 색인이 재수집을 요구한다."""
@@ -134,5 +145,5 @@ class Tokenizer:
         )
 
 
-#: 배선이 따로 고르지 않으면 쓰이는 구성. 쓰기와 읽기가 같은 값을 공유한다.
-DEFAULT_TOKENIZER = Tokenizer()
+#: 배선이 따로 고르지 않으면 쓰이는 규칙 기반 구성. 쓰기와 읽기가 같은 값을 공유한다.
+DEFAULT_TOKENIZER = RuleTokenizer()

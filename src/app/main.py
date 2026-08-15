@@ -33,6 +33,7 @@ from app.adapters.protocols import (
 from app.adapters.registry import SqliteDocumentRegistry
 from app.adapters.reranking import CrossEncoderReranker
 from app.adapters.retrievers import RetrieverDependencies, build_retriever
+from app.adapters.tokenizer import KiwiTokenizer
 from app.adapters.vector_store import ChromaVectorStore, VectorStoreProbe, collection_for
 from app.api.errors import register_error_handlers
 from app.api.logging import RequestLoggingMiddleware, configure_logging
@@ -40,7 +41,7 @@ from app.api.routes import documents, health, qa, search
 from app.config import Settings, get_settings, llm_environment
 from app.core.chunking import CHUNK_STRATEGY_VERSION
 from app.core.documents import derive_index_signature
-from app.core.lexical import DEFAULT_TOKENIZER
+from app.core.lexical import Tokenizer
 from app.core.prompting import PROMPT_VERSION
 from app.services.cache import CacheService
 from app.services.health import HealthService
@@ -89,6 +90,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     앞의 둘은 기동 조건이 아니다 — 실패해도 뜨고 로그만 남는다. 오래 걸리는 쪽이 앞이다."""
     await _warm_up_embedder(app)
     await _warm_up_reranker(app)
+    await _warm_up_tokenizer(app)
 
     if not fts5_is_available():
         # 기동을 세우지 않는다. 어휘 색인 없이도 밀집 검색은 그대로 도는데, 여기서
@@ -145,6 +147,22 @@ async def _warm_up_reranker(app: FastAPI) -> None:
     except Exception as exc:
         logger.warning(
             "리랭커 모델 선로딩에 실패했습니다 — 검색은 융합 순서로 축소됩니다",
+            exc_info=exc,
+        )
+
+
+async def _warm_up_tokenizer(app: FastAPI) -> None:
+    """어휘 토크나이저 모델을 미리 올린다. `warm_up` 이 없는 구현(규칙 기반)은 건너뛴다.
+
+    실패해도 뜨는 이유는 지연 로딩이 백스톱이라서다 — 첫 수집에서 다시 시도한다."""
+    warm_up = getattr(app.state.tokenizer, "warm_up", None)
+    if warm_up is None:
+        return
+    try:
+        await warm_up()
+    except Exception as exc:
+        logger.warning(
+            "어휘 토크나이저 선로딩에 실패했습니다 — 첫 수집 요청에서 다시 시도합니다",
             exc_info=exc,
         )
 
@@ -225,6 +243,7 @@ def create_app(
     registry: DocumentRegistry | None = None,
     generator: AnswerGenerator | None = None,
     reranker: Reranker | None = None,
+    tokenizer: Tokenizer | None = None,
 ) -> FastAPI:
     """앱을 만든다.
 
@@ -252,10 +271,13 @@ def create_app(
         vector_store = ChromaVectorStore(
             settings.vector_store_url, collection_name=collection_for(embedder.dimension)
         )
+    # 프로덕션은 kiwipiepy, 주입 시(테스트)는 그 값을 쓴다. 색인과 서명이 같은 인스턴스를
+    # 봐야 업로드 직후 문서가 검색된다 — 한 번만 고른다.
+    tokenizer = tokenizer or KiwiTokenizer()
     if lexical_index is None:
         lexical_index = SqliteLexicalIndex(
             settings.lexical_index_path,
-            tokenizer=DEFAULT_TOKENIZER,
+            tokenizer=tokenizer,
             min_token_rarity=settings.lexical_min_token_rarity,
         )
 
@@ -272,7 +294,7 @@ def create_app(
         chunk_overlap=settings.chunk_overlap,
         # 하나의 서명이 두 색인을 함께 지배한다 — 나누면 문서 하나가 "밀집으로는 검색
         # 가능하고 어휘로는 stale" 인 상태를 가질 수 있게 된다 (design 결정 8).
-        tokenizer_signature=DEFAULT_TOKENIZER.signature_material,
+        tokenizer_signature=tokenizer.signature_material,
         # 파서와 같은 객체에서 꺼낸다 — 따로 지정하면 마크다운으로 뽑은 청크가 평문
         # 서명으로 저장되어도 아무 데서도 오류가 나지 않는다 (design 결정 2).
         pdf_extraction_signature=pdf_extraction.signature_material,
@@ -288,6 +310,7 @@ def create_app(
 
     # 서비스 안에서 꺼내지 않는다 — 배선이 배선한 것을 들고 있는다.
     app.state.embedder = embedder
+    app.state.tokenizer = tokenizer
     app.state.reranker = reranker
     # 수집과 답변이 같은 인스턴스를 본다. 나누면 차단기 상태와 연결이 둘이 되고,
     # 무효화가 어느 쪽 상태를 보는지가 갈린다.

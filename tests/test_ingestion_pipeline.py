@@ -24,7 +24,7 @@ from app.core.exceptions import (
     NoExtractableText,
     StorageUnavailable,
 )
-from app.core.lexical import DEFAULT_TOKENIZER, Tokenizer
+from app.core.lexical import DEFAULT_TOKENIZER, RuleTokenizer
 from app.core.prompting import PROMPT_VERSION
 from app.services.ingestion import ReconciliationReport
 from tests.ingestion_harness import LONG_KOREAN, make_service
@@ -806,7 +806,7 @@ async def test_a_tokenizer_change_makes_existing_documents_stale(store, lexical,
         vector_store=store,
         lexical_index=lexical,
         registry=registry,
-        tokenizer=Tokenizer(suffixes=(*DEFAULT_TOKENIZER.suffixes, "께서")),
+        tokenizer=RuleTokenizer(suffixes=(*DEFAULT_TOKENIZER.suffixes, "께서")),
     )
     report = await retuned.reconcile_storage()
 
